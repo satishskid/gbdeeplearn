@@ -1,0 +1,10 @@
+# Copy to .dev.vars for `wrangler dev` local Worker runtime values.
+# These are not committed and are only for local development.
+
+# Optional server-side Groq key for counselor/grader endpoints
+GROQ_API_KEY=
+
+# Optional Firebase admin credentials for server-side write operations
+FIREBASE_PROJECT_ID=gbdeeplearn
+FIREBASE_CLIENT_EMAIL=
+FIREBASE_PRIVATE_KEY=

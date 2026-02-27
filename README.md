@@ -32,3 +32,71 @@ npm run worker:dev
 Bindings expected by `src/worker.js`:
 - `AI` (Workers AI binding for embeddings)
 - `DEEPLEARN_INDEX` (Vectorize index binding)
+
+## Cloudflare CLI Setup (Wrangler)
+
+Wrangler is fully configured for this project through:
+- [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml) (Worker + bindings)
+- [wrangler.pages.toml](/Users/spr/gbdeeplearn/wrangler.pages.toml) (Pages metadata)
+- [scripts/cf-cli.sh](/Users/spr/gbdeeplearn/scripts/cf-cli.sh) (wrapper with local log path)
+- [scripts/cf-bootstrap.sh](/Users/spr/gbdeeplearn/scripts/cf-bootstrap.sh) (idempotent resource bootstrap)
+
+Default account is set to `9f4998a66a5d7bd7a230d0222544fbe6` in the CLI wrapper.
+Override when needed:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=YOUR_ACCOUNT_ID
+```
+
+### 1) Verify auth
+
+```bash
+npm run cf:whoami
+```
+
+### 2) Create required Cloudflare resources (CLI only)
+
+This creates/checks:
+- Vectorize index `deeplearn-index`
+- R2 buckets `gbdeeplearn-assets`, `gbdeeplearn-assets-preview`, `gbdeeplearn-certificates`, `gbdeeplearn-certificates-preview`
+- Pages project `gbdeeplearn`
+
+```bash
+npm run cf:bootstrap
+```
+
+### 3) Local Worker development
+
+```bash
+npm run cf:worker:dev
+```
+
+### 4) Deploy Worker API
+
+```bash
+npm run cf:worker:deploy
+```
+
+### 5) Deploy Astro frontend to Pages
+
+```bash
+npm run build
+npm run cf:pages:deploy
+```
+
+### 6) Deploy both (Worker + Pages)
+
+```bash
+npm run cf:deploy:all
+```
+
+### Useful CLI commands
+
+```bash
+npm run cf:worker:tail
+npm run cf:vectorize:list
+npm run cf:r2:list
+npm run cf:pages:list
+npm run cf:secret:list
+npm run cf:secret:put -- GROQ_API_KEY
+```

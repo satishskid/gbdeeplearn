@@ -8,8 +8,22 @@
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro",
-    "worker:dev": "wrangler dev src/worker.js",
-    "worker:deploy": "wrangler deploy src/worker.js"
+    "worker:dev": "./scripts/cf-cli.sh dev",
+    "worker:deploy": "./scripts/cf-cli.sh deploy",
+    "cf:whoami": "./scripts/cf-cli.sh whoami",
+    "cf:worker:dev": "./scripts/cf-cli.sh dev",
+    "cf:worker:deploy": "./scripts/cf-cli.sh deploy",
+    "cf:worker:tail": "./scripts/cf-cli.sh tail deeplearn-worker",
+    "cf:secret:put": "./scripts/cf-cli.sh secret put",
+    "cf:secret:list": "./scripts/cf-cli.sh secret list",
+    "cf:vectorize:list": "./scripts/cf-cli.sh vectorize list",
+    "cf:vectorize:create": "./scripts/cf-cli.sh vectorize create deeplearn-index --preset @cf/baai/bge-base-en-v1.5 --description \"DeepLearn embeddings\"",
+    "cf:r2:list": "./scripts/cf-cli.sh r2 bucket list",
+    "cf:pages:list": "./scripts/cf-cli.sh pages project list",
+    "cf:pages:create": "./scripts/cf-cli.sh pages project create ${CF_PAGES_PROJECT:-gbdeeplearn} --production-branch ${CF_PAGES_BRANCH:-main}",
+    "cf:pages:deploy": "./scripts/cf-cli.sh pages deploy dist --project-name ${CF_PAGES_PROJECT:-gbdeeplearn} --branch ${CF_PAGES_BRANCH:-main}",
+    "cf:bootstrap": "./scripts/cf-bootstrap.sh",
+    "cf:deploy:all": "npm run build && npm run cf:worker:deploy && npm run cf:pages:deploy"
   },
   "dependencies": {
     "@astrojs/react": "^4.1.2",
@@ -23,6 +37,6 @@
   },
   "devDependencies": {
     "tailwindcss": "^3.4.17",
-    "wrangler": "^3.109.2"
+    "wrangler": "^4.69.0"
   }
 }

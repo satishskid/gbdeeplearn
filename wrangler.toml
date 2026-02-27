@@ -1,10 +1,35 @@
 name = "deeplearn-worker"
 main = "src/worker.js"
-compatibility_date = "2025-01-01"
+compatibility_date = "2026-02-27"
+account_id = "9f4998a66a5d7bd7a230d0222544fbe6"
+workers_dev = true
 
 [vars]
 APP_NAME = "DeepLearn"
+PAGES_PROJECT = "gbdeeplearn"
+CERTIFICATE_BUCKET = "gbdeeplearn-certificates"
+
+[ai]
+binding = "AI"
 
 [[vectorize]]
 binding = "DEEPLEARN_INDEX"
 index_name = "deeplearn-index"
+
+[[r2_buckets]]
+binding = "DEEPLEARN_ASSETS"
+bucket_name = "gbdeeplearn-assets"
+preview_bucket_name = "gbdeeplearn-assets-preview"
+
+[[r2_buckets]]
+binding = "DEEPLEARN_CERTIFICATES"
+bucket_name = "gbdeeplearn-certificates"
+preview_bucket_name = "gbdeeplearn-certificates-preview"
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+head_sampling_rate = 1
