@@ -92,14 +92,15 @@ export default function ChatInterface() {
   };
 
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-lg backdrop-blur md:p-6">
-      <header className="mb-4 flex flex-wrap items-center justify-between gap-2">
+    <section className="mb-8 overflow-hidden rounded-[1.75rem] border border-slate-900/10 bg-white/80 p-5 shadow-xl backdrop-blur-sm md:p-8">
+      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-semibold text-ink">AI Tutor (BYOK + Server Fallback)</h2>
-          <p className="text-sm text-slate-600">Socratic responses grounded in syllabus context.</p>
+          <p className="mb-1 text-xs font-bold uppercase tracking-[0.16em] text-sky-700">Study Mode</p>
+          <h2 className="text-2xl font-extrabold text-slate-900">AI Tutor (BYOK + Server Fallback)</h2>
+          <p className="mt-1 text-sm text-slate-600">Socratic explanations grounded in your syllabus context.</p>
         </div>
         <div
-          className={`rounded-full px-3 py-1 text-xs font-medium ${
+          className={`rounded-full px-3 py-1 text-xs font-semibold ${
             isOnline ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
           }`}
         >
@@ -107,10 +108,10 @@ export default function ChatInterface() {
         </div>
       </header>
 
-      <label className="mb-3 block text-sm font-medium text-slate-700">
+      <label className="mb-3 block text-sm font-semibold text-slate-700">
         Groq API Key (optional)
         <input
-          className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="mt-1 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="password"
           value={groqKey}
           onChange={(event) => setGroqKey(event.target.value)}
@@ -119,18 +120,18 @@ export default function ChatInterface() {
         />
       </label>
 
-      <div className="mb-4 max-h-80 space-y-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <div className="mb-4 max-h-80 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50/80 p-3">
         {messages.length === 0 ? (
-          <p className="text-sm text-slate-500">Start by asking a question about your module.</p>
+          <p className="text-sm text-slate-500">Ask a concept question to start a tutoring session.</p>
         ) : (
           messages.map((item, idx) => (
             <article
               key={`${item.role}-${idx}`}
-              className={`rounded-lg px-3 py-2 text-sm ${
-                item.role === 'user' ? 'bg-sky-100 text-sky-900' : 'bg-white text-slate-800'
+              className={`rounded-xl px-3 py-2 text-sm ${
+                item.role === 'user' ? 'bg-blue-100 text-blue-950' : 'bg-white text-slate-800'
               }`}
             >
-              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{item.role}</p>
+              <p className="mb-1 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">{item.role}</p>
               <p>{item.content}</p>
               {item.state === 'error' && <p className="mt-1 text-xs text-rose-600">Failed to deliver</p>}
             </article>
@@ -140,7 +141,7 @@ export default function ChatInterface() {
 
       {queuedMessages.length > 0 && (
         <aside className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-amber-700">Queued Messages</p>
+          <p className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-amber-700">Queued Messages</p>
           <div className="space-y-1">
             {queuedMessages.map((queued) => (
               <p key={queued.id} className="text-sm text-amber-900">
@@ -151,16 +152,16 @@ export default function ChatInterface() {
         </aside>
       )}
 
-      <form className="flex gap-2" onSubmit={onSubmit}>
+      <form className="flex flex-col gap-2 sm:flex-row" onSubmit={onSubmit}>
         <input
-          className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="text"
           value={message}
           onChange={(event) => setMessage(event.target.value)}
           placeholder="Ask your tutor a question"
         />
         <button
-          className="rounded-lg bg-brand px-4 py-2 text-sm font-medium text-white transition hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
+          className="rounded-xl bg-sky-700 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-sky-800 disabled:cursor-not-allowed disabled:opacity-60"
           type="submit"
           disabled={isSending}
         >

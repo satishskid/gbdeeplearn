@@ -7,14 +7,56 @@ const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '1x0000000
 ---
 
 <BaseLayout title="DeepLearn AI Platform">
-  <section class="mb-8 grid gap-4 rounded-3xl bg-ink p-6 text-white md:p-8">
-    <p class="text-xs uppercase tracking-[0.2em] text-sky-200">DeepLearn AI Platform</p>
-    <h1 class="text-3xl font-semibold md:text-4xl">Offline-first AI-native course experience</h1>
-    <p class="max-w-2xl text-sm text-sky-100 md:text-base">
-      Static-first learning UI with two agents: a sales Counselor and a deep-learning Tutor. The Tutor uses BYOK,
-      grounding every answer in vectorized syllabus context.
-    </p>
+  <section class="relative mb-8 overflow-hidden rounded-[2rem] bg-slate-950 px-6 py-10 text-white shadow-2xl md:px-10 md:py-12">
+    <div class="absolute right-0 top-0 h-48 w-48 rounded-full bg-cyan-400/25 blur-3xl"></div>
+    <div class="absolute bottom-0 left-0 h-44 w-44 rounded-full bg-amber-300/25 blur-3xl"></div>
+
+    <div class="relative z-10 grid gap-6 lg:grid-cols-[1.3fr_0.7fr] lg:items-end">
+      <div>
+        <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
+          Cohort-Based Deep Learning
+        </p>
+        <h1 class="mb-4 text-3xl font-extrabold leading-tight md:text-5xl">Launch Your AI Tutor Platform in Weeks, Not Months</h1>
+        <p class="max-w-2xl text-base text-slate-200 md:text-lg">
+          DeepLearn combines an offline-first learning app, BYOK tutoring, webinar lead capture, and edge analytics in
+          one deployable system.
+        </p>
+      </div>
+
+      <div class="grid gap-3 text-sm">
+        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
+          <p class="text-slate-300">Delivery Model</p>
+          <p class="mt-1 text-lg font-semibold text-white">Live Cohorts + Self-Study</p>
+        </div>
+        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
+          <p class="text-slate-300">Infrastructure</p>
+          <p class="mt-1 text-lg font-semibold text-white">Cloudflare Edge + Firebase</p>
+        </div>
+        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
+          <p class="text-slate-300">Reliability</p>
+          <p class="mt-1 text-lg font-semibold text-white">Offline-First Student UX</p>
+        </div>
+      </div>
+    </div>
   </section>
+
+  <div class="mb-8 grid gap-4 md:grid-cols-3">
+    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Conversion Stack</p>
+      <h3 class="mt-2 text-xl font-bold text-slate-900">Webinar Funnel</h3>
+      <p class="mt-1 text-sm text-slate-600">Turnstile-protected lead capture with edge analytics.</p>
+    </article>
+    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Learning Engine</p>
+      <h3 class="mt-2 text-xl font-bold text-slate-900">RAG AI Tutor</h3>
+      <p class="mt-1 text-sm text-slate-600">Socratic tutoring grounded in your vectorized syllabus.</p>
+    </article>
+    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Ops Cost</p>
+      <h3 class="mt-2 text-xl font-bold text-slate-900">Free-Tier Friendly</h3>
+      <p class="mt-1 text-sm text-slate-600">Cloudflare + Firebase architecture tuned for low run-rate.</p>
+    </article>
+  </div>
 
   <WebinarLeadForm client:load siteKey={turnstileSiteKey} />
   <ChatInterface client:load />

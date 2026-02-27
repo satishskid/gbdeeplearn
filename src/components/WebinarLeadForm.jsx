@@ -190,14 +190,17 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
   };
 
   return (
-    <section className="mb-8 rounded-2xl border border-slate-200 bg-white/90 p-5 shadow-lg backdrop-blur md:p-6">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <section className="mb-8 overflow-hidden rounded-[1.75rem] border border-slate-900/10 bg-white/80 p-5 shadow-xl backdrop-blur-sm md:p-8">
+      <div className="mb-6 grid gap-4 lg:grid-cols-[1fr_auto] lg:items-center">
         <div>
-          <h2 className="text-2xl font-semibold text-ink">Live Webinar: Deep RAG Tutor Build</h2>
-          <p className="text-sm text-slate-600">90-minute live class with implementation walkthrough + Q&A.</p>
+          <p className="mb-2 text-xs font-bold uppercase tracking-[0.16em] text-teal-700">Upcoming Live Class</p>
+          <h2 className="text-3xl font-extrabold text-slate-900">Deep RAG Tutor Build Workshop</h2>
+          <p className="mt-2 text-sm text-slate-600 md:text-base">
+            90-minute implementation sprint with architecture teardown, ingestion pipeline, and growth analytics.
+          </p>
         </div>
         <button
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
           onClick={() => void postEvent(WEBINAR_EVENTS.scheduleClick)}
           type="button"
         >
@@ -205,15 +208,15 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
         </button>
       </div>
 
-      <div className="mb-4 grid gap-2 text-sm text-slate-700 md:grid-cols-3">
-        <p className="rounded-lg bg-slate-100 px-3 py-2">1. Architecture and edge deployment</p>
-        <p className="rounded-lg bg-slate-100 px-3 py-2">2. RAG ingestion and tutor prompting</p>
-        <p className="rounded-lg bg-slate-100 px-3 py-2">3. Offline-first delivery and tracking</p>
+      <div className="mb-5 grid gap-2 text-sm md:grid-cols-3">
+        <p className="rounded-xl bg-teal-50 px-3 py-2 font-medium text-teal-800">Module 1: Edge architecture</p>
+        <p className="rounded-xl bg-cyan-50 px-3 py-2 font-medium text-cyan-800">Module 2: Tutor prompting + RAG</p>
+        <p className="rounded-xl bg-amber-50 px-3 py-2 font-medium text-amber-800">Module 3: Funnel + analytics</p>
       </div>
 
       <form className="grid gap-3 md:grid-cols-3" onSubmit={onRegister}>
         <input
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="text"
           placeholder="Full name"
           value={fullName}
@@ -221,7 +224,7 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           required
         />
         <input
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="email"
           placeholder="Email"
           value={email}
@@ -229,7 +232,7 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           required
         />
         <input
-          className="rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
+          className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="tel"
           placeholder="Phone"
           value={phone}
@@ -237,27 +240,29 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           required
         />
 
-        <div className="md:col-span-3">
+        <div className="md:col-span-3 rounded-xl border border-slate-200 bg-white p-2">
           <div ref={turnstileContainerRef} />
         </div>
 
-        <div className="md:col-span-3 flex flex-wrap gap-2">
+        <div className="md:col-span-3 flex flex-wrap items-center gap-3">
           <button
-            className="rounded-lg bg-ink px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+            className="rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             type="submit"
             disabled={status === 'loading'}
             onClick={() => void postEvent(WEBINAR_EVENTS.ctaClick)}
           >
             {status === 'loading' ? 'Reserving...' : 'Reserve My Seat'}
           </button>
+
           {message && (
-            <p className={`self-center text-sm ${status === 'success' ? 'text-emerald-700' : 'text-rose-700'}`}>
+            <p className={`text-sm font-medium ${status === 'success' ? 'text-emerald-700' : 'text-rose-700'}`}>
               {message}
             </p>
           )}
+
           {status === 'success' && leadId && (
             <button
-              className="rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 hover:bg-emerald-100"
+              className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100"
               onClick={() => void postEvent(WEBINAR_EVENTS.paymentComplete, { lead_id: leadId })}
               type="button"
             >
