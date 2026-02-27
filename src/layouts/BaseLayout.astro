@@ -1,0 +1,20 @@
+---
+import '../styles/global.css';
+
+const { title = 'DeepLearn AI Platform' } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="generator" content={Astro.generator} />
+    <title>{title}</title>
+  </head>
+  <body>
+    <main class="mx-auto min-h-screen w-full max-w-5xl px-4 py-8 md:px-8">
+      <slot />
+    </main>
+  </body>
+</html>

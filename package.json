@@ -1,0 +1,28 @@
+{
+  "name": "deeplearn-ai-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "astro": "astro",
+    "worker:dev": "wrangler dev src/worker.js",
+    "worker:deploy": "wrangler deploy src/worker.js"
+  },
+  "dependencies": {
+    "@astrojs/react": "^4.1.2",
+    "@astrojs/tailwind": "^5.1.0",
+    "@vite-pwa/astro": "^0.5.0",
+    "astro": "^4.16.8",
+    "firebase": "^11.3.1",
+    "hono": "^4.6.16",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17",
+    "wrangler": "^3.109.2"
+  }
+}

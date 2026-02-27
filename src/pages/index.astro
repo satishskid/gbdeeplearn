@@ -1,0 +1,17 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import ChatInterface from '../components/ChatInterface.jsx';
+---
+
+<BaseLayout title="DeepLearn AI Platform">
+  <section class="mb-8 grid gap-4 rounded-3xl bg-ink p-6 text-white md:p-8">
+    <p class="text-xs uppercase tracking-[0.2em] text-sky-200">DeepLearn AI Platform</p>
+    <h1 class="text-3xl font-semibold md:text-4xl">Offline-first AI-native course experience</h1>
+    <p class="max-w-2xl text-sm text-sky-100 md:text-base">
+      Static-first learning UI with two agents: a sales Counselor and a deep-learning Tutor. The Tutor uses BYOK,
+      grounding every answer in vectorized syllabus context.
+    </p>
+  </section>
+
+  <ChatInterface client:load />
+</BaseLayout>

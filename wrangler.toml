@@ -1,0 +1,10 @@
+name = "deeplearn-worker"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+APP_NAME = "DeepLearn"
+
+[[vectorize]]
+binding = "DEEPLEARN_INDEX"
+index_name = "deeplearn-index"
