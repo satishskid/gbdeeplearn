@@ -32,7 +32,7 @@ Role resolution order in UI guards:
 2. Firestore `users/{uid}` fields (`role`, `roles`)
 3. Email allowlists from `PUBLIC_*_EMAILS`
 
-Enable `Email/Password` sign-in provider in Firebase Authentication for login UI on `/platform` and `/learn`.
+Enable `Email/Password` sign-in provider in Firebase Authentication for login UI on `/console` and `/learn`.
 
 ## Worker local dev
 
@@ -129,8 +129,9 @@ npm run cf:secret:put -- ADMIN_API_TOKEN
 
 ## Platform routes
 
-- Public landing + webinar + tutor: `/`
-- Internal role console (Coordinator / Teacher / Learner / CTO): `/platform`
+- Public learner site (blogs + courses + enroll): `/`
+- B2B platform page (partners + investors): `/platform`
+- Internal role console (Coordinator / Teacher / CTO): `/console`
 - Learner Hub (enrolled learner + staff access): `/learn`
 
 ### AI Gateway wiring

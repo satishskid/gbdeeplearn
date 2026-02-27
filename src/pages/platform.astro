@@ -1,27 +1,102 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import PlatformWorkspace from '../components/PlatformWorkspace.jsx';
 ---
 
-<BaseLayout title="DeepLearn Platform Console">
+<BaseLayout
+  title="GreyBrain Platform | AI Learning Infrastructure for Healthcare Education"
+  description="GreyBrain Platform helps institutes and training partners launch AI-enabled healthcare learning programs with edge analytics, offline-first UX, and role-based operations."
+  canonical="https://gbdeeplearn.pages.dev/platform"
+>
   <section class="mb-6 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
     <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
-      Operations Layer
+      B2B Platform
     </p>
-    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">Course Operations For Coordinator, Teacher, Learner, and CTO</h1>
+    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">AI Learning Infrastructure For Partners, Institutes, and Investors</h1>
     <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">
-      This internal surface controls course lifecycle from draft to completion, including staffing, enrollment, and
-      certification status.
+      GreyBrain Platform powers cohort-based healthcare AI programs with no-cookie edge analytics, AI tutor workflows,
+      and low-ops deployment on Cloudflare.
     </p>
-    <div class="mt-4">
+    <div class="mt-4 flex flex-wrap gap-2">
+      <a
+        href="https://greybrain.ai/academy"
+        target="_blank"
+        rel="noreferrer"
+        class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+      >
+        View Current Academy
+      </a>
       <a
         href="/"
         class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
       >
-        Back To Public Landing
+        Go To Learner Site
       </a>
     </div>
   </section>
 
-  <PlatformWorkspace client:load />
+  <section class="mb-8 grid gap-4 md:grid-cols-3">
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Delivery Engine</p>
+      <h2 class="mt-2 text-xl font-extrabold text-slate-900">Live Cohorts + AI Tutor</h2>
+      <p class="mt-1 text-sm text-slate-600">
+        Launch instructor-led cohorts where learners also get syllabus-grounded AI tutoring support.
+      </p>
+    </article>
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Edge Analytics</p>
+      <h2 class="mt-2 text-xl font-extrabold text-slate-900">Request-Level Lead Intelligence</h2>
+      <p class="mt-1 text-sm text-slate-600">
+        Capture funnel events at the edge for cleaner partner reporting and better campaign decisions.
+      </p>
+    </article>
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Operating Model</p>
+      <h2 class="mt-2 text-xl font-extrabold text-slate-900">Free-Tier Friendly Stack</h2>
+      <p class="mt-1 text-sm text-slate-600">
+        Cloudflare + Firebase architecture keeps infrastructure cost efficient while maintaining premium learner UX.
+      </p>
+    </article>
+  </section>
+
+  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/80 p-5 shadow-lg md:p-6">
+    <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Platform Capability</p>
+    <h2 class="mt-1 text-2xl font-extrabold text-slate-900">What Partners Can Launch</h2>
+    <div class="mt-4 grid gap-3 md:grid-cols-2">
+      {[
+        'White-labeled course landing pages with lead capture',
+        'Role-based operations for coordinator, teacher, and learner',
+        'Offline-friendly course access and persistent study context',
+        'BYOK + server fallback AI tutoring model',
+        'Assignment completion and certificate workflow',
+        'Cloudflare-native deployment for fast global delivery'
+      ].map((item) => (
+        <p class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">{item}</p>
+      ))}
+    </div>
+  </section>
+
+  <section class="rounded-3xl border border-slate-900/10 bg-white/80 p-5 shadow-lg md:p-6">
+    <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Partner Actions</p>
+    <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Explore Collaboration</h2>
+    <p class="mt-2 max-w-3xl text-sm text-slate-600">
+      Use this platform page for partner conversations, investor walkthroughs, and enterprise pilots while the main
+      site focuses on course enrollment and learner conversion.
+    </p>
+    <div class="mt-4 flex flex-wrap gap-2">
+      <a
+        href="/console"
+        class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+      >
+        Team Console
+      </a>
+      <a
+        href="https://greybrain.ai/clinical-ai"
+        target="_blank"
+        rel="noreferrer"
+        class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+      >
+        Clinical AI Content
+      </a>
+    </div>
+  </section>
 </BaseLayout>

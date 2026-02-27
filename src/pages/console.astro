@@ -1,0 +1,31 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import PlatformWorkspace from '../components/PlatformWorkspace.jsx';
+---
+
+<BaseLayout
+  title="GreyBrain Team Console"
+  description="Internal operations console for course coordinators, trainers, and platform administrators."
+  canonical="https://gbdeeplearn.pages.dev/console"
+  noindex={true}
+>
+  <section class="mb-6 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
+    <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
+      Internal Operations
+    </p>
+    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">Course Console For Coordinator, Teacher, and CTO</h1>
+    <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">
+      Manage course creation, staffing, learner enrollment, completion flow, and operational analytics.
+    </p>
+    <div class="mt-4">
+      <a
+        href="/"
+        class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
+      >
+        Back To Public Site
+      </a>
+    </div>
+  </section>
+
+  <PlatformWorkspace client:load />
+</BaseLayout>
