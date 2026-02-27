@@ -2,79 +2,45 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import ChatInterface from '../components/ChatInterface.jsx';
 import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
+import { formatDisplayDate, getClinicalFeedPosts, getCourseCatalog } from '../lib/academyData';
+import { TRACKS } from '../lib/tracks';
 
+const SITE_ORIGIN = 'https://gbdeeplearn.pages.dev';
 const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '1x00000000000000000000AA';
+const blogPosts = await getClinicalFeedPosts(4);
+const allCourses = await getCourseCatalog();
+const featuredCourses = allCourses.slice(0, 6);
 
-const blogHighlights = [
-  {
-    category: 'Clinical AI Trends',
-    title: 'New use-cases from hospitals and clinics are dropping every week',
-    summary:
-      'Follow the Clinical AI stream to stay ahead of what healthcare teams are actually shipping with AI, not just theory.',
-    href: 'https://greybrain.ai/clinical-ai'
-  },
-  {
-    category: 'Prompt + Workflow',
-    title: 'Weekly playbooks for no-code AI workflows in healthcare',
-    summary:
-      'See practical frameworks you can copy into your own clinical education, documentation, and patient communication workflows.',
-    href: 'https://greybrain.ai/clinical-ai'
-  },
-  {
-    category: 'FOMO Alert',
-    title: 'If you skip this cycle, you miss what peers are already adopting',
-    summary:
-      'Use the latest blog updates to shortlist what to learn now, then join the next GreyBrain cohort before seats fill.',
-    href: 'https://greybrain.ai/clinical-ai'
-  }
-];
-
-const ongoingCourses = [
-  {
-    title: 'Basics of LLMs for Clinical Practice',
-    format: 'Live cohort + implementation labs',
-    urgency: 'Admissions open now',
-    href: 'https://greybrain.ai/academy'
-  },
-  {
-    title: 'ChatGPT Mastery for Healthcare Professionals',
-    format: 'Hands-on no-code workflows',
-    urgency: 'Next batch filling fast',
-    href: 'https://greybrain.ai/academy'
-  },
-  {
-    title: 'NotebookLM for Medical Professionals',
-    format: 'Research-to-practice accelerator',
-    urgency: 'Priority waitlist active',
-    href: 'https://greybrain.ai/academy'
-  }
-];
+const urgencyLabels = ['Admissions Open', 'Filling Fast', 'Waitlist Closing Soon'];
 
 const structuredData = {
   '@context': 'https://schema.org',
   '@type': 'EducationalOrganization',
   name: 'GreyBrain Academy',
-  url: 'https://gbdeeplearn.pages.dev/',
+  url: `${SITE_ORIGIN}/`,
   sameAs: ['https://greybrain.ai/academy', 'https://greybrain.ai/clinical-ai'],
   description:
-    'No-code AI courses for healthcare professionals with cohort-based training, guided tutoring, and implementation-focused outcomes.',
+    'No-code AI learning for doctors and healthcare professionals through cohort training and practical implementation.',
   hasOfferCatalog: {
     '@type': 'OfferCatalog',
-    name: 'Healthcare AI Courses',
-    itemListElement: ongoingCourses.map((course) => ({
+    name: 'GreyBrain Healthcare AI Courses',
+    itemListElement: allCourses.map((course) => ({
       '@type': 'Course',
-      name: course.title,
-      url: course.href,
-      educationalCredentialAwarded: 'Course completion certificate'
+      name: course.name,
+      url: `${SITE_ORIGIN}/courses/${course.slug}`,
+      provider: {
+        '@type': 'Organization',
+        name: 'GreyBrain Academy'
+      }
     }))
   }
 };
 ---
 
 <BaseLayout
-  title="GreyBrain Academy | No-Code AI Courses for Healthcare Professionals"
-  description="Join cohort-based no-code AI programs for healthcare professionals. Learn practical AI workflows, get guided tutoring, and enroll in the next GreyBrain Academy batch."
-  canonical="https://gbdeeplearn.pages.dev/"
+  title="GreyBrain Academy | No-Code AI Courses for Doctors"
+  description="Learn AI for healthcare practice, research, and entrepreneurship. Explore cohort-based courses, practical tracks, and guided AI tutoring."
+  canonical={`${SITE_ORIGIN}/`}
 >
   <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
 
@@ -88,37 +54,39 @@ const structuredData = {
           GreyBrain Academy
         </p>
         <h1 class="mb-4 text-3xl font-extrabold leading-tight md:text-5xl">
-          No-Code AI Courses For Healthcare Professionals
+          Become An AI-Enabled Doctor, Operator, or Founder
         </h1>
         <p class="max-w-2xl text-base text-slate-200 md:text-lg">
-          Learn practical AI that you can deploy in real healthcare workflows. Join live cohorts, get personalized AI
-          tutoring, and complete implementation-ready assignments.
+          Cohort-based no-code AI learning for healthcare professionals. Learn with practical implementation workflows,
+          mentor guidance, and personalized AI tutoring.
         </p>
       </div>
 
       <div class="grid gap-3 text-sm">
         <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Current Intake</p>
+          <p class="text-slate-300">Next Intake</p>
           <p class="mt-1 text-lg font-semibold text-white">Enrollment Window Open</p>
         </div>
         <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Learning Mode</p>
-          <p class="mt-1 text-lg font-semibold text-white">Cohort + Guided AI Tutor</p>
+          <p class="text-slate-300">Learning Format</p>
+          <p class="mt-1 text-lg font-semibold text-white">Cohort + AI Tutor + Projects</p>
         </div>
         <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Audience</p>
-          <p class="mt-1 text-lg font-semibold text-white">Doctors, Nurses, Admin Teams</p>
+          <p class="text-slate-300">Core Audience</p>
+          <p class="mt-1 text-lg font-semibold text-white">Doctors and Healthcare Teams</p>
         </div>
       </div>
     </div>
   </section>
 
   <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="flex flex-wrap items-center justify-between gap-3">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Clinical AI Feed</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Stay Ahead With Weekly Blog Drops</h2>
-        <p class="mt-1 text-sm text-slate-600">Read what healthcare peers are applying right now, then enroll before the next cohort closes.</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Clinical AI Briefs</p>
+        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Fresh Weekly Signals You Can Act On</h2>
+        <p class="mt-1 text-sm text-slate-600">
+          Keep your edge with high-frequency GreyBrain clinical AI updates. Learn first, then enroll before the next cohort closes.
+        </p>
       </div>
       <a
         href="https://greybrain.ai/clinical-ai"
@@ -126,23 +94,48 @@ const structuredData = {
         rel="noreferrer"
         class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
       >
-        Read Clinical AI Blogs
+        Read Clinical AI Feed
       </a>
     </div>
 
-    <div class="mt-4 grid gap-3 md:grid-cols-3">
-      {blogHighlights.map((post) => (
+    <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+      {blogPosts.map((post) => (
         <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-rose-700">{post.category}</p>
-          <h3 class="mt-2 text-lg font-bold text-slate-900">{post.title}</h3>
-          <p class="mt-2 text-sm text-slate-600">{post.summary}</p>
-          <a
-            href={post.href}
-            target="_blank"
-            rel="noreferrer"
-            class="mt-3 inline-flex text-sm font-semibold text-sky-700 hover:text-sky-800"
-          >
+          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-rose-700">
+            {post.categories?.[0] || 'Clinical AI'}
+          </p>
+          <h3 class="mt-2 text-base font-bold text-slate-900 line-clamp-3">{post.title}</h3>
+          <p class="mt-2 text-xs text-slate-500">{formatDisplayDate(post.date) || 'Latest'}</p>
+          <p class="mt-2 text-sm text-slate-600 line-clamp-4">{post.summary}</p>
+          <a href={post.link} target="_blank" rel="noreferrer" class="mt-3 inline-flex text-sm font-semibold text-sky-700 hover:text-sky-800">
             Read now ->
+          </a>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
+    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Choose Your Track</p>
+        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Goal-Based Learning Paths</h2>
+        <p class="mt-1 text-sm text-slate-600">Pick a role outcome and follow a curated sequence of courses with practical execution focus.</p>
+      </div>
+      <a href="/tracks" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        Compare Tracks
+      </a>
+    </div>
+
+    <div class="grid gap-3 md:grid-cols-3">
+      {TRACKS.map((track) => (
+        <article class="rounded-2xl border border-slate-200 bg-white p-4">
+          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-emerald-700">{track.duration}</p>
+          <h3 class="mt-2 text-xl font-bold text-slate-900">{track.title}</h3>
+          <p class="mt-2 text-sm text-slate-600">{track.tagline}</p>
+          <p class="mt-2 text-xs text-slate-500">Ideal for: {track.idealFor}</p>
+          <a href={`/tracks/${track.slug}`} class="mt-4 inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+            View Track
           </a>
         </article>
       ))}
@@ -152,34 +145,37 @@ const structuredData = {
   <section id="courses" class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
     <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Ongoing Programs</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Join The Next Healthcare AI Cohort</h2>
-        <p class="mt-1 text-sm text-slate-600">Choose your track and reserve your seat from the current academy lineup.</p>
+        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Ongoing Courses</p>
+        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Enroll In The Current Cohort Catalog</h2>
+        <p class="mt-1 text-sm text-slate-600">Course pages now follow a consistent conversion template with outcomes, syllabus signals, and enrollment actions.</p>
       </div>
-      <a
-        href="https://greybrain.ai/academy"
-        target="_blank"
-        rel="noreferrer"
-        class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
-      >
-        Explore All Courses
+      <a href="/courses" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        Browse All Courses
       </a>
     </div>
 
-    <div class="grid gap-3 md:grid-cols-3">
-      {ongoingCourses.map((course) => (
+    <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+      {featuredCourses.map((course, index) => (
         <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-emerald-700">{course.urgency}</p>
-          <h3 class="mt-2 text-xl font-bold text-slate-900">{course.title}</h3>
-          <p class="mt-2 text-sm text-slate-600">{course.format}</p>
-          <a
-            href={course.href}
-            target="_blank"
-            rel="noreferrer"
-            class="mt-4 inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-          >
-            Enroll Interest
-          </a>
+          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-amber-700">{urgencyLabels[index % urgencyLabels.length]}</p>
+          <h3 class="mt-2 text-lg font-bold text-slate-900 line-clamp-2">{course.name}</h3>
+          <p class="mt-2 text-sm text-slate-600 line-clamp-3">{course.shortDescription}</p>
+          <p class="mt-2 text-xs text-slate-500">
+            {course.lessonCount > 0 ? `${course.lessonCount} lessons` : 'Structured curriculum'}{course.rating > 0 ? ` • ${course.rating}/10 rating` : ''}
+          </p>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <a href={`/courses/${course.slug}`} class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+              View Details
+            </a>
+            <a
+              href={course.academyUrl}
+              target="_blank"
+              rel="noreferrer"
+              class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+            >
+              Enroll Now
+            </a>
+          </div>
         </article>
       ))}
     </div>
@@ -189,17 +185,17 @@ const structuredData = {
     <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
       <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">AI-Native Delivery</p>
       <h3 class="mt-2 text-xl font-bold text-slate-900">Personalized Tutor Support</h3>
-      <p class="mt-1 text-sm text-slate-600">Every learner gets guided AI help mapped to course syllabus and assignments.</p>
+      <p class="mt-1 text-sm text-slate-600">Every learner gets guided AI support aligned to syllabus context and assignments.</p>
     </article>
     <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Healthcare Focus</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">Built For Clinical Teams</h3>
-      <p class="mt-1 text-sm text-slate-600">Course examples and workflows are aligned to healthcare operations and compliance realities.</p>
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Healthcare Context</p>
+      <h3 class="mt-2 text-xl font-bold text-slate-900">Built For Clinical Reality</h3>
+      <p class="mt-1 text-sm text-slate-600">Workflows are tuned to healthcare communication, research, compliance, and operations.</p>
     </article>
     <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
       <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Career Outcomes</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">Implementation-Ready Skills</h3>
-      <p class="mt-1 text-sm text-slate-600">Move from AI curiosity to deployable no-code systems with mentor feedback and certification.</p>
+      <h3 class="mt-2 text-xl font-bold text-slate-900">From AI-Curious to AI-Confident</h3>
+      <p class="mt-1 text-sm text-slate-600">Build implementation-ready AI capability, not just theory, with guided project execution.</p>
     </article>
   </section>
 
@@ -207,9 +203,9 @@ const structuredData = {
   <ChatInterface client:load />
 
   <section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-600">
-    For platform partnerships, investors, or enterprise licensing:
-    <a href="/platform" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">visit the Platform page</a>.
-    Team operations console:
-    <a href="/console" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">open console</a>.
+    Explore tracks on <a href="/tracks" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/tracks</a>, full catalog on
+    <a href="/courses" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/courses</a>, partner story on
+    <a href="/platform" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/platform</a>, and internal operations on
+    <a href="/console" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/console</a>.
   </section>
 </BaseLayout>

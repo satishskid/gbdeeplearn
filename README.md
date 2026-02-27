@@ -130,6 +130,9 @@ npm run cf:secret:put -- ADMIN_API_TOKEN
 ## Platform routes
 
 - Public learner site (blogs + courses + enroll): `/`
+- Course catalog: `/courses`
+- Course detail template: `/courses/:slug`
+- Goal-based tracks + compare: `/tracks` and `/tracks/:slug`
 - B2B platform page (partners + investors): `/platform`
 - Internal role console (Coordinator / Teacher / CTO): `/console`
 - Learner Hub (enrolled learner + staff access): `/learn`

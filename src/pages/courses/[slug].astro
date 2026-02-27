@@ -1,0 +1,131 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getCourseDetails, getCourseSummaries } from '../../lib/academyData';
+
+export async function getStaticPaths() {
+  const courses = await getCourseSummaries();
+  return courses.map((course) => ({
+    params: { slug: course.slug },
+    props: { courseSlug: course.slug }
+  }));
+}
+
+const { courseSlug } = Astro.props;
+const course = await getCourseDetails(courseSlug);
+
+const pageTitle = `${course.name} | GreyBrain Course`;
+const pageDescription = course.shortDescription || 'GreyBrain healthcare AI course';
+
+const courseSchema = {
+  '@context': 'https://schema.org',
+  '@type': 'Course',
+  name: course.name,
+  description: course.shortDescription,
+  provider: {
+    '@type': 'Organization',
+    name: 'GreyBrain Academy'
+  },
+  url: `https://gbdeeplearn.pages.dev/courses/${course.slug}`
+};
+---
+
+<BaseLayout title={pageTitle} description={pageDescription} canonical={`https://gbdeeplearn.pages.dev/courses/${course.slug}`}>
+  <script type="application/ld+json" set:html={JSON.stringify(courseSchema)} />
+
+  <section class="mb-8 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
+    <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
+      Standardized Course Page
+    </p>
+    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">{course.name}</h1>
+    <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">{course.shortDescription}</p>
+    <div class="mt-4 flex flex-wrap gap-2 text-xs">
+      <span class="rounded-full bg-white/10 px-3 py-1">Slug: {course.slug}</span>
+      <span class="rounded-full bg-white/10 px-3 py-1">{course.lessonCount > 0 ? `${course.lessonCount} lessons` : 'Curriculum available'}</span>
+      {course.rating > 0 ? <span class="rounded-full bg-white/10 px-3 py-1">{course.rating}/10 rating</span> : null}
+    </div>
+    <div class="mt-5 flex flex-wrap gap-2">
+      <a
+        href={course.academyUrl}
+        target="_blank"
+        rel="noreferrer"
+        class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+      >
+        Enroll On Academy
+      </a>
+      <a
+        href="/courses"
+        class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
+      >
+        Back To Catalog
+      </a>
+    </div>
+  </section>
+
+  <section class="mb-8 grid gap-4 md:grid-cols-3">
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+      <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">Outcomes</p>
+      <h2 class="mt-2 text-xl font-bold text-slate-900">What You Will Achieve</h2>
+      <ul class="mt-3 space-y-2 text-sm text-slate-700">
+        {(course.goals.length > 0
+          ? course.goals
+          : [
+              'Understand practical AI use-cases relevant to healthcare workflows.',
+              'Implement no-code or low-code AI approaches in day-to-day operations.',
+              'Build confidence to deploy AI with clinical and ethical guardrails.'
+            ]
+        ).slice(0, 4).map((goal) => <li class="rounded-xl bg-slate-50 px-3 py-2">{goal}</li>)}
+      </ul>
+    </article>
+
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+      <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">Syllabus Signals</p>
+      <h2 class="mt-2 text-xl font-bold text-slate-900">Sample Lessons</h2>
+      <ul class="mt-3 space-y-2 text-sm text-slate-700">
+        {(course.lessons.length > 0
+          ? course.lessons
+          : ['Module 1: Foundations', 'Module 2: Applied workflow', 'Module 3: Implementation sprint']
+        ).slice(0, 6).map((lesson, index) => <li class="rounded-xl bg-slate-50 px-3 py-2">{index + 1}. {lesson}</li>)}
+      </ul>
+    </article>
+
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
+      <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">Instructors</p>
+      <h2 class="mt-2 text-xl font-bold text-slate-900">Learning Support</h2>
+      <ul class="mt-3 space-y-2 text-sm text-slate-700">
+        {(course.instructors.length > 0
+          ? course.instructors
+          : ['GreyBrain Faculty Team']
+        ).slice(0, 6).map((instructor) => <li class="rounded-xl bg-slate-50 px-3 py-2">{instructor}</li>)}
+      </ul>
+      <a
+        href={course.academyUrl}
+        target="_blank"
+        rel="noreferrer"
+        class="mt-4 inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+      >
+        View Full Curriculum
+      </a>
+    </article>
+  </section>
+
+  <section class="rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
+    <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">About This Course</p>
+    <p class="mt-3 text-sm leading-relaxed text-slate-700">
+      {course.longDescription}
+    </p>
+
+    {course.faqs.length > 0 ? (
+      <div class="mt-5">
+        <h3 class="text-lg font-bold text-slate-900">FAQs</h3>
+        <div class="mt-3 space-y-2">
+          {course.faqs.slice(0, 6).map((faq) => (
+            <article class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+              <p class="text-sm font-semibold text-slate-900">{faq.question}</p>
+              {faq.answer ? <p class="mt-1 text-sm text-slate-700">{faq.answer}</p> : null}
+            </article>
+          ))}
+        </div>
+      </div>
+    ) : null}
+  </section>
+</BaseLayout>
