@@ -21,6 +21,7 @@ PUBLIC_FIREBASE_STORAGE_BUCKET=
 PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
 PUBLIC_FIREBASE_APP_ID=
 PUBLIC_FIREBASE_MEASUREMENT_ID=
+PUBLIC_TURNSTILE_SITE_KEY=
 ```
 
 ## Worker local dev
@@ -32,7 +33,7 @@ npm run worker:dev
 Bindings expected by `src/worker.js`:
 - `AI` (Workers AI binding for embeddings)
 - `DEEPLEARN_INDEX` (Vectorize index binding)
-- `LEAD_ANALYTICS` (Analytics Engine dataset binding)
+- `DEEPLEARN_DB` (D1 analytics + funnel storage)
 - `DEEPLEARN_LEADS` (R2 lead payload storage)
 
 ## Cloudflare CLI Setup (Wrangler)
@@ -62,6 +63,7 @@ This creates/checks:
 - Vectorize index `deeplearn-index`
 - R2 buckets `gbdeeplearn-assets`, `gbdeeplearn-assets-preview`, `gbdeeplearn-certificates`, `gbdeeplearn-certificates-preview`, `gbdeeplearn-leads`, `gbdeeplearn-leads-preview`
 - Pages project `gbdeeplearn`
+- D1 database `deeplearn-ops` should be created once (already provisioned in this workspace)
 
 ```bash
 npm run cf:bootstrap
@@ -106,7 +108,8 @@ npm run cf:secret:put -- GROQ_API_KEY
 ### AI Gateway wiring
 
 - `src/worker.js` uses request `groq_key` first (BYOK), then falls back to Worker secret `GROQ_API_KEY`.
-- To route through Cloudflare AI Gateway, set `AI_GATEWAY_BASE_URL` in [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml).
+- `AI_GATEWAY_BASE_URL` is configured to Cloudflare `compat` gateway in [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml).
+- `AI_GATEWAY_NAME` is just the unique gateway identifier in your Cloudflare account (set to `deeplearn-gateway`).
 
 Examples:
 - Groq direct (default): `https://api.groq.com/openai/v1`
@@ -118,9 +121,10 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 ## Webinar Tracking Decisions
 
 - Tutor auth behavior: `BYOK + server fallback` (current).
-- Analytics storage: `Cloudflare Analytics Engine` for edge click/lead counts.
+- Analytics storage: `Cloudflare D1` for edge click/lead counts and funnel queries.
 - Lead payload storage: `Cloudflare R2` bucket (`gbdeeplearn-leads`) for submitted registration details.
 - Lead submission endpoint: `POST /api/lead/submit` (Cloudflare Worker, no external CRM required).
+- Turnstile: Enabled on lead form, server-verified in Worker.
 
 ### Webinar events captured (`POST /api/track`)
 
@@ -131,3 +135,22 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 - `webinar_registration_submitted`
 - `payment_page_opened`
 - `payment_completed`
+
+Funnel summary endpoint:
+- `GET /api/analytics/funnel?webinar_id=deep-rag-live-webinar&days=30`
+
+### Turnstile setup
+
+Development defaults use Cloudflare's public test site key when `PUBLIC_TURNSTILE_SITE_KEY` is not set.
+
+Set Worker secret for server verification:
+
+```bash
+npm run cf:secret:put -- TURNSTILE_SECRET_KEY
+```
+
+Set production site key for frontend build:
+
+```bash
+PUBLIC_TURNSTILE_SITE_KEY=your_site_key_here
+```

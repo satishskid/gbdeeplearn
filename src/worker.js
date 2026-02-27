@@ -115,6 +115,8 @@ app.post('/api/lead/submit', async (c) => {
     const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
     const source = clean(payload?.source, 64) || 'landing';
     const sessionId = clean(payload?.session_id, 64) || crypto.randomUUID();
+    const turnstileToken = clean(payload?.turnstile_token, 4096);
+    const turnstileRequired = (c.env.TURNSTILE_REQUIRED || 'true').toLowerCase() !== 'false';
 
     if (!fullName || !email || !phone) {
       return c.json({ error: 'full_name, email, and phone are required.' }, 400);
@@ -122,6 +124,22 @@ app.post('/api/lead/submit', async (c) => {
 
     if (!isValidEmail(email)) {
       return c.json({ error: 'Invalid email format.' }, 400);
+    }
+
+    if (turnstileRequired) {
+      if (!turnstileToken) {
+        return c.json({ error: 'Turnstile token is required.' }, 400);
+      }
+
+      const verification = await verifyTurnstile({
+        secret: c.env.TURNSTILE_SECRET_KEY,
+        token: turnstileToken,
+        remoteIp: c.req.header('CF-Connecting-IP') || ''
+      });
+
+      if (!verification.success) {
+        return c.json({ error: 'Turnstile verification failed.', details: verification.errorCodes }, 403);
+      }
     }
 
     if (!c.env.DEEPLEARN_LEADS) {
@@ -167,6 +185,63 @@ app.post('/api/lead/submit', async (c) => {
     return c.json(
       {
         error: 'Failed to submit lead.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/analytics/funnel', async (c) => {
+  try {
+    if (!c.env.DEEPLEARN_DB) {
+      return c.json({ error: 'Analytics database not configured.' }, 500);
+    }
+
+    const webinarId = clean(c.req.query('webinar_id'), 64) || 'deep-rag-live-webinar';
+    const days = Math.max(1, Math.min(90, Number(c.req.query('days') || 30)));
+    const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT event_name, COUNT(*) AS event_count
+       FROM lead_events
+       WHERE webinar_id = ? AND is_likely_bot = 0 AND created_at_ms >= ?
+       GROUP BY event_name`
+    )
+      .bind(webinarId, sinceMs)
+      .all();
+
+    const map = Object.create(null);
+    for (const row of result.results || []) {
+      map[row.event_name] = Number(row.event_count) || 0;
+    }
+
+    const landing = map.webinar_landing_view || 0;
+    const cta = map.webinar_cta_click || 0;
+    const registrations = map.webinar_registration_submitted || 0;
+    const paid = map.payment_completed || 0;
+
+    return c.json({
+      webinar_id: webinarId,
+      days,
+      counts: {
+        webinar_landing_view: landing,
+        webinar_cta_click: cta,
+        webinar_registration_started: map.webinar_registration_started || 0,
+        webinar_registration_submitted: registrations,
+        payment_page_opened: map.payment_page_opened || 0,
+        payment_completed: paid
+      },
+      conversion: {
+        ctr_pct: landing > 0 ? Number(((cta / landing) * 100).toFixed(2)) : 0,
+        lead_rate_pct: landing > 0 ? Number(((registrations / landing) * 100).toFixed(2)) : 0,
+        paid_rate_pct: registrations > 0 ? Number(((paid / registrations) * 100).toFixed(2)) : 0
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load funnel analytics.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -236,20 +311,78 @@ async function embedQuery(env, text) {
 }
 
 async function writeGrowthEvent(env, cf, event) {
-  if (!env.LEAD_ANALYTICS?.writeDataPoint) {
-    return;
-  }
-
   const country = clean(cf?.country, 8) || 'XX';
   const botScore = Number.isFinite(Number(cf?.botManagement?.score)) ? Number(cf.botManagement.score) : -1;
   const asn = Number.isFinite(Number(cf?.asn)) ? Number(cf.asn) : 0;
-  const isLikelyBot = botScore >= 0 && botScore < 30 ? '1' : '0';
+  const isLikelyBot = botScore >= 0 && botScore < 30 ? 1 : 0;
+  const nowMs = Date.now();
 
-  env.LEAD_ANALYTICS.writeDataPoint({
-    indexes: [event.eventName, event.webinarId, event.source, country, isLikelyBot],
-    blobs: [event.leadId || '', event.sessionId || '', event.path || '', event.emailHash || ''],
-    doubles: [Date.now(), event.value ?? 1, botScore, asn]
+  if (env.DEEPLEARN_DB) {
+    await env.DEEPLEARN_DB.prepare(
+      `INSERT INTO lead_events (
+        event_name, webinar_id, source, country, is_likely_bot, lead_id, session_id,
+        path, email_hash, value, bot_score, asn, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        event.eventName,
+        event.webinarId,
+        event.source || 'landing',
+        country,
+        isLikelyBot,
+        event.leadId || '',
+        event.sessionId || '',
+        event.path || '',
+        event.emailHash || '',
+        event.value ?? 1,
+        botScore,
+        asn,
+        nowMs
+      )
+      .run();
+  }
+
+  if (env.LEAD_ANALYTICS?.writeDataPoint) {
+    env.LEAD_ANALYTICS.writeDataPoint({
+      indexes: [event.eventName, event.webinarId, event.source, country, String(isLikelyBot)],
+      blobs: [event.leadId || '', event.sessionId || '', event.path || '', event.emailHash || ''],
+      doubles: [nowMs, event.value ?? 1, botScore, asn]
+    });
+  }
+}
+
+async function verifyTurnstile({ secret, token, remoteIp }) {
+  if (!secret) {
+    return { success: false, errorCodes: ['missing-secret-config'] };
+  }
+
+  const body = new URLSearchParams({
+    secret,
+    response: token
   });
+
+  if (remoteIp) {
+    body.set('remoteip', remoteIp);
+  }
+
+  const response = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    },
+    body: body.toString()
+  });
+
+  if (!response.ok) {
+    return { success: false, errorCodes: ['turnstile-request-failed'] };
+  }
+
+  const result = await response.json();
+
+  return {
+    success: Boolean(result?.success),
+    errorCodes: result?.['error-codes'] || []
+  };
 }
 
 function clean(value, maxLen) {

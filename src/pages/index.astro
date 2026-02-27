@@ -2,6 +2,8 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import ChatInterface from '../components/ChatInterface.jsx';
 import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
+
+const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '1x00000000000000000000AA';
 ---
 
 <BaseLayout title="DeepLearn AI Platform">
@@ -14,6 +16,6 @@ import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
     </p>
   </section>
 
-  <WebinarLeadForm client:load />
+  <WebinarLeadForm client:load siteKey={turnstileSiteKey} />
   <ChatInterface client:load />
 </BaseLayout>

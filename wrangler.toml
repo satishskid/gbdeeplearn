@@ -8,11 +8,12 @@ workers_dev = true
 APP_NAME = "DeepLearn"
 PAGES_PROJECT = "gbdeeplearn"
 CERTIFICATE_BUCKET = "gbdeeplearn-certificates"
-LEAD_EVENTS_DATASET = "deeplearn_growth"
 LEADS_BUCKET = "gbdeeplearn-leads"
 GROQ_API_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "llama-3.3-70b-versatile"
-AI_GATEWAY_BASE_URL = ""
+AI_GATEWAY_NAME = "deeplearn-gateway"
+AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/9f4998a66a5d7bd7a230d0222544fbe6/deeplearn-gateway/compat"
+TURNSTILE_REQUIRED = "true"
 
 [ai]
 binding = "AI"
@@ -36,9 +37,10 @@ binding = "DEEPLEARN_LEADS"
 bucket_name = "gbdeeplearn-leads"
 preview_bucket_name = "gbdeeplearn-leads-preview"
 
-[[analytics_engine_datasets]]
-binding = "LEAD_ANALYTICS"
-dataset = "deeplearn_growth"
+[[d1_databases]]
+binding = "DEEPLEARN_DB"
+database_name = "deeplearn-ops"
+database_id = "b15b876d-4a7b-4633-b89f-b20eaf535f46"
 
 [observability]
 enabled = true

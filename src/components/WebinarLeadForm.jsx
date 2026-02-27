@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 const TRACK_ENDPOINT = '/api/track';
 const LEAD_ENDPOINT = '/api/lead/submit';
 const DEFAULT_WEBINAR_ID = 'deep-rag-live-webinar';
+const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
 
 const WEBINAR_EVENTS = {
   view: 'webinar_landing_view',
@@ -30,14 +31,46 @@ function getSessionId() {
   return created;
 }
 
-export default function WebinarLeadForm() {
+function ensureTurnstileScript() {
+  if (typeof window === 'undefined') {
+    return Promise.resolve();
+  }
+
+  if (window.turnstile) {
+    return Promise.resolve();
+  }
+
+  const existing = document.querySelector('script[data-turnstile="true"]');
+  if (existing) {
+    return new Promise((resolve) => {
+      existing.addEventListener('load', () => resolve(), { once: true });
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+    script.async = true;
+    script.defer = true;
+    script.dataset.turnstile = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Turnstile script failed to load.'));
+    document.head.appendChild(script);
+  });
+}
+
+export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [leadId, setLeadId] = useState('');
   const [status, setStatus] = useState('idle');
   const [message, setMessage] = useState('');
+  const [turnstileToken, setTurnstileToken] = useState('');
   const sessionId = useMemo(() => getSessionId(), []);
+
+  const turnstileContainerRef = useRef(null);
+  const widgetIdRef = useRef('');
 
   const postEvent = async (eventName, extra = {}) => {
     try {
@@ -59,10 +92,55 @@ export default function WebinarLeadForm() {
     }
   };
 
+  const resetTurnstile = () => {
+    if (typeof window === 'undefined' || !window.turnstile || !widgetIdRef.current) {
+      return;
+    }
+
+    window.turnstile.reset(widgetIdRef.current);
+    setTurnstileToken('');
+  };
+
   useEffect(() => {
     void postEvent(WEBINAR_EVENTS.view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    const mountTurnstile = async () => {
+      try {
+        await ensureTurnstileScript();
+      } catch {
+        if (active) {
+          setMessage('Bot protection failed to load. Refresh and try again.');
+        }
+        return;
+      }
+
+      if (!active || !window.turnstile || !turnstileContainerRef.current || widgetIdRef.current) {
+        return;
+      }
+
+      widgetIdRef.current = window.turnstile.render(turnstileContainerRef.current, {
+        sitekey: siteKey,
+        action: 'webinar_register',
+        callback: (token) => setTurnstileToken(token),
+        'expired-callback': () => setTurnstileToken(''),
+        'error-callback': () => setTurnstileToken('')
+      });
+    };
+
+    void mountTurnstile();
+
+    return () => {
+      active = false;
+      if (window.turnstile && widgetIdRef.current) {
+        window.turnstile.remove(widgetIdRef.current);
+      }
+    };
+  }, [siteKey]);
 
   const onRegister = async (event) => {
     event.preventDefault();
@@ -70,6 +148,12 @@ export default function WebinarLeadForm() {
     setMessage('');
 
     await postEvent(WEBINAR_EVENTS.registerStart);
+
+    if (!turnstileToken) {
+      setStatus('error');
+      setMessage('Please complete the anti-bot check before registering.');
+      return;
+    }
 
     try {
       const response = await fetch(LEAD_ENDPOINT, {
@@ -81,7 +165,8 @@ export default function WebinarLeadForm() {
           phone,
           webinar_id: DEFAULT_WEBINAR_ID,
           source: 'landing',
-          session_id: sessionId
+          session_id: sessionId,
+          turnstile_token: turnstileToken
         })
       });
 
@@ -96,9 +181,11 @@ export default function WebinarLeadForm() {
       setLeadId(data.lead_id || '');
       await postEvent(WEBINAR_EVENTS.registerSubmit, { lead_id: data.lead_id });
       await postEvent(WEBINAR_EVENTS.paymentOpen, { lead_id: data.lead_id });
+      resetTurnstile();
     } catch (error) {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'Registration failed.');
+      resetTurnstile();
     }
   };
 
@@ -149,6 +236,10 @@ export default function WebinarLeadForm() {
           onChange={(e) => setPhone(e.target.value)}
           required
         />
+
+        <div className="md:col-span-3">
+          <div ref={turnstileContainerRef} />
+        </div>
 
         <div className="md:col-span-3 flex flex-wrap gap-2">
           <button
