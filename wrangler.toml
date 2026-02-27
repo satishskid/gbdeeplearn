@@ -8,6 +8,9 @@ workers_dev = true
 APP_NAME = "DeepLearn"
 PAGES_PROJECT = "gbdeeplearn"
 CERTIFICATE_BUCKET = "gbdeeplearn-certificates"
+GROQ_API_BASE_URL = "https://api.groq.com/openai/v1"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+AI_GATEWAY_BASE_URL = ""
 
 [ai]
 binding = "AI"

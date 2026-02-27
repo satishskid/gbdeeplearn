@@ -9,20 +9,24 @@ app.post('/api/chat/tutor', async (c) => {
   try {
     const { message, groq_key: groqKey, current_context_id: moduleId } = await c.req.json();
 
-    if (!message || !groqKey) {
-      return c.json({ error: 'message and groq_key are required.' }, 400);
+    const apiKey = (groqKey || c.env.GROQ_API_KEY || '').trim();
+
+    if (!message || !apiKey) {
+      return c.json({ error: 'message and groq_key (or server GROQ_API_KEY) are required.' }, 400);
     }
 
     const context = await queryCourseContext(c.env, message, moduleId);
+    const baseUrl = resolveGroqBaseUrl(c.env);
+    const model = resolveGroqModel(c.env, baseUrl);
 
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${groqKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
+        model,
         temperature: 0.2,
         messages: [
           {
@@ -53,6 +57,29 @@ app.post('/api/chat/tutor', async (c) => {
     );
   }
 });
+
+function resolveGroqBaseUrl(env) {
+  const gatewayBaseUrl = (env.AI_GATEWAY_BASE_URL || '').trim();
+  if (gatewayBaseUrl) {
+    return gatewayBaseUrl.replace(/\/+$/, '');
+  }
+
+  const groqBaseUrl = (env.GROQ_API_BASE_URL || '').trim();
+  if (groqBaseUrl) {
+    return groqBaseUrl.replace(/\/+$/, '');
+  }
+
+  return 'https://api.groq.com/openai/v1';
+}
+
+function resolveGroqModel(env, baseUrl) {
+  const configuredModel = (env.GROQ_MODEL || '').trim() || 'llama-3.3-70b-versatile';
+  if (baseUrl.includes('/compat') && !configuredModel.includes('/')) {
+    return `groq/${configuredModel}`;
+  }
+
+  return configuredModel;
+}
 
 async function queryCourseContext(env, message, moduleId) {
   const embedding = await embedQuery(env, message);

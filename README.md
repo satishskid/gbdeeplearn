@@ -100,3 +100,15 @@ npm run cf:pages:list
 npm run cf:secret:list
 npm run cf:secret:put -- GROQ_API_KEY
 ```
+
+### AI Gateway wiring
+
+- `src/worker.js` uses request `groq_key` first (BYOK), then falls back to Worker secret `GROQ_API_KEY`.
+- To route through Cloudflare AI Gateway, set `AI_GATEWAY_BASE_URL` in [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml).
+
+Examples:
+- Groq direct (default): `https://api.groq.com/openai/v1`
+- AI Gateway provider route: `https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_name>/groq`
+- AI Gateway OpenAI-compatible route: `https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_name>/compat`
+
+If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `groq/llama-3.3-70b-versatile`).
