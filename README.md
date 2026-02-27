@@ -22,7 +22,17 @@ PUBLIC_FIREBASE_MESSAGING_SENDER_ID=
 PUBLIC_FIREBASE_APP_ID=
 PUBLIC_FIREBASE_MEASUREMENT_ID=
 PUBLIC_TURNSTILE_SITE_KEY=
+PUBLIC_COORDINATOR_EMAILS=
+PUBLIC_TEACHER_EMAILS=
+PUBLIC_CTO_EMAILS=
 ```
+
+Role resolution order in UI guards:
+1. Firebase custom claims (`role`, `roles`)
+2. Firestore `users/{uid}` fields (`role`, `roles`)
+3. Email allowlists from `PUBLIC_*_EMAILS`
+
+Enable `Email/Password` sign-in provider in Firebase Authentication for login UI on `/platform` and `/learn`.
 
 ## Worker local dev
 
@@ -121,6 +131,7 @@ npm run cf:secret:put -- ADMIN_API_TOKEN
 
 - Public landing + webinar + tutor: `/`
 - Internal role console (Coordinator / Teacher / Learner / CTO): `/platform`
+- Learner Hub (enrolled learner + staff access): `/learn`
 
 ### AI Gateway wiring
 

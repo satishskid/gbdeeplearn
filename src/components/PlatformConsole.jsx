@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { apiUrl } from '../lib/api';
+import { preferredPlatformTab } from '../lib/userRoles';
 
 const ROLE_TABS = [
   { id: 'coordinator', label: 'Course Coordinator' },
@@ -14,8 +15,7 @@ function parseMoneyToCents(value) {
   return Math.max(0, Math.round(parsed * 100));
 }
 
-export default function PlatformConsole() {
-  const [activeRole, setActiveRole] = useState('coordinator');
+export default function PlatformConsole({ userRoles = [] }) {
   const [adminToken, setAdminToken] = useState('');
   const [overview, setOverview] = useState(null);
   const [courses, setCourses] = useState([]);
@@ -48,6 +48,29 @@ export default function PlatformConsole() {
     userId: '',
     certificateUrl: ''
   });
+
+  const roleSet = useMemo(() => new Set((userRoles || []).map((role) => String(role).trim().toLowerCase())), [userRoles]);
+  const isCtoUser = roleSet.has('cto');
+  const isCoordinatorUser = isCtoUser || roleSet.has('coordinator');
+  const isTeacherUser = roleSet.has('teacher');
+  const isLearnerUser = isCoordinatorUser || isTeacherUser || roleSet.has('learner');
+
+  const availableTabs = useMemo(() => {
+    return ROLE_TABS.filter((tab) => {
+      if (isCoordinatorUser) return true;
+      if (tab.id === 'teacher') return isTeacherUser;
+      if (tab.id === 'learner') return isLearnerUser;
+      return false;
+    });
+  }, [isCoordinatorUser, isTeacherUser, isLearnerUser]);
+
+  const defaultTab = useMemo(() => {
+    const preferred = preferredPlatformTab(Array.from(roleSet));
+    if (availableTabs.some((tab) => tab.id === preferred)) return preferred;
+    return availableTabs[0]?.id || 'learner';
+  }, [roleSet, availableTabs]);
+
+  const [activeRole, setActiveRole] = useState(defaultTab);
 
   const adminHeaders = useMemo(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -85,6 +108,12 @@ export default function PlatformConsole() {
     void loadConsoleData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!availableTabs.some((tab) => tab.id === activeRole)) {
+      setActiveRole(defaultTab);
+    }
+  }, [activeRole, availableTabs, defaultTab]);
 
   const runAction = async (handler) => {
     setError('');
@@ -180,10 +209,10 @@ export default function PlatformConsole() {
     return 'Learner marked completed.';
   };
 
-  const isCoordinator = activeRole === 'coordinator';
-  const isTeacher = activeRole === 'teacher';
-  const isLearner = activeRole === 'learner';
-  const isCto = activeRole === 'cto';
+  const isCoordinator = isCoordinatorUser && activeRole === 'coordinator';
+  const isTeacher = isTeacherUser && activeRole === 'teacher';
+  const isLearner = isLearnerUser && activeRole === 'learner';
+  const isCto = isCtoUser && activeRole === 'cto';
 
   return (
     <section className="rounded-[1.75rem] border border-slate-900/10 bg-white/80 p-5 shadow-xl backdrop-blur-sm md:p-8">
@@ -202,9 +231,9 @@ export default function PlatformConsole() {
         </button>
       </div>
 
-      <div className="mb-5 grid gap-3 md:grid-cols-[1fr_16rem]">
+      <div className={`mb-5 grid gap-3 ${isCoordinatorUser ? 'md:grid-cols-[1fr_16rem]' : 'md:grid-cols-1'}`}>
         <div className="flex flex-wrap gap-2">
-          {ROLE_TABS.map((tab) => (
+          {availableTabs.map((tab) => (
             <button
               key={tab.id}
               className={`rounded-xl px-3 py-2 text-sm font-semibold transition ${
@@ -217,13 +246,15 @@ export default function PlatformConsole() {
             </button>
           ))}
         </div>
-        <input
-          className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
-          type="password"
-          placeholder="Admin token (optional)"
-          value={adminToken}
-          onChange={(e) => setAdminToken(e.target.value)}
-        />
+        {isCoordinatorUser ? (
+          <input
+            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+            type="password"
+            placeholder="Admin token (optional)"
+            value={adminToken}
+            onChange={(e) => setAdminToken(e.target.value)}
+          />
+        ) : null}
       </div>
 
       {loading && <p className="mb-4 text-sm text-slate-500">Loading console data...</p>}
@@ -482,22 +513,26 @@ export default function PlatformConsole() {
                   {course.learner_count} / {course.completed_count} completed
                 </td>
                 <td className="px-3 py-2">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
-                      onClick={() => void runAction(() => publishCourse(course.id, 'published'))}
-                      type="button"
-                    >
-                      Publish
-                    </button>
-                    <button
-                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
-                      onClick={() => void runAction(() => publishCourse(course.id, 'live'))}
-                      type="button"
-                    >
-                      Go Live
-                    </button>
-                  </div>
+                  {isCoordinatorUser ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
+                        onClick={() => void runAction(() => publishCourse(course.id, 'published'))}
+                        type="button"
+                      >
+                        Publish
+                      </button>
+                      <button
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
+                        onClick={() => void runAction(() => publishCourse(course.id, 'live'))}
+                        type="button"
+                      >
+                        Go Live
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-xs text-slate-500">View only</span>
+                  )}
                 </td>
               </tr>
             ))}

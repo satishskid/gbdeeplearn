@@ -65,12 +65,20 @@ const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '1x0000000
         <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Teacher + Coordinator Console</h2>
         <p class="mt-1 text-sm text-slate-600">Manage courses, assign teachers, enroll learners, and track completion.</p>
       </div>
-      <a
-        href="/platform"
-        class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-      >
-        Open Platform Console
-      </a>
+      <div class="flex flex-wrap items-center gap-2">
+        <a
+          href="/learn"
+          class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+        >
+          Open Learner Hub
+        </a>
+        <a
+          href="/platform"
+          class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
+        >
+          Open Platform Console
+        </a>
+      </div>
     </div>
   </section>
 
