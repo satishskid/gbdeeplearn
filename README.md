@@ -32,6 +32,8 @@ npm run worker:dev
 Bindings expected by `src/worker.js`:
 - `AI` (Workers AI binding for embeddings)
 - `DEEPLEARN_INDEX` (Vectorize index binding)
+- `LEAD_ANALYTICS` (Analytics Engine dataset binding)
+- `DEEPLEARN_LEADS` (R2 lead payload storage)
 
 ## Cloudflare CLI Setup (Wrangler)
 
@@ -58,7 +60,7 @@ npm run cf:whoami
 
 This creates/checks:
 - Vectorize index `deeplearn-index`
-- R2 buckets `gbdeeplearn-assets`, `gbdeeplearn-assets-preview`, `gbdeeplearn-certificates`, `gbdeeplearn-certificates-preview`
+- R2 buckets `gbdeeplearn-assets`, `gbdeeplearn-assets-preview`, `gbdeeplearn-certificates`, `gbdeeplearn-certificates-preview`, `gbdeeplearn-leads`, `gbdeeplearn-leads-preview`
 - Pages project `gbdeeplearn`
 
 ```bash
@@ -112,3 +114,20 @@ Examples:
 - AI Gateway OpenAI-compatible route: `https://gateway.ai.cloudflare.com/v1/<account_id>/<gateway_name>/compat`
 
 If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `groq/llama-3.3-70b-versatile`).
+
+## Webinar Tracking Decisions
+
+- Tutor auth behavior: `BYOK + server fallback` (current).
+- Analytics storage: `Cloudflare Analytics Engine` for edge click/lead counts.
+- Lead payload storage: `Cloudflare R2` bucket (`gbdeeplearn-leads`) for submitted registration details.
+- Lead submission endpoint: `POST /api/lead/submit` (Cloudflare Worker, no external CRM required).
+
+### Webinar events captured (`POST /api/track`)
+
+- `webinar_landing_view`
+- `webinar_cta_click`
+- `webinar_schedule_click`
+- `webinar_registration_started`
+- `webinar_registration_submitted`
+- `payment_page_opened`
+- `payment_completed`

@@ -5,6 +5,16 @@ const app = new Hono();
 const TUTOR_PROMPT = `You are a Socratic Teaching Assistant. Use only the provided context.
 If context is missing, reply exactly: "I cannot find that in the syllabus."`;
 
+const WEBINAR_EVENTS = new Set([
+  'webinar_landing_view',
+  'webinar_cta_click',
+  'webinar_schedule_click',
+  'webinar_registration_started',
+  'webinar_registration_submitted',
+  'payment_page_opened',
+  'payment_completed'
+]);
+
 app.post('/api/chat/tutor', async (c) => {
   try {
     const { message, groq_key: groqKey, current_context_id: moduleId } = await c.req.json();
@@ -51,6 +61,112 @@ app.post('/api/chat/tutor', async (c) => {
     return c.json(
       {
         error: 'Failed to process tutor request.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/track', async (c) => {
+  try {
+    const payload = await c.req.json();
+    const eventName = clean(payload?.event_name, 64);
+
+    if (!WEBINAR_EVENTS.has(eventName)) {
+      return c.json({ error: 'Invalid event_name.' }, 400);
+    }
+
+    const sessionId = clean(payload?.session_id, 64) || crypto.randomUUID();
+    const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
+    const source = clean(payload?.source, 64) || 'landing';
+    const leadId = clean(payload?.lead_id, 64);
+    const path = clean(payload?.path, 160) || new URL(c.req.url).pathname;
+    const value = Number.isFinite(Number(payload?.value)) ? Number(payload.value) : 1;
+
+    await writeGrowthEvent(c.env, c.req.raw.cf, {
+      eventName,
+      webinarId,
+      source,
+      leadId,
+      sessionId,
+      path,
+      value
+    });
+
+    return c.json({ ok: true, session_id: sessionId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to track event.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/lead/submit', async (c) => {
+  try {
+    const payload = await c.req.json();
+    const fullName = clean(payload?.full_name, 120);
+    const email = clean(payload?.email, 200).toLowerCase();
+    const phone = clean(payload?.phone, 24);
+    const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
+    const source = clean(payload?.source, 64) || 'landing';
+    const sessionId = clean(payload?.session_id, 64) || crypto.randomUUID();
+
+    if (!fullName || !email || !phone) {
+      return c.json({ error: 'full_name, email, and phone are required.' }, 400);
+    }
+
+    if (!isValidEmail(email)) {
+      return c.json({ error: 'Invalid email format.' }, 400);
+    }
+
+    if (!c.env.DEEPLEARN_LEADS) {
+      return c.json({ error: 'Lead storage is not configured.' }, 500);
+    }
+
+    const leadId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const emailHash = await sha256Hex(email);
+
+    const lead = {
+      lead_id: leadId,
+      created_at: createdAt,
+      full_name: fullName,
+      email,
+      phone,
+      webinar_id: webinarId,
+      source,
+      session_id: sessionId,
+      user_agent: c.req.header('user-agent') || '',
+      referrer: c.req.header('referer') || '',
+      country: c.req.raw.cf?.country || 'XX'
+    };
+
+    const objectKey = `leads/${webinarId}/${createdAt.slice(0, 10)}/${leadId}.json`;
+    await c.env.DEEPLEARN_LEADS.put(objectKey, JSON.stringify(lead), {
+      httpMetadata: { contentType: 'application/json' }
+    });
+
+    await writeGrowthEvent(c.env, c.req.raw.cf, {
+      eventName: 'webinar_registration_submitted',
+      webinarId,
+      source,
+      leadId,
+      sessionId,
+      path: '/api/lead/submit',
+      value: 1,
+      emailHash
+    });
+
+    return c.json({ ok: true, lead_id: leadId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to submit lead.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -117,6 +233,40 @@ async function embedQuery(env, text) {
   }
 
   return vector;
+}
+
+async function writeGrowthEvent(env, cf, event) {
+  if (!env.LEAD_ANALYTICS?.writeDataPoint) {
+    return;
+  }
+
+  const country = clean(cf?.country, 8) || 'XX';
+  const botScore = Number.isFinite(Number(cf?.botManagement?.score)) ? Number(cf.botManagement.score) : -1;
+  const asn = Number.isFinite(Number(cf?.asn)) ? Number(cf.asn) : 0;
+  const isLikelyBot = botScore >= 0 && botScore < 30 ? '1' : '0';
+
+  env.LEAD_ANALYTICS.writeDataPoint({
+    indexes: [event.eventName, event.webinarId, event.source, country, isLikelyBot],
+    blobs: [event.leadId || '', event.sessionId || '', event.path || '', event.emailHash || ''],
+    doubles: [Date.now(), event.value ?? 1, botScore, asn]
+  });
+}
+
+function clean(value, maxLen) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  return value.trim().slice(0, maxLen);
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+async function sha256Hex(input) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 export default app;

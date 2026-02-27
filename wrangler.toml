@@ -8,6 +8,8 @@ workers_dev = true
 APP_NAME = "DeepLearn"
 PAGES_PROJECT = "gbdeeplearn"
 CERTIFICATE_BUCKET = "gbdeeplearn-certificates"
+LEAD_EVENTS_DATASET = "deeplearn_growth"
+LEADS_BUCKET = "gbdeeplearn-leads"
 GROQ_API_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "llama-3.3-70b-versatile"
 AI_GATEWAY_BASE_URL = ""
@@ -28,6 +30,15 @@ preview_bucket_name = "gbdeeplearn-assets-preview"
 binding = "DEEPLEARN_CERTIFICATES"
 bucket_name = "gbdeeplearn-certificates"
 preview_bucket_name = "gbdeeplearn-certificates-preview"
+
+[[r2_buckets]]
+binding = "DEEPLEARN_LEADS"
+bucket_name = "gbdeeplearn-leads"
+preview_bucket_name = "gbdeeplearn-leads-preview"
+
+[[analytics_engine_datasets]]
+binding = "LEAD_ANALYTICS"
+dataset = "deeplearn_growth"
 
 [observability]
 enabled = true

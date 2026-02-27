@@ -24,7 +24,7 @@ export default function ChatInterface() {
   }, []);
 
   useEffect(() => {
-    if (!isOnline || queuedMessages.length === 0 || isSending || !groqKey.trim()) {
+    if (!isOnline || queuedMessages.length === 0 || isSending) {
       return;
     }
 
@@ -53,7 +53,7 @@ export default function ChatInterface() {
       const response = await fetch(API_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, groq_key: groqKey, current_context_id: null })
+        body: JSON.stringify({ message: text, groq_key: groqKey.trim(), current_context_id: null })
       });
 
       if (!response.ok) {
@@ -88,18 +88,6 @@ export default function ChatInterface() {
       return;
     }
 
-    if (!groqKey.trim()) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'Add your Groq API key to use Tutor mode.',
-          state: 'error'
-        }
-      ]);
-      return;
-    }
-
     await sendMessageToTutor(text);
   };
 
@@ -107,7 +95,7 @@ export default function ChatInterface() {
     <section className="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-lg backdrop-blur md:p-6">
       <header className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 className="text-xl font-semibold text-ink">AI Tutor (BYOK)</h2>
+          <h2 className="text-xl font-semibold text-ink">AI Tutor (BYOK + Server Fallback)</h2>
           <p className="text-sm text-slate-600">Socratic responses grounded in syllabus context.</p>
         </div>
         <div
@@ -120,7 +108,7 @@ export default function ChatInterface() {
       </header>
 
       <label className="mb-3 block text-sm font-medium text-slate-700">
-        Groq API Key
+        Groq API Key (optional)
         <input
           className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-brand focus:outline-none focus:ring-2 focus:ring-brand/30"
           type="password"

@@ -12,6 +12,8 @@ R2_BUCKETS=(
   "${R2_ASSETS_PREVIEW_BUCKET:-gbdeeplearn-assets-preview}"
   "${R2_CERT_BUCKET:-gbdeeplearn-certificates}"
   "${R2_CERT_PREVIEW_BUCKET:-gbdeeplearn-certificates-preview}"
+  "${R2_LEADS_BUCKET:-gbdeeplearn-leads}"
+  "${R2_LEADS_PREVIEW_BUCKET:-gbdeeplearn-leads-preview}"
 )
 
 echo "==> Verifying Wrangler auth"

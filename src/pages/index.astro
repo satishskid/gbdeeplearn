@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import ChatInterface from '../components/ChatInterface.jsx';
+import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
 ---
 
 <BaseLayout title="DeepLearn AI Platform">
@@ -13,5 +14,6 @@ import ChatInterface from '../components/ChatInterface.jsx';
     </p>
   </section>
 
+  <WebinarLeadForm client:load />
   <ChatInterface client:load />
 </BaseLayout>
