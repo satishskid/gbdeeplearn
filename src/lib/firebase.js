@@ -3,12 +3,13 @@ import { getAuth } from 'firebase/auth';
 import { enableIndexedDbPersistence, getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.PUBLIC_FIREBASE_API_KEY,
-  authDomain: import.meta.env.PUBLIC_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.PUBLIC_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.PUBLIC_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.PUBLIC_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.PUBLIC_FIREBASE_APP_ID
+  apiKey: import.meta.env.PUBLIC_FIREBASE_API_KEY ?? 'AIzaSyCoyn0qBxi3LrVivIWveX_bN79XAHXglQ8',
+  authDomain: import.meta.env.PUBLIC_FIREBASE_AUTH_DOMAIN ?? 'gbdeeplearn.firebaseapp.com',
+  projectId: import.meta.env.PUBLIC_FIREBASE_PROJECT_ID ?? 'gbdeeplearn',
+  storageBucket: import.meta.env.PUBLIC_FIREBASE_STORAGE_BUCKET ?? 'gbdeeplearn.firebasestorage.app',
+  messagingSenderId: import.meta.env.PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? '429412358887',
+  appId: import.meta.env.PUBLIC_FIREBASE_APP_ID ?? '1:429412358887:web:44d97063fa7b086d6c6042',
+  measurementId: import.meta.env.PUBLIC_FIREBASE_MEASUREMENT_ID ?? 'G-4T5EW8RQJV'
 };
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -33,4 +34,16 @@ if (typeof window !== 'undefined') {
   });
 }
 
-export { app, auth, db, persistenceReady };
+let analyticsReady = Promise.resolve(null);
+
+if (typeof window !== 'undefined') {
+  analyticsReady = import('firebase/analytics').then(async ({ getAnalytics, isSupported }) => {
+    if (!(await isSupported())) {
+      return null;
+    }
+
+    return getAnalytics(app);
+  });
+}
+
+export { app, auth, db, persistenceReady, analyticsReady };
