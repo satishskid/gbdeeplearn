@@ -15,6 +15,18 @@ const WEBINAR_EVENTS = new Set([
   'payment_completed'
 ]);
 
+app.get('/', (c) => {
+  return c.json({
+    service: 'deeplearn-worker',
+    status: 'ok',
+    endpoints: ['/api/chat/tutor', '/api/track', '/api/lead/submit', '/api/analytics/funnel', '/health']
+  });
+});
+
+app.get('/health', (c) => {
+  return c.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 app.post('/api/chat/tutor', async (c) => {
   try {
     const { message, groq_key: groqKey, current_context_id: moduleId } = await c.req.json();
