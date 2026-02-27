@@ -81,12 +81,22 @@ npm run cf:worker:dev
 npm run cf:worker:deploy
 ```
 
+Apply D1 ops schema (courses, staff, enrollments, lead events):
+
+```bash
+npm run cf:d1:migrate
+```
+
 ### 5) Deploy Astro frontend to Pages
 
 ```bash
 npm run build
 npm run cf:pages:deploy
 ```
+
+Notes:
+- [public/_worker.js](/Users/spr/gbdeeplearn/public/_worker.js) proxies `https://<pages-domain>/api/*` to the Worker URL.
+- This keeps frontend API calls same-origin on Pages (`/api/...`) while all logic stays in Cloudflare Worker.
 
 ### 6) Deploy both (Worker + Pages)
 
@@ -103,7 +113,14 @@ npm run cf:r2:list
 npm run cf:pages:list
 npm run cf:secret:list
 npm run cf:secret:put -- GROQ_API_KEY
+npm run cf:secret:put -- TURNSTILE_SECRET_KEY
+npm run cf:secret:put -- ADMIN_API_TOKEN
 ```
+
+## Platform routes
+
+- Public landing + webinar + tutor: `/`
+- Internal role console (Coordinator / Teacher / Learner / CTO): `/platform`
 
 ### AI Gateway wiring
 

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { apiUrl } from '../lib/api';
 
-const TRACK_ENDPOINT = '/api/track';
-const LEAD_ENDPOINT = '/api/lead/submit';
+const TRACK_ENDPOINT = apiUrl('/api/track');
+const LEAD_ENDPOINT = apiUrl('/api/lead/submit');
 const DEFAULT_WEBINAR_ID = 'deep-rag-live-webinar';
 const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { apiUrl } from '../lib/api';
 
-const API_ENDPOINT = '/api/chat/tutor';
+const API_ENDPOINT = apiUrl('/api/chat/tutor');
 
 export default function ChatInterface() {
   const [message, setMessage] = useState('');

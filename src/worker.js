@@ -15,11 +15,23 @@ const WEBINAR_EVENTS = new Set([
   'payment_completed'
 ]);
 
+const COURSE_STATUSES = new Set(['draft', 'published', 'live', 'completed', 'archived']);
+const STAFF_ROLES = new Set(['teacher', 'coordinator']);
+const LEARNER_STATUSES = new Set(['active', 'completed', 'dropped']);
+
 app.get('/', (c) => {
   return c.json({
     service: 'deeplearn-worker',
     status: 'ok',
-    endpoints: ['/api/chat/tutor', '/api/track', '/api/lead/submit', '/api/analytics/funnel', '/health']
+    endpoints: [
+      '/api/chat/tutor',
+      '/api/track',
+      '/api/lead/submit',
+      '/api/analytics/funnel',
+      '/api/admin/overview',
+      '/api/admin/courses',
+      '/health'
+    ]
   });
 });
 
@@ -261,6 +273,500 @@ app.get('/api/analytics/funnel', async (c) => {
   }
 });
 
+app.post('/api/admin/schema/apply', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to apply schema.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/overview', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+
+    const totalCourses = await scalarCount(c.env.DEEPLEARN_DB, 'SELECT COUNT(*) AS count FROM courses');
+    const liveCourses = await scalarCount(c.env.DEEPLEARN_DB, "SELECT COUNT(*) AS count FROM courses WHERE status = 'live'");
+    const publishedCourses = await scalarCount(
+      c.env.DEEPLEARN_DB,
+      "SELECT COUNT(*) AS count FROM courses WHERE status = 'published'"
+    );
+    const totalTeachers = await scalarCount(
+      c.env.DEEPLEARN_DB,
+      "SELECT COUNT(DISTINCT user_id) AS count FROM course_staff WHERE role = 'teacher'"
+    );
+    const totalLearners = await scalarCount(c.env.DEEPLEARN_DB, 'SELECT COUNT(*) AS count FROM course_enrollments');
+    const completedLearners = await scalarCount(
+      c.env.DEEPLEARN_DB,
+      "SELECT COUNT(*) AS count FROM course_enrollments WHERE status = 'completed'"
+    );
+
+    return c.json({
+      courses: {
+        total: totalCourses,
+        published: publishedCourses,
+        live: liveCourses
+      },
+      staffing: {
+        teachers: totalTeachers
+      },
+      learners: {
+        total: totalLearners,
+        completed: completedLearners,
+        completion_rate_pct: totalLearners > 0 ? Number(((completedLearners / totalLearners) * 100).toFixed(2)) : 0
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to fetch overview.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/courses', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') || 30)));
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         c.id, c.slug, c.title, c.status, c.price_cents, c.start_date, c.end_date, c.created_by, c.created_at_ms, c.updated_at_ms,
+         (SELECT COUNT(*) FROM course_staff s WHERE s.course_id = c.id AND s.role = 'teacher') AS teacher_count,
+         (SELECT COUNT(*) FROM course_enrollments e WHERE e.course_id = c.id) AS learner_count,
+         (SELECT COUNT(*) FROM course_enrollments e WHERE e.course_id = c.id AND e.status = 'completed') AS completed_count
+       FROM courses c
+       ORDER BY c.created_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(limit)
+      .all();
+
+    return c.json({ courses: result.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list courses.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+
+    const title = clean(payload?.title, 180);
+    const slugInput = clean(payload?.slug, 180);
+    const slug = slugInput ? slugify(slugInput) : slugify(title);
+    const status = clean(payload?.status, 32) || 'draft';
+    const priceCents = Number.isFinite(Number(payload?.price_cents)) ? Number(payload.price_cents) : 0;
+    const startDate = clean(payload?.start_date, 40);
+    const endDate = clean(payload?.end_date, 40);
+    const createdBy = clean(payload?.created_by, 120) || 'coordinator';
+
+    if (!title || !slug) {
+      return c.json({ error: 'title is required.' }, 400);
+    }
+
+    if (!COURSE_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid course status.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const courseId = crypto.randomUUID();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO courses (
+        id, slug, title, status, price_cents, start_date, end_date, created_by, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(courseId, slug, title, status, priceCents, startDate, endDate, createdBy, nowMs, nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      course: {
+        id: courseId,
+        slug,
+        title,
+        status,
+        price_cents: priceCents,
+        start_date: startDate,
+        end_date: endDate
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create course.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/publish', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const payload = await c.req.json();
+    const status = clean(payload?.status, 32) || 'published';
+
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400);
+    if (!COURSE_STATUSES.has(status)) return c.json({ error: 'Invalid status.' }, 400);
+
+    await c.env.DEEPLEARN_DB.prepare('UPDATE courses SET status = ?, updated_at_ms = ? WHERE id = ?')
+      .bind(status, Date.now(), courseId)
+      .run();
+
+    return c.json({ ok: true, course_id: courseId, status });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update course status.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/staff', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const payload = await c.req.json();
+    const role = clean(payload?.role, 40) || 'teacher';
+    const userId = clean(payload?.user_id, 120) || `staff_${crypto.randomUUID()}`;
+    const email = clean(payload?.email, 220).toLowerCase();
+    const displayName = clean(payload?.display_name, 140) || email || 'Teacher';
+
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400);
+    if (!STAFF_ROLES.has(role)) return c.json({ error: 'Invalid staff role.' }, 400);
+
+    await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role });
+
+    await c.env.DEEPLEARN_DB.prepare(
+      'INSERT OR IGNORE INTO course_staff (course_id, user_id, role, created_at_ms) VALUES (?, ?, ?, ?)'
+    )
+      .bind(courseId, userId, role, Date.now())
+      .run();
+
+    return c.json({ ok: true, course_id: courseId, user_id: userId, role });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to add staff.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/enroll', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120) || `learner_${crypto.randomUUID()}`;
+    const email = clean(payload?.email, 220).toLowerCase();
+    const displayName = clean(payload?.display_name, 140) || email || 'Learner';
+    const status = clean(payload?.status, 32) || 'active';
+
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400);
+    if (!LEARNER_STATUSES.has(status)) return c.json({ error: 'Invalid learner status.' }, 400);
+
+    await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role: 'learner' });
+
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_enrollments (
+         course_id, user_id, status, progress_pct, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, 0, NULL, '', ?, ?)
+       ON CONFLICT(course_id, user_id) DO UPDATE SET
+         status = excluded.status,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(courseId, userId, status, nowMs, nowMs)
+      .run();
+
+    return c.json({ ok: true, course_id: courseId, user_id: userId, status });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to enroll learner.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/enroll/:userId/complete', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const userId = clean(c.req.param('userId'), 120);
+    const payload = await c.req.json();
+    const certificateUrl = clean(payload?.certificate_url, 400);
+    const nowMs = Date.now();
+
+    if (!courseId || !userId) {
+      return c.json({ error: 'courseId and userId are required.' }, 400);
+    }
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE course_enrollments
+       SET status = 'completed',
+           progress_pct = 100,
+           completed_at_ms = ?,
+           certificate_url = ?,
+           updated_at_ms = ?
+       WHERE course_id = ? AND user_id = ?`
+    )
+      .bind(nowMs, certificateUrl, nowMs, courseId, userId)
+      .run();
+
+    return c.json({ ok: true, course_id: courseId, user_id: userId, status: 'completed', certificate_url: certificateUrl });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to complete enrollment.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/courses/:courseId/enrollments', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         e.course_id, e.user_id, e.status, e.progress_pct, e.completed_at_ms, e.certificate_url, e.updated_at_ms,
+         u.email, u.display_name
+       FROM course_enrollments e
+       LEFT JOIN platform_users u ON u.uid = e.user_id
+       WHERE e.course_id = ?
+       ORDER BY e.updated_at_ms DESC`
+    )
+      .bind(courseId)
+      .all();
+
+    return c.json({ enrollments: result.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list enrollments.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+async function assertAdmin(c) {
+  const configuredToken = (c.env.ADMIN_API_TOKEN || '').trim();
+  if (!configuredToken) {
+    return null;
+  }
+
+  const requestToken = (c.req.header('x-admin-token') || '').trim();
+  if (!requestToken || requestToken !== configuredToken) {
+    return c.json({ error: 'Unauthorized admin request.' }, 401);
+  }
+
+  return null;
+}
+
+async function ensureOpsSchema(db) {
+  const ddl = [
+    `CREATE TABLE IF NOT EXISTS lead_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_name TEXT NOT NULL,
+      webinar_id TEXT NOT NULL,
+      source TEXT NOT NULL,
+      country TEXT NOT NULL,
+      is_likely_bot INTEGER NOT NULL DEFAULT 0,
+      lead_id TEXT,
+      session_id TEXT,
+      path TEXT,
+      email_hash TEXT,
+      value REAL NOT NULL DEFAULT 1,
+      bot_score REAL,
+      asn INTEGER,
+      created_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_lead_events_webinar_created
+      ON lead_events(webinar_id, created_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_lead_events_name_created
+      ON lead_events(event_name, created_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_lead_events_bot_created
+      ON lead_events(is_likely_bot, created_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS platform_users (
+      uid TEXT PRIMARY KEY,
+      email TEXT,
+      display_name TEXT,
+      role TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS courses (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL,
+      price_cents INTEGER NOT NULL DEFAULT 0,
+      start_date TEXT,
+      end_date TEXT,
+      created_by TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_courses_status_updated
+      ON courses(status, updated_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS course_staff (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      course_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL,
+      created_at_ms INTEGER NOT NULL,
+      UNIQUE(course_id, user_id, role)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_course_staff_course
+      ON course_staff(course_id)`,
+    `CREATE TABLE IF NOT EXISTS course_enrollments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      course_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      progress_pct REAL NOT NULL DEFAULT 0,
+      completed_at_ms INTEGER,
+      certificate_url TEXT,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      UNIQUE(course_id, user_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_enrollments_course_status
+      ON course_enrollments(course_id, status)`
+  ];
+
+  for (const statement of ddl) {
+    await db.prepare(statement).run();
+  }
+}
+
+async function upsertPlatformUser(db, { userId, email, displayName, role }) {
+  const nowMs = Date.now();
+  await db.prepare(
+    `INSERT INTO platform_users (uid, email, display_name, role, created_at_ms, updated_at_ms)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(uid) DO UPDATE SET
+       email = excluded.email,
+       display_name = excluded.display_name,
+       role = excluded.role,
+       updated_at_ms = excluded.updated_at_ms`
+  )
+    .bind(userId, email || '', displayName || '', role || 'learner', nowMs, nowMs)
+    .run();
+}
+
+async function scalarCount(db, query) {
+  const row = await db.prepare(query).first();
+  return Number(row?.count || 0);
+}
+
+function slugify(value) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120);
+}
+
 function resolveGroqBaseUrl(env) {
   const gatewayBaseUrl = (env.AI_GATEWAY_BASE_URL || '').trim();
   if (gatewayBaseUrl) {
@@ -330,28 +836,34 @@ async function writeGrowthEvent(env, cf, event) {
   const nowMs = Date.now();
 
   if (env.DEEPLEARN_DB) {
-    await env.DEEPLEARN_DB.prepare(
+    const insertStmt = env.DEEPLEARN_DB.prepare(
       `INSERT INTO lead_events (
         event_name, webinar_id, source, country, is_likely_bot, lead_id, session_id,
         path, email_hash, value, bot_score, asn, created_at_ms
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-      .bind(
-        event.eventName,
-        event.webinarId,
-        event.source || 'landing',
-        country,
-        isLikelyBot,
-        event.leadId || '',
-        event.sessionId || '',
-        event.path || '',
-        event.emailHash || '',
-        event.value ?? 1,
-        botScore,
-        asn,
-        nowMs
-      )
-      .run();
+    ).bind(
+      event.eventName,
+      event.webinarId,
+      event.source || 'landing',
+      country,
+      isLikelyBot,
+      event.leadId || '',
+      event.sessionId || '',
+      event.path || '',
+      event.emailHash || '',
+      event.value ?? 1,
+      botScore,
+      asn,
+      nowMs
+    );
+
+    try {
+      await insertStmt.run();
+    } catch {
+      // Fresh environments may not have schema applied yet.
+      await ensureOpsSchema(env.DEEPLEARN_DB);
+      await insertStmt.run();
+    }
   }
 
   if (env.LEAD_ANALYTICS?.writeDataPoint) {

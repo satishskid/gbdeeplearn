@@ -23,6 +23,7 @@
     "cf:pages:create": "./scripts/cf-cli.sh pages project create ${CF_PAGES_PROJECT:-gbdeeplearn} --production-branch ${CF_PAGES_BRANCH:-main}",
     "cf:pages:deploy": "./scripts/cf-cli.sh pages deploy dist --project-name ${CF_PAGES_PROJECT:-gbdeeplearn} --branch ${CF_PAGES_BRANCH:-main}",
     "cf:bootstrap": "./scripts/cf-bootstrap.sh",
+    "cf:d1:migrate": "./scripts/cf-ops-schema.sh",
     "cf:deploy:all": "npm run build && npm run cf:worker:deploy && npm run cf:pages:deploy"
   },
   "dependencies": {
