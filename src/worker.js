@@ -39,7 +39,10 @@ app.get('/', (c) => {
       '/api/admin/organizations',
       '/api/admin/courses',
       '/api/admin/courses/:courseId/modules',
+      '/api/admin/courses/:courseId/rubrics',
       '/api/admin/cohorts',
+      '/api/admin/cohorts/:cohortId/enroll',
+      '/api/admin/cohorts/:cohortId/enrollments',
       '/api/learn/modules/:moduleId/progress',
       '/api/learn/assignments/:moduleId/submit',
       '/api/learn/assignments/:submissionId/grade',
@@ -777,6 +780,150 @@ app.post('/api/admin/courses/:courseId/modules', async (c) => {
   }
 });
 
+app.get('/api/admin/courses/:courseId/rubrics', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const moduleId = clean(c.req.query('module_id'), 64);
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400);
+
+    const whereClause = moduleId ? 'WHERE course_id = ? AND module_id = ?' : 'WHERE course_id = ?';
+    const result = moduleId
+      ? await c.env.DEEPLEARN_DB.prepare(
+          `SELECT id, course_id, module_id, title, rubric_json, pass_threshold, updated_at_ms
+           FROM assignment_rubrics
+           ${whereClause}
+           ORDER BY updated_at_ms DESC`
+        )
+          .bind(courseId, moduleId)
+          .all()
+      : await c.env.DEEPLEARN_DB.prepare(
+          `SELECT id, course_id, module_id, title, rubric_json, pass_threshold, updated_at_ms
+           FROM assignment_rubrics
+           ${whereClause}
+           ORDER BY updated_at_ms DESC`
+        )
+          .bind(courseId)
+          .all();
+
+    const rubrics = (result.results || []).map((row) => ({
+      ...row,
+      rubric: parseJsonObjectOrDefault(row.rubric_json, {})
+    }));
+
+    return c.json({ rubrics });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list rubrics.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/rubrics', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const payload = await c.req.json();
+    const moduleId = clean(payload?.module_id, 64);
+    const title = clean(payload?.title, 200);
+    const passThreshold = Number.isFinite(Number(payload?.pass_threshold)) ? Number(payload.pass_threshold) : 70;
+    const rubric = payload?.rubric && typeof payload.rubric === 'object' && !Array.isArray(payload.rubric) ? payload.rubric : {};
+
+    if (!courseId || !moduleId || !title) {
+      return c.json({ error: 'courseId, module_id, and title are required.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const rubricId = crypto.randomUUID();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO assignment_rubrics (
+         id, course_id, module_id, title, rubric_json, pass_threshold, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(rubricId, courseId, moduleId, title, JSON.stringify(rubric), passThreshold, nowMs, nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      rubric: {
+        id: rubricId,
+        course_id: courseId,
+        module_id: moduleId,
+        title,
+        pass_threshold: passThreshold,
+        rubric
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create rubric.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/rubrics/:rubricId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const rubricId = clean(c.req.param('rubricId'), 64);
+    const payload = await c.req.json();
+    const title = clean(payload?.title, 200);
+    const passThreshold = Number.isFinite(Number(payload?.pass_threshold)) ? Number(payload.pass_threshold) : 70;
+    const rubric = payload?.rubric && typeof payload.rubric === 'object' && !Array.isArray(payload.rubric) ? payload.rubric : null;
+
+    if (!rubricId) return c.json({ error: 'rubricId is required.' }, 400);
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE assignment_rubrics
+       SET title = CASE WHEN ? <> '' THEN ? ELSE title END,
+           rubric_json = CASE WHEN ? IS NOT NULL THEN ? ELSE rubric_json END,
+           pass_threshold = ?,
+           updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(title, title, rubric ? 1 : null, rubric ? JSON.stringify(rubric) : '', passThreshold, Date.now(), rubricId)
+      .run();
+
+    return c.json({ ok: true, rubric_id: rubricId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update rubric.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/admin/cohorts', async (c) => {
   const authError = await assertAdmin(c);
   if (authError) return authError;
@@ -983,6 +1130,172 @@ app.post('/api/admin/cohorts/:cohortId/unlocks', async (c) => {
     return c.json(
       {
         error: 'Failed to unlock module for cohort.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/cohorts/:cohortId/enrollments', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    if (!cohortId) return c.json({ error: 'cohortId is required.' }, 400);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         e.cohort_id, e.course_id, e.user_id, e.status, e.progress_pct, e.completion_state,
+         e.completed_at_ms, e.certificate_url, e.updated_at_ms,
+         u.email, u.display_name
+       FROM cohort_enrollments e
+       LEFT JOIN platform_users u ON u.uid = e.user_id
+       WHERE e.cohort_id = ?
+       ORDER BY e.updated_at_ms DESC`
+    )
+      .bind(cohortId)
+      .all();
+
+    return c.json({ enrollments: result.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list cohort enrollments.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/cohorts/:cohortId/enroll', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120) || `learner_${crypto.randomUUID()}`;
+    const email = clean(payload?.email, 220).toLowerCase();
+    const displayName = clean(payload?.display_name, 140) || email || 'Learner';
+    const status = clean(payload?.status, 32).toLowerCase() || 'enrolled';
+
+    if (!cohortId) return c.json({ error: 'cohortId is required.' }, 400);
+
+    const cohort = await c.env.DEEPLEARN_DB.prepare('SELECT course_id FROM cohorts WHERE id = ?').bind(cohortId).first();
+    const courseId = clean(cohort?.course_id || '', 64);
+    if (!courseId) return c.json({ error: 'Cohort not found or missing course_id.' }, 404);
+
+    await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role: 'learner' });
+
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO cohort_enrollments (
+         cohort_id, course_id, user_id, status, progress_pct, completion_state, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, 0, 'in_progress', NULL, '', ?, ?)
+       ON CONFLICT(cohort_id, user_id) DO UPDATE SET
+         status = excluded.status,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(cohortId, courseId, userId, status, nowMs, nowMs)
+      .run();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_enrollments (
+         course_id, user_id, status, progress_pct, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, 'active', 0, NULL, '', ?, ?)
+       ON CONFLICT(course_id, user_id) DO UPDATE SET
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(courseId, userId, nowMs, nowMs)
+      .run();
+
+    return c.json({ ok: true, cohort_id: cohortId, course_id: courseId, user_id: userId, status });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to enroll learner into cohort.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/cohorts/:cohortId/enroll/:userId/complete', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    const userId = clean(c.req.param('userId'), 120);
+    const payload = await c.req.json();
+    const certificateUrl = clean(payload?.certificate_url, 400);
+    const nowMs = Date.now();
+
+    if (!cohortId || !userId) {
+      return c.json({ error: 'cohortId and userId are required.' }, 400);
+    }
+
+    const cohort = await c.env.DEEPLEARN_DB.prepare('SELECT course_id FROM cohorts WHERE id = ?').bind(cohortId).first();
+    const courseId = clean(cohort?.course_id || '', 64);
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE cohort_enrollments
+       SET status = 'completed',
+           progress_pct = 100,
+           completion_state = 'completed',
+           completed_at_ms = ?,
+           certificate_url = ?,
+           updated_at_ms = ?
+       WHERE cohort_id = ? AND user_id = ?`
+    )
+      .bind(nowMs, certificateUrl, nowMs, cohortId, userId)
+      .run();
+
+    if (courseId) {
+      await c.env.DEEPLEARN_DB.prepare(
+        `UPDATE course_enrollments
+         SET status = 'completed',
+             progress_pct = 100,
+             completed_at_ms = ?,
+             certificate_url = ?,
+             updated_at_ms = ?
+         WHERE course_id = ? AND user_id = ?`
+      )
+        .bind(nowMs, certificateUrl, nowMs, courseId, userId)
+        .run();
+    }
+
+    return c.json({
+      ok: true,
+      cohort_id: cohortId,
+      course_id: courseId,
+      user_id: userId,
+      status: 'completed',
+      certificate_url: certificateUrl
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to complete cohort enrollment.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500

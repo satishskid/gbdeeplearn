@@ -27,7 +27,7 @@ Scope: Shared platform APIs for Productivity (Path 1), Research (Path 2), and En
 - `POST /api/admin/content/posts/:postId/status`
 - `GET /api/content/posts`
 
-## 3. New Shared Endpoints (to implement next)
+## 3. Shared Endpoints (Current Build)
 
 ### 3.1 Organization and White-label
 
@@ -53,11 +53,21 @@ Scope: Shared platform APIs for Productivity (Path 1), Research (Path 2), and En
 - `POST /api/admin/cohorts/:cohortId/unlocks`
   - Input: `{ module_id }`
 - `GET /api/admin/cohorts/:cohortId/unlocks`
+- `POST /api/admin/cohorts/:cohortId/enroll`
+  - Input: `{ user_id?, email?, display_name?, status? }`
+- `GET /api/admin/cohorts/:cohortId/enrollments`
+- `POST /api/admin/cohorts/:cohortId/enroll/:userId/complete`
+  - Input: `{ certificate_url? }`
 
 ### 3.4 Learner Progress and Assessments
 
 - `POST /api/learn/modules/:moduleId/progress`
   - Input: `{ course_id, cohort_id, status, score, artifact_url, notes }`
+- `GET /api/admin/courses/:courseId/rubrics`
+- `POST /api/admin/courses/:courseId/rubrics`
+  - Input: `{ module_id, title, pass_threshold, rubric }`
+- `POST /api/admin/rubrics/:rubricId`
+  - Input: `{ title?, pass_threshold?, rubric? }`
 - `POST /api/learn/assignments/:moduleId/submit`
   - Input: `{ course_id, rubric_id, answer_text, artifacts_json }`
 - `POST /api/learn/assignments/:submissionId/grade`

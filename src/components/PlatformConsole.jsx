@@ -23,7 +23,10 @@ export default function PlatformConsole({ userRoles = [] }) {
   const [organizations, setOrganizations] = useState([]);
   const [cohorts, setCohorts] = useState([]);
   const [courseModules, setCourseModules] = useState([]);
+  const [rubricModules, setRubricModules] = useState([]);
   const [unlockModules, setUnlockModules] = useState([]);
+  const [rubrics, setRubrics] = useState([]);
+  const [cohortEnrollments, setCohortEnrollments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -89,6 +92,22 @@ export default function PlatformConsole({ userRoles = [] }) {
     moduleId: ''
   });
 
+  const [cohortEnrollForm, setCohortEnrollForm] = useState({
+    cohortId: '',
+    email: '',
+    displayName: '',
+    userId: ''
+  });
+
+  const [rubricForm, setRubricForm] = useState({
+    rubricId: '',
+    courseId: '',
+    moduleId: '',
+    title: '',
+    passThreshold: '70',
+    rubricJson: '{\n  "criteria": [\n    "Clinical clarity",\n    "Methodological correctness",\n    "Evidence-backed reasoning"\n  ]\n}'
+  });
+
   const roleSet = useMemo(() => new Set((userRoles || []).map((role) => String(role).trim().toLowerCase())), [userRoles]);
   const isCtoUser = roleSet.has('cto');
   const isCoordinatorUser = isCtoUser || roleSet.has('coordinator');
@@ -140,6 +159,28 @@ export default function PlatformConsole({ userRoles = [] }) {
     setCourseModules(modules);
   };
 
+  const fetchCourseRubrics = async (courseId, headers = adminHeaders) => {
+    if (!courseId) {
+      setRubrics([]);
+      return;
+    }
+    const response = await fetch(apiUrl(`/api/admin/courses/${courseId}/rubrics`), { headers });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Rubric load failed.');
+    setRubrics(payload.rubrics || []);
+  };
+
+  const fetchCohortEnrollments = async (cohortId, headers = adminHeaders) => {
+    if (!cohortId) {
+      setCohortEnrollments([]);
+      return;
+    }
+    const response = await fetch(apiUrl(`/api/admin/cohorts/${cohortId}/enrollments`), { headers });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Cohort enrollment load failed.');
+    setCohortEnrollments(payload.enrollments || []);
+  };
+
   const loadConsoleData = async () => {
     setLoading(true);
     setError('');
@@ -172,9 +213,14 @@ export default function PlatformConsole({ userRoles = [] }) {
 
       const candidateCourseId = moduleForm.courseId || coursesPayload?.courses?.[0]?.id || '';
       if (candidateCourseId) {
-        await fetchCourseModules(candidateCourseId, adminHeaders);
+        const modules = await loadModulesRaw(candidateCourseId, adminHeaders);
+        setCourseModules(modules);
+        setRubricModules(modules);
+        await fetchCourseRubrics(candidateCourseId, adminHeaders);
       } else {
         setCourseModules([]);
+        setRubricModules([]);
+        setRubrics([]);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load console data.');
@@ -201,6 +247,23 @@ export default function PlatformConsole({ userRoles = [] }) {
   }, [moduleForm.courseId]);
 
   useEffect(() => {
+    if (!rubricForm.courseId) {
+      setRubricModules([]);
+      setRubrics([]);
+      return;
+    }
+
+    Promise.all([fetchCourseRubrics(rubricForm.courseId), loadModulesRaw(rubricForm.courseId)])
+      .then(([, modules]) => {
+        setRubricModules(modules);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : 'Failed to load rubrics.');
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rubricForm.courseId]);
+
+  useEffect(() => {
     const selectedCohort = cohorts.find((cohort) => cohort.id === unlockForm.cohortId);
     const targetCourseId = selectedCohort?.course_id || '';
     if (!targetCourseId) {
@@ -213,6 +276,18 @@ export default function PlatformConsole({ userRoles = [] }) {
       .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load unlock modules.'));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [unlockForm.cohortId, cohorts]);
+
+  useEffect(() => {
+    if (!cohortEnrollForm.cohortId) {
+      setCohortEnrollments([]);
+      return;
+    }
+
+    fetchCohortEnrollments(cohortEnrollForm.cohortId).catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to load cohort enrollments.');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cohortEnrollForm.cohortId]);
 
   useEffect(() => {
     if (!availableTabs.some((tab) => tab.id === activeRole)) {
@@ -404,6 +479,97 @@ export default function PlatformConsole({ userRoles = [] }) {
     if (!response.ok) throw new Error(payload?.error || 'Unlock failed.');
     setUnlockForm({ cohortId: '', moduleId: '' });
     return 'Module unlocked for cohort.';
+  };
+
+  const enrollLearnerInCohort = async () => {
+    if (!cohortEnrollForm.cohortId) throw new Error('Select cohort to enroll learner.');
+    const response = await fetch(apiUrl(`/api/admin/cohorts/${cohortEnrollForm.cohortId}/enroll`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        user_id: cohortEnrollForm.userId,
+        email: cohortEnrollForm.email,
+        display_name: cohortEnrollForm.displayName
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Cohort enrollment failed.');
+    await fetchCohortEnrollments(cohortEnrollForm.cohortId);
+    setCohortEnrollForm((prev) => ({ ...prev, email: '', displayName: '', userId: '' }));
+    return 'Learner enrolled in cohort.';
+  };
+
+  const completeCohortEnrollment = async (userId) => {
+    if (!cohortEnrollForm.cohortId || !userId) throw new Error('Select a cohort and learner to complete.');
+    const response = await fetch(
+      apiUrl(`/api/admin/cohorts/${cohortEnrollForm.cohortId}/enroll/${encodeURIComponent(userId)}/complete`),
+      {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({})
+      }
+    );
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Cohort completion update failed.');
+    await fetchCohortEnrollments(cohortEnrollForm.cohortId);
+    return `Learner marked completed: ${userId}`;
+  };
+
+  const saveRubric = async () => {
+    if (!rubricForm.courseId || !rubricForm.moduleId || !rubricForm.title) {
+      throw new Error('course, module, and rubric title are required.');
+    }
+
+    let rubricJson;
+    try {
+      rubricJson = JSON.parse(rubricForm.rubricJson);
+    } catch {
+      throw new Error('Rubric JSON is invalid.');
+    }
+
+    const endpoint = rubricForm.rubricId
+      ? apiUrl(`/api/admin/rubrics/${rubricForm.rubricId}`)
+      : apiUrl(`/api/admin/courses/${rubricForm.courseId}/rubrics`);
+    const body = rubricForm.rubricId
+      ? {
+          title: rubricForm.title,
+          pass_threshold: Number(rubricForm.passThreshold || 70),
+          rubric: rubricJson
+        }
+      : {
+          module_id: rubricForm.moduleId,
+          title: rubricForm.title,
+          pass_threshold: Number(rubricForm.passThreshold || 70),
+          rubric: rubricJson
+        };
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify(body)
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Rubric save failed.');
+    await fetchCourseRubrics(rubricForm.courseId);
+    setRubricForm((prev) => ({
+      ...prev,
+      rubricId: '',
+      title: '',
+      moduleId: prev.rubricId ? prev.moduleId : ''
+    }));
+    return rubricForm.rubricId
+      ? `Rubric updated: ${rubricForm.title}`
+      : `Rubric created: ${payload?.rubric?.title || 'Untitled rubric'}`;
+  };
+
+  const loadRubricForEdit = (rubric) => {
+    setRubricForm({
+      rubricId: String(rubric?.id || ''),
+      courseId: String(rubric?.course_id || ''),
+      moduleId: String(rubric?.module_id || ''),
+      title: String(rubric?.title || ''),
+      passThreshold: String(rubric?.pass_threshold ?? 70),
+      rubricJson: JSON.stringify(rubric?.rubric || {}, null, 2)
+    });
   };
 
   const generateDailyBrief = async () => {
@@ -907,6 +1073,174 @@ export default function PlatformConsole({ userRoles = [] }) {
               Unlock Module
             </button>
             <p className="mt-3 text-xs text-slate-500">For instructor-led cohorts, this controls staged release by module.</p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Enroll Learner In Cohort</h3>
+            <div className="grid gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={cohortEnrollForm.cohortId}
+                onChange={(e) => setCohortEnrollForm((p) => ({ ...p, cohortId: e.target.value }))}
+              >
+                <option value="">Select cohort</option>
+                {cohorts.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>
+                    {cohort.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Learner user_id (optional)"
+                value={cohortEnrollForm.userId}
+                onChange={(e) => setCohortEnrollForm((p) => ({ ...p, userId: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Learner email"
+                value={cohortEnrollForm.email}
+                onChange={(e) => setCohortEnrollForm((p) => ({ ...p, email: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Display name"
+                value={cohortEnrollForm.displayName}
+                onChange={(e) => setCohortEnrollForm((p) => ({ ...p, displayName: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(enrollLearnerInCohort)}
+              type="button"
+            >
+              Enroll In Cohort
+            </button>
+            <div className="mt-3 max-h-48 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {cohortEnrollments.map((row) => (
+                <div key={`${row.cohort_id}:${row.user_id}`} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{row.display_name || row.user_id}</p>
+                      <p className="text-xs text-slate-500">{row.email || row.user_id}</p>
+                      <p className="text-xs text-slate-500">
+                        {row.status} · {Number.isFinite(Number(row.progress_pct)) ? `${row.progress_pct}%` : '0%'}
+                      </p>
+                    </div>
+                    {row.status !== 'completed' ? (
+                      <button
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        onClick={() => void runAction(() => completeCohortEnrollment(row.user_id))}
+                        type="button"
+                      >
+                        Mark Completed
+                      </button>
+                    ) : (
+                      <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">Completed</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {cohortEnrollments.length === 0 && <p className="text-xs text-slate-500">No enrollments for selected cohort.</p>}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-lg font-bold text-slate-900">Assignment Rubrics</h3>
+              {rubricForm.rubricId ? (
+                <button
+                  className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                  onClick={() =>
+                    setRubricForm((prev) => ({
+                      ...prev,
+                      rubricId: '',
+                      title: '',
+                      passThreshold: '70',
+                      rubricJson:
+                        '{\n  "criteria": [\n    "Clinical clarity",\n    "Methodological correctness",\n    "Evidence-backed reasoning"\n  ]\n}'
+                    }))
+                  }
+                  type="button"
+                >
+                  Clear Edit
+                </button>
+              ) : null}
+            </div>
+            <div className="grid gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={rubricForm.courseId}
+                onChange={(e) =>
+                  setRubricForm((p) => ({ ...p, courseId: e.target.value, moduleId: '', rubricId: '' }))
+                }
+              >
+                <option value="">Select course</option>
+                {courses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.title}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={rubricForm.moduleId}
+                onChange={(e) => setRubricForm((p) => ({ ...p, moduleId: e.target.value }))}
+              >
+                <option value="">Select module</option>
+                {rubricModules.map((module) => (
+                  <option key={module.id} value={module.id}>
+                    {module.title}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Rubric title"
+                value={rubricForm.title}
+                onChange={(e) => setRubricForm((p) => ({ ...p, title: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Pass threshold (0-100)"
+                value={rubricForm.passThreshold}
+                onChange={(e) => setRubricForm((p) => ({ ...p, passThreshold: e.target.value }))}
+              />
+              <textarea
+                className="min-h-[8rem] rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono"
+                value={rubricForm.rubricJson}
+                onChange={(e) => setRubricForm((p) => ({ ...p, rubricJson: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(saveRubric)}
+              type="button"
+            >
+              {rubricForm.rubricId ? 'Update Rubric' : 'Create Rubric'}
+            </button>
+            <div className="mt-3 max-h-48 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {rubrics.map((rubric) => (
+                <div key={rubric.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{rubric.title}</p>
+                      <p className="text-xs text-slate-500">
+                        module: {rubric.module_id} · pass: {rubric.pass_threshold}
+                      </p>
+                    </div>
+                    <button
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                      onClick={() => loadRubricForEdit(rubric)}
+                      type="button"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {rubrics.length === 0 && <p className="text-xs text-slate-500">No rubrics for selected course.</p>}
+            </div>
           </div>
         </div>
       )}

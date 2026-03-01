@@ -1,0 +1,131 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+
+const SITE_ORIGIN = 'https://gbdeeplearn.pages.dev';
+
+const methodSteps = [
+  {
+    title: '1. Hypothesis',
+    detail: 'Frame a testable clinical or operational question with measurable endpoints.'
+  },
+  {
+    title: '2. Methodology',
+    detail: 'Define cohort, inclusion criteria, confounders, and statistical guardrails.'
+  },
+  {
+    title: '3. Data',
+    detail: 'Prepare tabular, note, and literature data while maintaining governance discipline.'
+  },
+  {
+    title: '4. Experiment',
+    detail: 'Run AI-assisted experiments and benchmark against baseline methods.'
+  },
+  {
+    title: '5. Conclusion',
+    detail: 'Report findings with limitations, reproducibility notes, and deployment implications.'
+  }
+];
+
+const labModules = [
+  {
+    name: 'The Predictor (Regression)',
+    summary: 'Estimate continuous outcomes such as length of stay or recovery time.'
+  },
+  {
+    name: 'The Diagnostician (Classification)',
+    summary: 'Classify notes into clinically meaningful categories with confidence signals.'
+  },
+  {
+    name: 'The Reader (NLP Synthesis)',
+    summary: 'Summarize long papers and extract structured evidence quickly.'
+  }
+];
+
+const aiFlow = [
+  {
+    title: 'Prompt',
+    detail: 'Your clinical question is converted to machine-readable tokens.'
+  },
+  {
+    title: 'Embedding',
+    detail: 'Question meaning is encoded into vectors for semantic retrieval.'
+  },
+  {
+    title: 'Retrieval',
+    detail: 'Relevant syllabus/manual chunks are fetched from Vectorize.'
+  },
+  {
+    title: 'Generation',
+    detail: 'Groq model composes an answer constrained by retrieved context.'
+  },
+  {
+    title: 'Review',
+    detail: 'You validate evidence, reasoning quality, and fit for patient-facing use.'
+  }
+];
+---
+
+<BaseLayout
+  title="In-Silico Investigator | Path 2 Research Lab"
+  description="A clinician-first AI research lab: learn hypothesis-to-conclusion methodology with RAG tutoring and practical experimentation."
+  canonical={`${SITE_ORIGIN}/research-lab`}
+>
+  <section class="mb-8 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
+    <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
+      Path 2 • AI Research Accelerator
+    </p>
+    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">The In-Silico Investigator</h1>
+    <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">
+      White-label learning flow for clinicians who want to do rigorous research with AI assistance, not AI hype.
+    </p>
+    <div class="mt-5 flex flex-wrap gap-2">
+      <a href="/tracks/ai-research-accelerator" class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100">
+        Track Overview
+      </a>
+      <a href="/learn" class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">
+        Enter Learner Workspace
+      </a>
+      <a href="/console" class="inline-flex rounded-xl border border-cyan-300/50 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20">
+        Open Coordinator Console
+      </a>
+    </div>
+  </section>
+
+  <section class="mb-8 rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
+    <h2 class="text-2xl font-extrabold text-slate-900">Research Pedagogy Loop</h2>
+    <p class="mt-1 text-sm text-slate-600">Teach methodology first, then use AI as an accelerator with clear evaluation checkpoints.</p>
+    <div class="mt-4 grid gap-3 md:grid-cols-5">
+      {methodSteps.map((step) => (
+        <article class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+          <h3 class="text-sm font-bold text-slate-900">{step.title}</h3>
+          <p class="mt-1 text-xs text-slate-600">{step.detail}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  <section class="mb-8 grid gap-4 md:grid-cols-3">
+    {labModules.map((module) => (
+      <article class="rounded-2xl border border-slate-200 bg-white/85 p-4 shadow-md backdrop-blur-sm">
+        <p class="text-xs font-semibold uppercase tracking-[0.13em] text-cyan-700">Experiment Lab Module</p>
+        <h3 class="mt-2 text-lg font-bold text-slate-900">{module.name}</h3>
+        <p class="mt-1 text-sm text-slate-600">{module.summary}</p>
+      </article>
+    ))}
+  </section>
+
+  <section class="rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
+    <h2 class="text-2xl font-extrabold text-slate-900">How The AI Tutor Works (Clinician View)</h2>
+    <p class="mt-1 text-sm text-slate-600">
+      This is the teaching sequence we expose to reduce AI anxiety and build infrastructure fluency.
+    </p>
+    <div class="mt-4 grid gap-3 md:grid-cols-5">
+      {aiFlow.map((node) => (
+        <article class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+          <h3 class="text-sm font-bold text-slate-900">{node.title}</h3>
+          <p class="mt-1 text-xs text-slate-600">{node.detail}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+</BaseLayout>
