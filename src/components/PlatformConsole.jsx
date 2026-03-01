@@ -20,6 +20,10 @@ export default function PlatformConsole({ userRoles = [] }) {
   const [overview, setOverview] = useState(null);
   const [courses, setCourses] = useState([]);
   const [contentPosts, setContentPosts] = useState([]);
+  const [organizations, setOrganizations] = useState([]);
+  const [cohorts, setCohorts] = useState([]);
+  const [courseModules, setCourseModules] = useState([]);
+  const [unlockModules, setUnlockModules] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -48,6 +52,41 @@ export default function PlatformConsole({ userRoles = [] }) {
     courseId: '',
     userId: '',
     certificateUrl: ''
+  });
+
+  const [organizationForm, setOrganizationForm] = useState({
+    slug: '',
+    name: '',
+    color: '#0f172a',
+    logoUrl: ''
+  });
+
+  const [moduleForm, setModuleForm] = useState({
+    courseId: '',
+    pathKey: 'productivity',
+    moduleKey: '',
+    title: '',
+    description: '',
+    labType: '',
+    unlockPolicy: 'cohort',
+    estimatedMinutes: '30'
+  });
+
+  const [cohortForm, setCohortForm] = useState({
+    orgId: '',
+    courseId: '',
+    name: '',
+    mode: 'instructor-led',
+    status: 'draft',
+    startDate: '',
+    endDate: '',
+    instructorUserId: '',
+    fee: ''
+  });
+
+  const [unlockForm, setUnlockForm] = useState({
+    cohortId: '',
+    moduleId: ''
   });
 
   const roleSet = useMemo(() => new Set((userRoles || []).map((role) => String(role).trim().toLowerCase())), [userRoles]);
@@ -81,27 +120,62 @@ export default function PlatformConsole({ userRoles = [] }) {
     return headers;
   }, [adminToken]);
 
+  const loadModulesRaw = async (courseId, headers = adminHeaders) => {
+    if (!courseId) {
+      return [];
+    }
+
+    const response = await fetch(apiUrl(`/api/admin/courses/${courseId}/modules`), { headers });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Module load failed.');
+    return payload.modules || [];
+  };
+
+  const fetchCourseModules = async (courseId, headers = adminHeaders) => {
+    if (!courseId) {
+      setCourseModules([]);
+      return;
+    }
+    const modules = await loadModulesRaw(courseId, headers);
+    setCourseModules(modules);
+  };
+
   const loadConsoleData = async () => {
     setLoading(true);
     setError('');
     try {
-      const [overviewRes, coursesRes, contentRes] = await Promise.all([
+      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes] = await Promise.all([
         fetch(apiUrl('/api/admin/overview'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/courses'), { headers: adminHeaders }),
-        fetch(apiUrl('/api/admin/content/posts?limit=20'), { headers: adminHeaders })
+        fetch(apiUrl('/api/admin/content/posts?limit=20'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/organizations?limit=50'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/cohorts?limit=50'), { headers: adminHeaders })
       ]);
 
       const overviewPayload = await overviewRes.json();
       const coursesPayload = await coursesRes.json();
       const contentPayload = await contentRes.json();
+      const organizationsPayload = await organizationsRes.json();
+      const cohortsPayload = await cohortsRes.json();
 
       if (!overviewRes.ok) throw new Error(overviewPayload?.error || 'Overview load failed.');
       if (!coursesRes.ok) throw new Error(coursesPayload?.error || 'Courses load failed.');
       if (!contentRes.ok) throw new Error(contentPayload?.error || 'Content load failed.');
+      if (!organizationsRes.ok) throw new Error(organizationsPayload?.error || 'Organizations load failed.');
+      if (!cohortsRes.ok) throw new Error(cohortsPayload?.error || 'Cohorts load failed.');
 
       setOverview(overviewPayload);
       setCourses(coursesPayload.courses || []);
       setContentPosts(contentPayload.posts || []);
+      setOrganizations(organizationsPayload.organizations || []);
+      setCohorts(cohortsPayload.cohorts || []);
+
+      const candidateCourseId = moduleForm.courseId || coursesPayload?.courses?.[0]?.id || '';
+      if (candidateCourseId) {
+        await fetchCourseModules(candidateCourseId, adminHeaders);
+      } else {
+        setCourseModules([]);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load console data.');
     } finally {
@@ -113,6 +187,32 @@ export default function PlatformConsole({ userRoles = [] }) {
     void loadConsoleData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!moduleForm.courseId) {
+      setCourseModules([]);
+      return;
+    }
+
+    fetchCourseModules(moduleForm.courseId).catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to load modules.');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moduleForm.courseId]);
+
+  useEffect(() => {
+    const selectedCohort = cohorts.find((cohort) => cohort.id === unlockForm.cohortId);
+    const targetCourseId = selectedCohort?.course_id || '';
+    if (!targetCourseId) {
+      setUnlockModules([]);
+      return;
+    }
+
+    loadModulesRaw(targetCourseId)
+      .then((modules) => setUnlockModules(modules))
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load unlock modules.'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlockForm.cohortId, cohorts]);
 
   useEffect(() => {
     if (!availableTabs.some((tab) => tab.id === activeRole)) {
@@ -212,6 +312,98 @@ export default function PlatformConsole({ userRoles = [] }) {
 
     setCompleteForm({ courseId: '', userId: '', certificateUrl: '' });
     return 'Learner marked completed.';
+  };
+
+  const createOrganization = async () => {
+    const response = await fetch(apiUrl('/api/admin/organizations'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        slug: organizationForm.slug,
+        name: organizationForm.name,
+        brand_primary_color: organizationForm.color,
+        logo_url: organizationForm.logoUrl
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Organization creation failed.');
+    setOrganizationForm({ slug: '', name: '', color: '#0f172a', logoUrl: '' });
+    return `Organization created: ${payload?.organization?.name || 'Unknown'}`;
+  };
+
+  const createModule = async () => {
+    if (!moduleForm.courseId) throw new Error('Select a course for the module.');
+    const response = await fetch(apiUrl(`/api/admin/courses/${moduleForm.courseId}/modules`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        path_key: moduleForm.pathKey,
+        module_key: moduleForm.moduleKey,
+        title: moduleForm.title,
+        description: moduleForm.description,
+        lab_type: moduleForm.labType,
+        unlock_policy: moduleForm.unlockPolicy,
+        estimated_minutes: Number(moduleForm.estimatedMinutes || 30)
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Module creation failed.');
+    setModuleForm((prev) => ({
+      ...prev,
+      moduleKey: '',
+      title: '',
+      description: '',
+      labType: '',
+      unlockPolicy: 'cohort',
+      estimatedMinutes: '30'
+    }));
+    await fetchCourseModules(moduleForm.courseId);
+    return `Module created: ${payload?.module?.title || 'Untitled'}`;
+  };
+
+  const createCohort = async () => {
+    if (!cohortForm.courseId) throw new Error('Select a course for the cohort.');
+    const response = await fetch(apiUrl('/api/admin/cohorts'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        org_id: cohortForm.orgId,
+        course_id: cohortForm.courseId,
+        name: cohortForm.name,
+        mode: cohortForm.mode,
+        status: cohortForm.status,
+        start_date: cohortForm.startDate,
+        end_date: cohortForm.endDate,
+        instructor_user_id: cohortForm.instructorUserId,
+        fee_cents: parseMoneyToCents(cohortForm.fee)
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Cohort creation failed.');
+    setCohortForm((prev) => ({
+      ...prev,
+      name: '',
+      startDate: '',
+      endDate: '',
+      instructorUserId: '',
+      fee: ''
+    }));
+    return `Cohort created: ${payload?.cohort?.name || 'Untitled'}`;
+  };
+
+  const unlockModuleForCohort = async () => {
+    if (!unlockForm.cohortId || !unlockForm.moduleId) {
+      throw new Error('Select cohort and module to unlock.');
+    }
+    const response = await fetch(apiUrl(`/api/admin/cohorts/${unlockForm.cohortId}/unlocks`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ module_id: unlockForm.moduleId })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Unlock failed.');
+    setUnlockForm({ cohortId: '', moduleId: '' });
+    return 'Module unlocked for cohort.';
   };
 
   const generateDailyBrief = async () => {
@@ -458,6 +650,263 @@ export default function PlatformConsole({ userRoles = [] }) {
             >
               Complete + Certify
             </button>
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && (
+        <div className="mt-6 grid gap-5 lg:grid-cols-2">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Create Organization</h3>
+            <div className="grid gap-2">
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Org slug (example: mayo)"
+                value={organizationForm.slug}
+                onChange={(e) => setOrganizationForm((p) => ({ ...p, slug: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Organization name"
+                value={organizationForm.name}
+                onChange={(e) => setOrganizationForm((p) => ({ ...p, name: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Brand color (#0f172a)"
+                value={organizationForm.color}
+                onChange={(e) => setOrganizationForm((p) => ({ ...p, color: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Logo URL (optional)"
+                value={organizationForm.logoUrl}
+                onChange={(e) => setOrganizationForm((p) => ({ ...p, logoUrl: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(createOrganization)}
+              type="button"
+            >
+              Create Organization
+            </button>
+            <div className="mt-3 max-h-48 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {organizations.map((org) => (
+                <div key={org.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-slate-900">{org.name}</p>
+                  <p className="text-xs text-slate-500">{org.slug}</p>
+                </div>
+              ))}
+              {organizations.length === 0 && <p className="text-xs text-slate-500">No organizations yet.</p>}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Create Course Module</h3>
+            <div className="grid gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={moduleForm.courseId}
+                onChange={(e) => setModuleForm((p) => ({ ...p, courseId: e.target.value }))}
+              >
+                <option value="">Select course</option>
+                {courses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.title}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={moduleForm.pathKey}
+                onChange={(e) => setModuleForm((p) => ({ ...p, pathKey: e.target.value }))}
+              >
+                <option value="productivity">Path 1: Productivity</option>
+                <option value="research">Path 2: Research</option>
+                <option value="entrepreneurship">Path 3: Entrepreneurship</option>
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Module key"
+                value={moduleForm.moduleKey}
+                onChange={(e) => setModuleForm((p) => ({ ...p, moduleKey: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Module title"
+                value={moduleForm.title}
+                onChange={(e) => setModuleForm((p) => ({ ...p, title: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Lab type (optional)"
+                value={moduleForm.labType}
+                onChange={(e) => setModuleForm((p) => ({ ...p, labType: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Estimated minutes"
+                value={moduleForm.estimatedMinutes}
+                onChange={(e) => setModuleForm((p) => ({ ...p, estimatedMinutes: e.target.value }))}
+              />
+              <textarea
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Module description"
+                value={moduleForm.description}
+                onChange={(e) => setModuleForm((p) => ({ ...p, description: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(createModule)}
+              type="button"
+            >
+              Create Module
+            </button>
+            <div className="mt-3 max-h-48 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {courseModules.map((module) => (
+                <div key={module.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-slate-900">{module.title}</p>
+                  <p className="text-xs text-slate-500">
+                    {module.path_key} · {module.module_key}
+                  </p>
+                </div>
+              ))}
+              {courseModules.length === 0 && <p className="text-xs text-slate-500">No modules for selected course.</p>}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Create Cohort</h3>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={cohortForm.orgId}
+                onChange={(e) => setCohortForm((p) => ({ ...p, orgId: e.target.value }))}
+              >
+                <option value="">Organization (optional)</option>
+                {organizations.map((org) => (
+                  <option key={org.id} value={org.id}>
+                    {org.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={cohortForm.courseId}
+                onChange={(e) => setCohortForm((p) => ({ ...p, courseId: e.target.value }))}
+              >
+                <option value="">Select course</option>
+                {courses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.title}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm sm:col-span-2"
+                placeholder="Cohort name"
+                value={cohortForm.name}
+                onChange={(e) => setCohortForm((p) => ({ ...p, name: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={cohortForm.mode}
+                onChange={(e) => setCohortForm((p) => ({ ...p, mode: e.target.value }))}
+              >
+                <option value="instructor-led">Instructor-led</option>
+                <option value="self-paced">Self-paced</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={cohortForm.status}
+                onChange={(e) => setCohortForm((p) => ({ ...p, status: e.target.value }))}
+              >
+                <option value="draft">Draft</option>
+                <option value="open">Open</option>
+                <option value="live">Live</option>
+                <option value="completed">Completed</option>
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Start date (YYYY-MM-DD)"
+                value={cohortForm.startDate}
+                onChange={(e) => setCohortForm((p) => ({ ...p, startDate: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="End date (YYYY-MM-DD)"
+                value={cohortForm.endDate}
+                onChange={(e) => setCohortForm((p) => ({ ...p, endDate: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Instructor user_id"
+                value={cohortForm.instructorUserId}
+                onChange={(e) => setCohortForm((p) => ({ ...p, instructorUserId: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Fee (USD)"
+                value={cohortForm.fee}
+                onChange={(e) => setCohortForm((p) => ({ ...p, fee: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(createCohort)}
+              type="button"
+            >
+              Create Cohort
+            </button>
+            <div className="mt-3 max-h-48 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {cohorts.map((cohort) => (
+                <div key={cohort.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-slate-900">{cohort.name}</p>
+                  <p className="text-xs text-slate-500">{cohort.mode} · {cohort.status}</p>
+                </div>
+              ))}
+              {cohorts.length === 0 && <p className="text-xs text-slate-500">No cohorts yet.</p>}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Unlock Module In Cohort</h3>
+            <div className="grid gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={unlockForm.cohortId}
+                onChange={(e) => setUnlockForm((p) => ({ ...p, cohortId: e.target.value, moduleId: '' }))}
+              >
+                <option value="">Select cohort</option>
+                {cohorts.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>
+                    {cohort.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={unlockForm.moduleId}
+                onChange={(e) => setUnlockForm((p) => ({ ...p, moduleId: e.target.value }))}
+              >
+                <option value="">Select module</option>
+                {unlockModules.map((module) => (
+                  <option key={module.id} value={module.id}>
+                    {module.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(unlockModuleForCohort)}
+              type="button"
+            >
+              Unlock Module
+            </button>
+            <p className="mt-3 text-xs text-slate-500">For instructor-led cohorts, this controls staged release by module.</p>
           </div>
         </div>
       )}

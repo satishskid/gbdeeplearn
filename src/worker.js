@@ -23,6 +23,7 @@ const DAILY_PROMPT_VERSION = 'v1.0.0';
 const PATH_KEYS = new Set(['productivity', 'research', 'entrepreneurship']);
 const COHORT_MODES = new Set(['instructor-led', 'self-paced']);
 const COHORT_STATUSES = new Set(['draft', 'open', 'live', 'completed', 'archived']);
+const MODULE_PROGRESS_STATUSES = new Set(['locked', 'unlocked', 'in_progress', 'submitted', 'completed', 'passed', 'failed']);
 
 app.get('/', (c) => {
   return c.json({
@@ -39,6 +40,9 @@ app.get('/', (c) => {
       '/api/admin/courses',
       '/api/admin/courses/:courseId/modules',
       '/api/admin/cohorts',
+      '/api/learn/modules/:moduleId/progress',
+      '/api/learn/assignments/:moduleId/submit',
+      '/api/learn/assignments/:submissionId/grade',
       '/api/admin/content/generate-daily',
       '/api/admin/content/posts',
       '/health'
@@ -986,6 +990,269 @@ app.post('/api/admin/cohorts/:cohortId/unlocks', async (c) => {
   }
 });
 
+app.post('/api/learn/modules/:moduleId/progress', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120);
+    const courseId = clean(payload?.course_id, 64);
+    const cohortId = clean(payload?.cohort_id, 64);
+    const status = clean(payload?.status, 32).toLowerCase();
+    const score = Number.isFinite(Number(payload?.score)) ? Number(payload.score) : null;
+    const artifactUrl = clean(payload?.artifact_url, 400);
+    const notes = clean(payload?.notes, 2000);
+
+    if (!moduleId || !userId || !courseId || !status) {
+      return c.json({ error: 'moduleId, user_id, course_id, and status are required.' }, 400);
+    }
+    if (!MODULE_PROGRESS_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid module progress status.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const existing = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT attempt_count FROM module_progress
+       WHERE course_id = ? AND module_id = ? AND user_id = ?`
+    )
+      .bind(courseId, moduleId, userId)
+      .first();
+    const nextAttemptCount = Math.max(1, Number(existing?.attempt_count || 0) + (status === 'submitted' ? 1 : 0));
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO module_progress (
+         cohort_id, course_id, module_id, user_id, status, score, attempt_count, artifact_url, notes, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(course_id, module_id, user_id) DO UPDATE SET
+         cohort_id = excluded.cohort_id,
+         status = excluded.status,
+         score = excluded.score,
+         attempt_count = excluded.attempt_count,
+         artifact_url = excluded.artifact_url,
+         notes = excluded.notes,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(cohortId, courseId, moduleId, userId, status, score, nextAttemptCount, artifactUrl, notes, nowMs)
+      .run();
+
+    const totalModulesRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT COUNT(*) AS count FROM course_modules WHERE course_id = ? AND is_published = 1`
+    )
+      .bind(courseId)
+      .first();
+    let totalModules = Number(totalModulesRow?.count || 0);
+    if (totalModules === 0) {
+      const anyModuleRow = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT COUNT(*) AS count FROM course_modules WHERE course_id = ?`
+      )
+        .bind(courseId)
+        .first();
+      totalModules = Number(anyModuleRow?.count || 0);
+    }
+    const completedRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT COUNT(*) AS count
+       FROM module_progress
+       WHERE course_id = ? AND user_id = ? AND status IN ('completed', 'passed')`
+    )
+      .bind(courseId, userId)
+      .first();
+    const completedModules = Number(completedRow?.count || 0);
+    const progressPct = totalModules > 0 ? Number(((completedModules / totalModules) * 100).toFixed(2)) : 0;
+
+    if (cohortId) {
+      const completionState = progressPct >= 100 ? 'completed' : 'in_progress';
+      await c.env.DEEPLEARN_DB.prepare(
+        `UPDATE cohort_enrollments
+         SET progress_pct = ?, completion_state = ?, completed_at_ms = ?, updated_at_ms = ?
+         WHERE cohort_id = ? AND user_id = ?`
+      )
+        .bind(progressPct, completionState, completionState === 'completed' ? nowMs : null, nowMs, cohortId, userId)
+        .run();
+    }
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO learning_events (
+         org_id, course_id, module_id, cohort_id, user_id, event_name, event_value, metadata_json, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind('', courseId, moduleId, cohortId, userId, 'module_progress_updated', 1, JSON.stringify({ status, score }), nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      progress: {
+        course_id: courseId,
+        cohort_id: cohortId,
+        module_id: moduleId,
+        user_id: userId,
+        status,
+        score,
+        progress_pct: progressPct
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update module progress.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/learn/assignments/:moduleId/submit', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120);
+    const courseId = clean(payload?.course_id, 64);
+    const rubricId = clean(payload?.rubric_id, 64);
+    const answerText = typeof payload?.answer_text === 'string' ? payload.answer_text.slice(0, 15000) : '';
+    const artifacts = Array.isArray(payload?.artifacts_json) ? payload.artifacts_json : [];
+
+    if (!moduleId || !userId || !courseId || !answerText.trim()) {
+      return c.json({ error: 'moduleId, user_id, course_id, and answer_text are required.' }, 400);
+    }
+
+    const submissionId = crypto.randomUUID();
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO assignment_submissions (
+         id, course_id, module_id, user_id, rubric_id, answer_text, artifacts_json, ai_feedback_json,
+         score, passed, submitted_at_ms, graded_at_ms, grader_mode, status
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, '{}', NULL, 0, ?, NULL, 'ai', 'submitted')`
+    )
+      .bind(submissionId, courseId, moduleId, userId, rubricId, answerText, JSON.stringify(artifacts), nowMs)
+      .run();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO learning_events (
+         org_id, course_id, module_id, cohort_id, user_id, event_name, event_value, metadata_json, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind('', courseId, moduleId, '', userId, 'assignment_submitted', 1, JSON.stringify({ submission_id: submissionId }), nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      submission: {
+        id: submissionId,
+        course_id: courseId,
+        module_id: moduleId,
+        user_id: userId,
+        status: 'submitted',
+        submitted_at_ms: nowMs
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to submit assignment.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/learn/assignments/:submissionId/grade', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const submissionId = clean(c.req.param('submissionId'), 64);
+    const payload = await c.req.json();
+    const groqKey = clean(payload?.groq_key, 240);
+    if (!submissionId) return c.json({ error: 'submissionId is required.' }, 400);
+
+    const submission = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, course_id, module_id, user_id, rubric_id, answer_text
+       FROM assignment_submissions
+       WHERE id = ? LIMIT 1`
+    )
+      .bind(submissionId)
+      .first();
+    if (!submission) return c.json({ error: 'Submission not found.' }, 404);
+
+    const rubric = submission.rubric_id
+      ? await c.env.DEEPLEARN_DB.prepare(
+          `SELECT id, title, rubric_json, pass_threshold
+           FROM assignment_rubrics
+           WHERE id = ? LIMIT 1`
+        )
+          .bind(submission.rubric_id)
+          .first()
+      : null;
+
+    const grading = await gradeAssignmentSubmission({
+      env: c.env,
+      groqKey,
+      answerText: String(submission.answer_text || ''),
+      rubricTitle: clean(rubric?.title || 'Assignment Rubric', 200),
+      rubricJson: clean(rubric?.rubric_json || '{}', 12000),
+      passThreshold: Number(rubric?.pass_threshold || 70)
+    });
+
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE assignment_submissions
+       SET ai_feedback_json = ?, score = ?, passed = ?, graded_at_ms = ?, status = 'graded'
+       WHERE id = ?`
+    )
+      .bind(JSON.stringify({ feedback: grading.feedback }), grading.score, grading.passed ? 1 : 0, nowMs, submissionId)
+      .run();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO assessment_events (
+         org_id, course_id, module_id, cohort_id, user_id, event_name, score, passed, metadata_json, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        '',
+        clean(submission.course_id || '', 64),
+        clean(submission.module_id || '', 64),
+        '',
+        clean(submission.user_id || '', 120),
+        'assignment_graded',
+        grading.score,
+        grading.passed ? 1 : 0,
+        JSON.stringify({ submission_id: submissionId }),
+        nowMs
+      )
+      .run();
+
+    return c.json({
+      ok: true,
+      result: {
+        submission_id: submissionId,
+        score: grading.score,
+        passed: grading.passed,
+        feedback: grading.feedback
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to grade assignment.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/admin/courses/:courseId/enroll', async (c) => {
   const authError = await assertAdmin(c);
   if (authError) return authError;
@@ -1802,6 +2069,96 @@ async function verifyTurnstile({ secret, token, remoteIp }) {
     success: Boolean(result?.success),
     errorCodes: result?.['error-codes'] || []
   };
+}
+
+async function gradeAssignmentSubmission({ env, groqKey, answerText, rubricTitle, rubricJson, passThreshold }) {
+  const fallbackScore = answerText.trim().length >= 500 ? 78 : answerText.trim().length >= 250 ? 66 : 44;
+  const fallbackResult = {
+    score: fallbackScore,
+    passed: fallbackScore >= passThreshold,
+    feedback:
+      fallbackScore >= passThreshold
+        ? 'Submission covers key points and passes baseline rubric expectations.'
+        : 'Submission is too brief or incomplete. Expand key concepts, methods, and evidence references.'
+  };
+
+  const apiKey = (groqKey || env.GROQ_API_KEY || '').trim();
+  if (!apiKey) return fallbackResult;
+
+  const requestPayload = {
+    model: resolveGroqModel(env, resolveGroqBaseUrl(env)),
+    temperature: 0.1,
+    messages: [
+      {
+        role: 'system',
+        content:
+          'You are a strict evaluator. Respond in valid JSON only: {"score": number, "feedback": string, "passed": boolean}.'
+      },
+      {
+        role: 'user',
+        content: `Rubric title: ${rubricTitle}\nPass threshold: ${passThreshold}\nRubric JSON: ${rubricJson}\n\nStudent answer:\n${answerText}\n\nReturn score 0-100 and concise feedback.`
+      }
+    ]
+  };
+
+  let baseUrl = resolveGroqBaseUrl(env);
+  let model = resolveGroqModel(env, baseUrl);
+
+  const runModelCall = async (targetBaseUrl, targetModel, includeResponseFormat) => {
+    const body = {
+      ...requestPayload,
+      model: targetModel
+    };
+    if (includeResponseFormat) {
+      body.response_format = { type: 'json_object' };
+    }
+    return fetch(`${targetBaseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+  };
+
+  let response = await runModelCall(baseUrl, model, true);
+  if (!response.ok) {
+    let details = await response.text();
+    const fallbackToDirect = shouldFallbackToDirectGroq(baseUrl, details);
+    if (fallbackToDirect) {
+      baseUrl = resolveDirectGroqBaseUrl(env);
+      model = resolveGroqModel(env, baseUrl);
+      response = await runModelCall(baseUrl, model, false);
+    } else if (/response_format|unsupported|unknown/i.test(details)) {
+      response = await runModelCall(baseUrl, model, false);
+    }
+
+    if (!response.ok) {
+      details = await response.text();
+      return {
+        ...fallbackResult,
+        feedback: `${fallbackResult.feedback} (Auto-grade fallback used: ${clean(details, 180)})`
+      };
+    }
+  }
+
+  const payload = await response.json();
+  const content = payload?.choices?.[0]?.message?.content;
+  if (!content || typeof content !== 'string') {
+    return fallbackResult;
+  }
+
+  try {
+    const parsed = parseJsonObject(content);
+    const scoreRaw = Number(parsed?.score);
+    const score = Number.isFinite(scoreRaw) ? Math.max(0, Math.min(100, scoreRaw)) : fallbackResult.score;
+    const feedback = clean(String(parsed?.feedback || ''), 1200) || fallbackResult.feedback;
+    const passed = typeof parsed?.passed === 'boolean' ? parsed.passed : score >= passThreshold;
+    return { score, feedback, passed };
+  } catch {
+    return fallbackResult;
+  }
 }
 
 async function runScheduledContentGeneration(env, cron) {
