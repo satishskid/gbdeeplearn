@@ -19,6 +19,7 @@ export default function PlatformConsole({ userRoles = [] }) {
   const [adminToken, setAdminToken] = useState('');
   const [overview, setOverview] = useState(null);
   const [courses, setCourses] = useState([]);
+  const [contentPosts, setContentPosts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -84,19 +85,23 @@ export default function PlatformConsole({ userRoles = [] }) {
     setLoading(true);
     setError('');
     try {
-      const [overviewRes, coursesRes] = await Promise.all([
+      const [overviewRes, coursesRes, contentRes] = await Promise.all([
         fetch(apiUrl('/api/admin/overview'), { headers: adminHeaders }),
-        fetch(apiUrl('/api/admin/courses'), { headers: adminHeaders })
+        fetch(apiUrl('/api/admin/courses'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/content/posts?limit=20'), { headers: adminHeaders })
       ]);
 
       const overviewPayload = await overviewRes.json();
       const coursesPayload = await coursesRes.json();
+      const contentPayload = await contentRes.json();
 
       if (!overviewRes.ok) throw new Error(overviewPayload?.error || 'Overview load failed.');
       if (!coursesRes.ok) throw new Error(coursesPayload?.error || 'Courses load failed.');
+      if (!contentRes.ok) throw new Error(contentPayload?.error || 'Content load failed.');
 
       setOverview(overviewPayload);
       setCourses(coursesPayload.courses || []);
+      setContentPosts(contentPayload.posts || []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load console data.');
     } finally {
@@ -209,10 +214,38 @@ export default function PlatformConsole({ userRoles = [] }) {
     return 'Learner marked completed.';
   };
 
+  const generateDailyBrief = async () => {
+    const response = await fetch(apiUrl('/api/admin/content/generate-daily'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ force: false })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Daily generation failed.');
+
+    if (payload?.generated?.skipped) {
+      return payload.generated.reason || 'Draft already exists for today.';
+    }
+
+    return `Draft generated: ${payload?.generated?.title || 'Untitled brief'}`;
+  };
+
+  const setContentStatus = async (postId, status) => {
+    const response = await fetch(apiUrl(`/api/admin/content/posts/${postId}/status`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ status })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Content status update failed.');
+    return `Content moved to ${status}.`;
+  };
+
   const isCoordinator = isCoordinatorUser && activeRole === 'coordinator';
   const isTeacher = isTeacherUser && activeRole === 'teacher';
   const isLearner = isLearnerUser && activeRole === 'learner';
   const isCto = isCtoUser && activeRole === 'cto';
+  const canManageContent = isCoordinatorUser || isCtoUser;
 
   return (
     <section className="rounded-[1.75rem] border border-slate-900/10 bg-white/80 p-5 shadow-xl backdrop-blur-sm md:p-8">
@@ -489,6 +522,85 @@ export default function PlatformConsole({ userRoles = [] }) {
         </div>
       )}
 
+      {canManageContent && (
+        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-lg font-bold text-slate-900">Daily Content Pipeline</h3>
+              <p className="text-sm text-slate-600">Generate one draft/day, review in console, then publish to live feed cards.</p>
+            </div>
+            <button
+              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(generateDailyBrief)}
+              type="button"
+            >
+              Generate Today&apos;s Draft
+            </button>
+          </div>
+
+          <div className="overflow-hidden rounded-xl border border-slate-200">
+            <table className="w-full border-collapse text-left text-sm">
+              <thead className="bg-slate-100 text-slate-700">
+                <tr>
+                  <th className="px-3 py-2">Title</th>
+                  <th className="px-3 py-2">Path</th>
+                  <th className="px-3 py-2">Status</th>
+                  <th className="px-3 py-2">Updated</th>
+                  <th className="px-3 py-2">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {contentPosts.map((post) => (
+                  <tr key={post.id} className="border-t border-slate-200 bg-white">
+                    <td className="px-3 py-2">
+                      <p className="font-semibold text-slate-900">{post.title}</p>
+                      <p className="line-clamp-2 text-xs text-slate-500">{post.summary}</p>
+                    </td>
+                    <td className="px-3 py-2 text-xs uppercase tracking-[0.1em] text-slate-600">{post.path || '-'}</td>
+                    <td className="px-3 py-2">
+                      <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">{post.status}</span>
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-500">{formatMs(post.updated_at_ms)}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
+                          onClick={() => void runAction(() => setContentStatus(post.id, 'approved'))}
+                          type="button"
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
+                          onClick={() => void runAction(() => setContentStatus(post.id, 'published'))}
+                          type="button"
+                        >
+                          Publish
+                        </button>
+                        <button
+                          className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
+                          onClick={() => void runAction(() => setContentStatus(post.id, 'rejected'))}
+                          type="button"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {contentPosts.length === 0 && (
+                  <tr>
+                    <td className="px-3 py-3 text-sm text-slate-500" colSpan={5}>
+                      No content drafts yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       <div className="mt-6 overflow-hidden rounded-2xl border border-slate-200">
         <table className="w-full border-collapse text-left text-sm">
           <thead className="bg-slate-100 text-slate-700">
@@ -557,4 +669,16 @@ function Metric({ label, value }) {
       <p className="mt-1 text-2xl font-extrabold text-slate-900">{value}</p>
     </article>
   );
+}
+
+function formatMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return '-';
+  return new Intl.DateTimeFormat('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  }).format(new Date(ms));
 }

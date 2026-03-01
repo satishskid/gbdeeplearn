@@ -2,5 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-"$ROOT_DIR/scripts/cf-cli.sh" d1 execute deeplearn-ops --remote --file "$ROOT_DIR/migrations/0001_platform_ops.sql"
+for migration in "$ROOT_DIR"/migrations/*.sql; do
+  echo "Applying migration: $(basename "$migration")"
+  "$ROOT_DIR/scripts/cf-cli.sh" d1 execute deeplearn-ops --remote --file "$migration"
+done

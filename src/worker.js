@@ -18,6 +18,8 @@ const WEBINAR_EVENTS = new Set([
 const COURSE_STATUSES = new Set(['draft', 'published', 'live', 'completed', 'archived']);
 const STAFF_ROLES = new Set(['teacher', 'coordinator']);
 const LEARNER_STATUSES = new Set(['active', 'completed', 'dropped']);
+const CONTENT_STATUSES = new Set(['draft', 'approved', 'published', 'rejected']);
+const DAILY_PROMPT_VERSION = 'v1.0.0';
 
 app.get('/', (c) => {
   return c.json({
@@ -28,8 +30,11 @@ app.get('/', (c) => {
       '/api/track',
       '/api/lead/submit',
       '/api/analytics/funnel',
+      '/api/content/posts',
       '/api/admin/overview',
       '/api/admin/courses',
+      '/api/admin/content/generate-daily',
+      '/api/admin/content/posts',
       '/health'
     ]
   });
@@ -648,6 +653,202 @@ app.get('/api/admin/courses/:courseId/enrollments', async (c) => {
   }
 });
 
+app.get('/api/content/posts', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'Content database is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.min(20, Math.max(1, Number(c.req.query('limit') || 6)));
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         id, slug, title, summary, path, tags_json, source_urls_json, published_at_ms, created_at_ms
+       FROM content_posts
+       WHERE status = 'published'
+       ORDER BY COALESCE(published_at_ms, created_at_ms) DESC
+       LIMIT ?`
+    )
+      .bind(limit)
+      .all();
+
+    const posts = (result.results || []).map((row) => {
+      const tags = parseJsonArray(row.tags_json);
+      const sourceUrls = parseJsonArray(row.source_urls_json);
+      return {
+        id: row.id,
+        slug: row.slug,
+        title: row.title,
+        summary: row.summary,
+        path: row.path,
+        tags,
+        source_urls: sourceUrls,
+        link: sourceUrls[0] || 'https://greybrain.ai/clinical-ai',
+        date: msToIsoDate(row.published_at_ms || row.created_at_ms)
+      };
+    });
+
+    return c.json({ posts });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list published content.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/content/posts', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.min(50, Math.max(1, Number(c.req.query('limit') || 20)));
+    const requestedStatus = clean(c.req.query('status'), 32).toLowerCase();
+    if (requestedStatus && requestedStatus !== 'all' && !CONTENT_STATUSES.has(requestedStatus)) {
+      return c.json({ error: 'Invalid content status filter.' }, 400);
+    }
+    const whereClause = requestedStatus && requestedStatus !== 'all' ? 'WHERE status = ?' : '';
+    const query = `SELECT
+        id, slug, title, summary, status, path, tags_json, source_urls_json,
+        model_name, prompt_version, generated_at_ms, approved_at_ms, published_at_ms, updated_at_ms
+      FROM content_posts
+      ${whereClause}
+      ORDER BY updated_at_ms DESC
+      LIMIT ?`;
+
+    const statement = c.env.DEEPLEARN_DB.prepare(query);
+    const result =
+      whereClause ? await statement.bind(requestedStatus, limit).all() : await statement.bind(limit).all();
+
+    const posts = (result.results || []).map((row) => ({
+      id: row.id,
+      slug: row.slug,
+      title: row.title,
+      summary: row.summary,
+      status: row.status,
+      path: row.path,
+      tags: parseJsonArray(row.tags_json),
+      source_urls: parseJsonArray(row.source_urls_json),
+      model_name: row.model_name,
+      prompt_version: row.prompt_version,
+      generated_at_ms: row.generated_at_ms,
+      approved_at_ms: row.approved_at_ms,
+      published_at_ms: row.published_at_ms,
+      updated_at_ms: row.updated_at_ms
+    }));
+
+    return c.json({ posts });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list admin content posts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/content/generate-daily', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    let payload = {};
+    try {
+      payload = await c.req.json();
+    } catch {
+      payload = {};
+    }
+    const groqKey = clean(payload?.groq_key, 240);
+    const force = payload?.force === true;
+
+    const generated = await generateDailyContentDraft(c.env, {
+      mode: 'manual',
+      force,
+      apiKeyOverride: groqKey || ''
+    });
+
+    return c.json({
+      ok: true,
+      generated
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to generate daily content.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/content/posts/:postId/status', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const postId = clean(c.req.param('postId'), 64);
+    const payload = await c.req.json();
+    const status = clean(payload?.status, 32).toLowerCase();
+
+    if (!postId) return c.json({ error: 'postId is required.' }, 400);
+    if (!CONTENT_STATUSES.has(status)) return c.json({ error: 'Invalid content status.' }, 400);
+
+    const nowMs = Date.now();
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE content_posts
+       SET status = ?,
+           approved_at_ms = CASE WHEN ? = 'approved' THEN ? ELSE approved_at_ms END,
+           published_at_ms = CASE WHEN ? = 'published' THEN ? ELSE published_at_ms END,
+           updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(status, status, nowMs, status, nowMs, nowMs, postId)
+      .run();
+
+    if (!result.success || Number(result.meta?.changes || 0) === 0) {
+      return c.json({ error: 'Content post not found.' }, 404);
+    }
+
+    await recordContentRun(c.env.DEEPLEARN_DB, {
+      runType: 'status-update',
+      status: 'success',
+      message: `content status updated to ${status}`,
+      postId
+    });
+
+    return c.json({ ok: true, post_id: postId, status });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update content status.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 async function assertAdmin(c) {
   const configuredToken = (c.env.ADMIN_API_TOKEN || '').trim();
   if (!configuredToken) {
@@ -731,7 +932,37 @@ async function ensureOpsSchema(db) {
       UNIQUE(course_id, user_id)
     )`,
     `CREATE INDEX IF NOT EXISTS idx_enrollments_course_status
-      ON course_enrollments(course_id, status)`
+      ON course_enrollments(course_id, status)`,
+    `CREATE TABLE IF NOT EXISTS content_posts (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      content_markdown TEXT NOT NULL,
+      path TEXT NOT NULL,
+      tags_json TEXT NOT NULL,
+      source_urls_json TEXT NOT NULL,
+      model_name TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      generated_at_ms INTEGER NOT NULL,
+      approved_at_ms INTEGER,
+      published_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_content_posts_status_updated
+      ON content_posts(status, updated_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS content_generation_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT NOT NULL,
+      post_id TEXT,
+      created_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_content_generation_runs_created
+      ON content_generation_runs(created_at_ms)`
   ];
 
   for (const statement of ddl) {
@@ -909,6 +1140,404 @@ async function verifyTurnstile({ secret, token, remoteIp }) {
   };
 }
 
+async function runScheduledContentGeneration(env, cron) {
+  if (!env.DEEPLEARN_DB) {
+    return;
+  }
+
+  try {
+    await ensureOpsSchema(env.DEEPLEARN_DB);
+    await generateDailyContentDraft(env, { mode: `scheduled:${cron || 'daily'}`, force: false, apiKeyOverride: '' });
+  } catch (error) {
+    await recordContentRun(env.DEEPLEARN_DB, {
+      runType: 'scheduled',
+      status: 'error',
+      message: error instanceof Error ? error.message : 'scheduled content generation failed',
+      postId: ''
+    });
+  }
+}
+
+async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) {
+    throw new Error('D1 is not configured.');
+  }
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(`daily-${dateSlug}`).first();
+
+  if (existing && !force) {
+    const message = `Draft already exists for ${publishDate}`;
+    await recordContentRun(db, {
+      runType: mode,
+      status: 'skipped',
+      message,
+      postId: existing.id
+    });
+
+    return {
+      skipped: true,
+      reason: message,
+      post_id: existing.id,
+      status: existing.status
+    };
+  }
+
+  const sourceSnapshot = await fetchClinicalFeedSnapshot();
+  const apiKey = (apiKeyOverride || env.GROQ_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('Missing Groq API key. Provide groq_key or set GROQ_API_KEY in worker secrets.');
+  }
+
+  const baseUrl = resolveGroqBaseUrl(env);
+  const model = resolveGroqModel(env, baseUrl);
+  const prompt = buildDailyPrompt({ publishDate, sourceSnapshot });
+  const generated = await callGroqForDailyContent({
+    apiKey,
+    baseUrl,
+    model,
+    prompt
+  });
+  const normalized = validateGeneratedContent(generated, sourceSnapshot);
+
+  const postId = existing?.id || crypto.randomUUID();
+  const slug = `daily-${dateSlug}`;
+  const sourceUrls = normalized.sources.map((source) => source.url);
+  const tags = normalized.tags.length > 0 ? normalized.tags : ['clinical-ai', 'greybrain-daily'];
+
+  const upsertResult = await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, path, tags_json, source_urls_json, model_name,
+      prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug = excluded.slug,
+      title = excluded.title,
+      summary = excluded.summary,
+      content_markdown = excluded.content_markdown,
+      path = excluded.path,
+      tags_json = excluded.tags_json,
+      source_urls_json = excluded.source_urls_json,
+      model_name = excluded.model_name,
+      prompt_version = excluded.prompt_version,
+      status = 'draft',
+      generated_at_ms = excluded.generated_at_ms,
+      approved_at_ms = NULL,
+      published_at_ms = NULL,
+      updated_at_ms = excluded.updated_at_ms`
+  )
+    .bind(
+      postId,
+      slug,
+      normalized.title,
+      normalized.summary,
+      normalized.content_markdown,
+      normalized.path,
+      JSON.stringify(tags),
+      JSON.stringify(sourceUrls),
+      model,
+      DAILY_PROMPT_VERSION,
+      nowMs,
+      nowMs,
+      nowMs
+    )
+    .run();
+
+  if (!upsertResult.success) {
+    throw new Error('Failed to save generated content.');
+  }
+
+  await recordContentRun(db, {
+    runType: mode,
+    status: 'success',
+    message: `Draft generated for ${publishDate}`,
+    postId
+  });
+
+  return {
+    skipped: false,
+    post_id: postId,
+    slug,
+    title: normalized.title,
+    summary: normalized.summary,
+    path: normalized.path,
+    model,
+    sources: normalized.sources
+  };
+}
+
+async function recordContentRun(db, { runType, status, message, postId }) {
+  await db.prepare(
+    `INSERT INTO content_generation_runs (run_type, status, message, post_id, created_at_ms)
+     VALUES (?, ?, ?, ?, ?)`
+  )
+    .bind(runType || 'manual', status || 'unknown', message || '', postId || '', Date.now())
+    .run();
+}
+
+function buildDailyPrompt({ publishDate, sourceSnapshot }) {
+  return `You are writing the "Greybrain.AI Daily — Stay Ahead in Medicine" briefing.
+Date: ${publishDate}
+
+Output STRICT JSON only (no markdown fences) with keys:
+{
+  "title": string,
+  "summary": string,
+  "path": "productivity" | "research" | "entrepreneurship",
+  "content_markdown": string,
+  "tags": string[],
+  "sources": [{"title": string, "url": string, "date": string}]
+}
+
+Hard rules:
+1) Keep an editorial clinician-to-clinician tone. No hype language.
+2) Do not invent facts or dates. Use only the supplied source items.
+3) Mention uncertainty if evidence is weak.
+4) Keep summary under 220 characters.
+5) In content_markdown include three cards with headings:
+   - Card 1: Model Spotlight
+   - Card 2: Clinical AI in Practice
+   - Card 3: Do-AI-Yourself (Prompt Artifact)
+6) Card 3 must include this exact prompt block:
+"I am a physician.
+Based on the attached clinical study, act as a medical communications expert and create:
+1) A three-point plain-language summary for a patient’s family
+2) Two ‘Did You Know?’ insights derived directly from the study data
+3) A five-step outline suitable for a patient-facing infographic"
+7) Include a final section "Sources" with markdown links only from the provided list.
+
+Provided source items:
+${sourceSnapshot.map((item, idx) => `${idx + 1}. ${item.title} | ${item.url} | ${item.date}`).join('\n')}
+`;
+}
+
+async function callGroqForDailyContent({ apiKey, baseUrl, model, prompt }) {
+  const requestBase = {
+    model,
+    temperature: 0.2,
+    messages: [
+      {
+        role: 'system',
+        content: 'You are a clinically cautious editorial assistant. Return valid JSON only.'
+      },
+      { role: 'user', content: prompt }
+    ]
+  };
+
+  const firstAttempt = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      ...requestBase,
+      response_format: { type: 'json_object' }
+    })
+  });
+
+  let payload;
+  if (firstAttempt.ok) {
+    payload = await firstAttempt.json();
+  } else {
+    const details = await firstAttempt.text();
+    const shouldRetryWithoutResponseFormat = /response_format|unsupported|unknown/i.test(details);
+    if (!shouldRetryWithoutResponseFormat) {
+      throw new Error(`Groq content generation failed: ${details || firstAttempt.status}`);
+    }
+
+    const retryAttempt = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBase)
+    });
+
+    if (!retryAttempt.ok) {
+      const retryDetails = await retryAttempt.text();
+      throw new Error(`Groq content generation failed: ${retryDetails || retryAttempt.status}`);
+    }
+
+    payload = await retryAttempt.json();
+  }
+
+  const content = payload?.choices?.[0]?.message?.content;
+  if (!content || typeof content !== 'string') {
+    throw new Error('Model returned empty content payload.');
+  }
+
+  return parseJsonObject(content);
+}
+
+function parseJsonObject(text) {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf('{');
+    const end = trimmed.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    }
+    throw new Error('Model response is not valid JSON.');
+  }
+}
+
+function validateGeneratedContent(payload, sourceSnapshot) {
+  const sourceMap = new Map(sourceSnapshot.map((item) => [item.url, item]));
+  const title = clean(String(payload?.title || ''), 200);
+  const summary = clean(String(payload?.summary || ''), 240);
+  const path = clean(String(payload?.path || ''), 40).toLowerCase();
+  const contentMarkdown = String(payload?.content_markdown || '').trim();
+  const tags = Array.isArray(payload?.tags)
+    ? payload.tags.map((tag) => clean(String(tag), 32).toLowerCase()).filter(Boolean).slice(0, 8)
+    : [];
+  const rawSources = Array.isArray(payload?.sources) ? payload.sources : [];
+  const sources = rawSources
+    .map((source) => ({
+      title: clean(String(source?.title || ''), 200),
+      url: clean(String(source?.url || ''), 400),
+      date: clean(String(source?.date || ''), 40)
+    }))
+    .filter((source) => source.url && source.title && sourceMap.has(source.url))
+    .slice(0, 8);
+
+  if (!title || !summary || !contentMarkdown) {
+    throw new Error('Generated content is missing title, summary, or body.');
+  }
+
+  if (!['productivity', 'research', 'entrepreneurship'].includes(path)) {
+    throw new Error('Generated content path must be productivity, research, or entrepreneurship.');
+  }
+
+  if (!contentMarkdown.includes('Card 1:') || !contentMarkdown.includes('Card 2:') || !contentMarkdown.includes('Card 3:')) {
+    throw new Error('Generated content is missing required card structure.');
+  }
+
+  if (!contentMarkdown.includes('I am a physician.')) {
+    throw new Error('Generated content is missing mandatory DIY prompt artifact.');
+  }
+
+  if (sources.length < 2) {
+    throw new Error('Generated content requires at least 2 verified sources.');
+  }
+
+  return {
+    title,
+    summary,
+    path,
+    content_markdown: contentMarkdown.slice(0, 48000),
+    tags,
+    sources
+  };
+}
+
+async function fetchClinicalFeedSnapshot() {
+  const sourceCandidates = [
+    { title: 'Greybrain Clinical AI Feed', url: 'https://medium.com/feed/@ClinicalAI' },
+    { title: 'Greybrain Clinical AI', url: 'https://greybrain.ai/clinical-ai' }
+  ];
+
+  const snapshots = [];
+
+  for (const source of sourceCandidates) {
+    try {
+      const response = await fetch(source.url, {
+        headers: {
+          'user-agent': 'Mozilla/5.0 (compatible; DeepLearnContentBot/1.0)'
+        }
+      });
+      if (!response.ok) continue;
+      const text = await response.text();
+      const items = source.url.includes('/feed/')
+        ? parseRssItems(text)
+        : [{ title: source.title, url: source.url, date: isoDateInTimezone(Date.now(), 'UTC') }];
+      snapshots.push(...items);
+    } catch {
+      // Ignore source fetch failures and continue.
+    }
+  }
+
+  const deduped = [];
+  const seen = new Set();
+
+  for (const item of snapshots) {
+    if (!item.url || seen.has(item.url)) continue;
+    seen.add(item.url);
+    deduped.push(item);
+  }
+
+  if (deduped.length === 0) {
+    throw new Error('Unable to load source feed for daily content generation.');
+  }
+
+  return deduped.slice(0, 8);
+}
+
+function parseRssItems(xml) {
+  const matches = [...String(xml || '').matchAll(/<item>([\s\S]*?)<\/item>/g)];
+  return matches
+    .map((match) => {
+      const item = match[1] || '';
+      const title = decodeXml((item.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '');
+      const url = decodeXml((item.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '');
+      const pubDateRaw = decodeXml((item.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) || [])[1] || '');
+      const parsedDate = new Date(pubDateRaw);
+      const date = Number.isNaN(parsedDate.getTime()) ? '' : parsedDate.toISOString().slice(0, 10);
+      return {
+        title: clean(title, 200),
+        url: clean(url, 400),
+        date
+      };
+    })
+    .filter((item) => item.title && item.url);
+}
+
+function decodeXml(value) {
+  return String(value || '')
+    .replace(/<!\[CDATA\[|\]\]>/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseJsonArray(value) {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => (typeof item === 'string' ? item : '')).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function isoDateInTimezone(ms, timeZone) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+  return formatter.format(new Date(ms));
+}
+
+function msToIsoDate(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
 function clean(value, maxLen) {
   if (typeof value !== 'string') {
     return '';
@@ -926,4 +1555,11 @@ async function sha256Hex(input) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export default app;
+export default {
+  fetch(request, env, ctx) {
+    return app.fetch(request, env, ctx);
+  },
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runScheduledContentGeneration(env, controller.cron));
+  }
+};

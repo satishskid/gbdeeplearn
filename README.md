@@ -171,6 +171,30 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 Funnel summary endpoint:
 - `GET /api/analytics/funnel?webinar_id=deep-rag-live-webinar&days=30`
 
+## Daily Content Pipeline (Cloudflare + BYOK/Fallback)
+
+The Worker now includes a built-in daily editorial pipeline for `Greybrain.AI Daily`:
+
+- Generate draft (manual): `POST /api/admin/content/generate-daily`
+  - Body: `{ "groq_key": "optional_byok_key", "force": false }`
+  - Uses `groq_key` first, then falls back to Worker secret `GROQ_API_KEY`.
+- Review list (admin): `GET /api/admin/content/posts?limit=20&status=all`
+- Approve/Publish/Reject: `POST /api/admin/content/posts/:postId/status` with `{ "status": "approved|published|rejected" }`
+- Public feed (published only): `GET /api/content/posts?limit=4`
+
+Cron is configured in [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml):
+- `30 3 * * *` (daily at 03:30 UTC, 09:00 IST)
+
+### Required secret for auto generation
+
+```bash
+npm run cf:secret:put -- GROQ_API_KEY
+```
+
+### Apply latest D1 schema
+
+`npm run cf:d1:migrate` now applies all SQL files in `/migrations` in order, including content pipeline tables.
+
 ### Turnstile setup
 
 Development defaults use Cloudflare's public test site key when `PUBLIC_TURNSTILE_SITE_KEY` is not set.
