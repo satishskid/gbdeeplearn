@@ -58,28 +58,47 @@ app.post('/api/chat/tutor', async (c) => {
     const baseUrl = resolveGroqBaseUrl(c.env);
     const model = resolveGroqModel(c.env, baseUrl);
 
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const requestBody = {
+      model,
+      temperature: 0.2,
+      messages: [
+        {
+          role: 'system',
+          content: `${TUTOR_PROMPT}\n\nCourse Context:\n${context}`
+        },
+        { role: 'user', content: message }
+      ]
+    };
+
+    let response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        messages: [
-          {
-            role: 'system',
-            content: `${TUTOR_PROMPT}\n\nCourse Context:\n${context}`
-          },
-          { role: 'user', content: message }
-        ]
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
-      const details = await response.text();
-      return c.json({ error: 'Groq request failed.', details }, 502);
+      let details = await response.text();
+      if (shouldFallbackToDirectGroq(baseUrl, details)) {
+        const directBaseUrl = resolveDirectGroqBaseUrl(c.env);
+        const directModel = resolveGroqModel(c.env, directBaseUrl);
+        response = await fetch(`${directBaseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ ...requestBody, model: directModel })
+        });
+        if (!response.ok) {
+          details = await response.text();
+          return c.json({ error: 'Groq request failed.', details }, 502);
+        }
+      } else {
+        return c.json({ error: 'Groq request failed.', details }, 502);
+      }
     }
 
     const payload = await response.json();
@@ -1004,6 +1023,10 @@ function resolveGroqBaseUrl(env) {
     return gatewayBaseUrl.replace(/\/+$/, '');
   }
 
+  return resolveDirectGroqBaseUrl(env);
+}
+
+function resolveDirectGroqBaseUrl(env) {
   const groqBaseUrl = (env.GROQ_API_BASE_URL || '').trim();
   if (groqBaseUrl) {
     return groqBaseUrl.replace(/\/+$/, '');
@@ -1019,6 +1042,15 @@ function resolveGroqModel(env, baseUrl) {
   }
 
   return configuredModel;
+}
+
+function shouldFallbackToDirectGroq(baseUrl, details) {
+  if (!baseUrl.includes('gateway.ai.cloudflare.com')) {
+    return false;
+  }
+
+  const text = String(details || '');
+  return /please configure ai gateway|\"code\"\s*:\s*2001|ai gateway/i.test(text);
 }
 
 async function queryCourseContext(env, message, moduleId) {
@@ -1195,13 +1227,14 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
   const baseUrl = resolveGroqBaseUrl(env);
   const model = resolveGroqModel(env, baseUrl);
   const prompt = buildDailyPrompt({ publishDate, sourceSnapshot });
-  const generated = await callGroqForDailyContent({
+  const generationResult = await callGroqForDailyContent({
+    env,
     apiKey,
     baseUrl,
     model,
     prompt
   });
-  const normalized = validateGeneratedContent(generated, sourceSnapshot);
+  const normalized = validateGeneratedContent(generationResult.payload, sourceSnapshot);
 
   const postId = existing?.id || crypto.randomUUID();
   const slug = `daily-${dateSlug}`;
@@ -1238,7 +1271,7 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
       normalized.path,
       JSON.stringify(tags),
       JSON.stringify(sourceUrls),
-      model,
+      generationResult.model,
       DAILY_PROMPT_VERSION,
       nowMs,
       nowMs,
@@ -1264,7 +1297,7 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
     title: normalized.title,
     summary: normalized.summary,
     path: normalized.path,
-    model,
+    model: generationResult.model,
     sources: normalized.sources
   };
 }
@@ -1314,9 +1347,12 @@ ${sourceSnapshot.map((item, idx) => `${idx + 1}. ${item.title} | ${item.url} | $
 `;
 }
 
-async function callGroqForDailyContent({ apiKey, baseUrl, model, prompt }) {
+async function callGroqForDailyContent({ env, apiKey, baseUrl, model, prompt }) {
+  let activeBaseUrl = baseUrl;
+  let activeModel = model;
+
   const requestBase = {
-    model,
+    model: activeModel,
     temperature: 0.2,
     messages: [
       {
@@ -1327,7 +1363,7 @@ async function callGroqForDailyContent({ apiKey, baseUrl, model, prompt }) {
     ]
   };
 
-  const firstAttempt = await fetch(`${baseUrl}/chat/completions`, {
+  const firstAttempt = await fetch(`${activeBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -1344,18 +1380,24 @@ async function callGroqForDailyContent({ apiKey, baseUrl, model, prompt }) {
     payload = await firstAttempt.json();
   } else {
     const details = await firstAttempt.text();
-    const shouldRetryWithoutResponseFormat = /response_format|unsupported|unknown/i.test(details);
+    const fallbackToDirect = shouldFallbackToDirectGroq(activeBaseUrl, details);
+    if (fallbackToDirect) {
+      activeBaseUrl = resolveDirectGroqBaseUrl(env);
+      activeModel = resolveGroqModel(env, activeBaseUrl);
+    }
+
+    const shouldRetryWithoutResponseFormat = /response_format|unsupported|unknown/i.test(details) || fallbackToDirect;
     if (!shouldRetryWithoutResponseFormat) {
       throw new Error(`Groq content generation failed: ${details || firstAttempt.status}`);
     }
 
-    const retryAttempt = await fetch(`${baseUrl}/chat/completions`, {
+    const retryAttempt = await fetch(`${activeBaseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(requestBase)
+      body: JSON.stringify({ ...requestBase, model: activeModel })
     });
 
     if (!retryAttempt.ok) {
@@ -1371,7 +1413,60 @@ async function callGroqForDailyContent({ apiKey, baseUrl, model, prompt }) {
     throw new Error('Model returned empty content payload.');
   }
 
-  return parseJsonObject(content);
+  let parsedPayload;
+  try {
+    parsedPayload = parseJsonObject(content);
+  } catch {
+    const repaired = await repairJsonWithModel({
+      apiKey,
+      baseUrl: activeBaseUrl,
+      model: activeModel,
+      malformedText: content
+    });
+    parsedPayload = parseJsonObject(repaired);
+  }
+
+  return {
+    payload: parsedPayload,
+    model: activeModel
+  };
+}
+
+async function repairJsonWithModel({ apiKey, baseUrl, model, malformedText }) {
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      model,
+      temperature: 0,
+      messages: [
+        {
+          role: 'system',
+          content: 'You repair malformed JSON. Return valid JSON only with no markdown code fences.'
+        },
+        {
+          role: 'user',
+          content: `Fix this into valid JSON. Preserve all keys/values and do not summarize:\n${malformedText}`
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Failed to repair malformed JSON output: ${details || response.status}`);
+  }
+
+  const payload = await response.json();
+  const repaired = payload?.choices?.[0]?.message?.content;
+  if (!repaired || typeof repaired !== 'string') {
+    throw new Error('Model did not return repaired JSON content.');
+  }
+
+  return repaired;
 }
 
 function parseJsonObject(text) {
