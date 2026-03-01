@@ -20,6 +20,9 @@ const STAFF_ROLES = new Set(['teacher', 'coordinator']);
 const LEARNER_STATUSES = new Set(['active', 'completed', 'dropped']);
 const CONTENT_STATUSES = new Set(['draft', 'approved', 'published', 'rejected']);
 const DAILY_PROMPT_VERSION = 'v1.0.0';
+const PATH_KEYS = new Set(['productivity', 'research', 'entrepreneurship']);
+const COHORT_MODES = new Set(['instructor-led', 'self-paced']);
+const COHORT_STATUSES = new Set(['draft', 'open', 'live', 'completed', 'archived']);
 
 app.get('/', (c) => {
   return c.json({
@@ -32,7 +35,10 @@ app.get('/', (c) => {
       '/api/analytics/funnel',
       '/api/content/posts',
       '/api/admin/overview',
+      '/api/admin/organizations',
       '/api/admin/courses',
+      '/api/admin/courses/:courseId/modules',
+      '/api/admin/cohorts',
       '/api/admin/content/generate-daily',
       '/api/admin/content/posts',
       '/health'
@@ -372,6 +378,97 @@ app.get('/api/admin/overview', async (c) => {
   }
 });
 
+app.get('/api/admin/organizations', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') || 30)));
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, slug, name, brand_primary_color, logo_url, settings_json, created_at_ms, updated_at_ms
+       FROM organizations
+       ORDER BY updated_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(limit)
+      .all();
+
+    const organizations = (result.results || []).map((row) => ({
+      ...row,
+      settings: parseJsonObjectOrDefault(row.settings_json, {})
+    }));
+
+    return c.json({ organizations });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list organizations.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/organizations', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+    const slug = slugify(clean(payload?.slug, 120));
+    const name = clean(payload?.name, 180);
+    const brandPrimaryColor = clean(payload?.brand_primary_color, 16) || '#0f172a';
+    const logoUrl = clean(payload?.logo_url, 400);
+    const settings =
+      payload?.settings && typeof payload.settings === 'object' && !Array.isArray(payload.settings) ? payload.settings : {};
+
+    if (!slug || !name) {
+      return c.json({ error: 'slug and name are required.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const orgId = crypto.randomUUID();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO organizations (
+        id, slug, name, brand_primary_color, logo_url, settings_json, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(orgId, slug, name, brandPrimaryColor, logoUrl, JSON.stringify(settings), nowMs, nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      organization: {
+        id: orgId,
+        slug,
+        name,
+        brand_primary_color: brandPrimaryColor,
+        logo_url: logoUrl,
+        settings
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create organization.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/admin/courses', async (c) => {
   const authError = await assertAdmin(c);
   if (authError) return authError;
@@ -538,6 +635,350 @@ app.post('/api/admin/courses/:courseId/staff', async (c) => {
     return c.json(
       {
         error: 'Failed to add staff.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/courses/:courseId/modules', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    if (!courseId) return c.json({ error: 'courseId is required.' }, 400);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         id, course_id, path_key, module_key, title, description, sort_order,
+         content_markdown, lab_type, unlock_policy, estimated_minutes, is_published, updated_at_ms
+       FROM course_modules
+       WHERE course_id = ?
+       ORDER BY sort_order ASC, updated_at_ms DESC`
+    )
+      .bind(courseId)
+      .all();
+
+    return c.json({ modules: result.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list modules.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/modules', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const payload = await c.req.json();
+
+    const title = clean(payload?.title, 180);
+    const moduleKeyInput = clean(payload?.module_key, 120);
+    const moduleKey = moduleKeyInput ? slugify(moduleKeyInput) : slugify(title);
+    const description = clean(payload?.description, 1200);
+    const pathKey = clean(payload?.path_key, 40).toLowerCase() || 'productivity';
+    const sortOrder = Number.isFinite(Number(payload?.sort_order)) ? Number(payload.sort_order) : null;
+    const contentMarkdown = typeof payload?.content_markdown === 'string' ? payload.content_markdown.slice(0, 20000) : '';
+    const labType = clean(payload?.lab_type, 80);
+    const unlockPolicy = clean(payload?.unlock_policy, 40) || 'cohort';
+    const estimatedMinutes = Number.isFinite(Number(payload?.estimated_minutes)) ? Number(payload.estimated_minutes) : 30;
+    const isPublished = payload?.is_published === true ? 1 : 0;
+
+    if (!courseId || !title || !moduleKey) {
+      return c.json({ error: 'courseId, title, and module_key are required.' }, 400);
+    }
+    if (!PATH_KEYS.has(pathKey)) {
+      return c.json({ error: 'Invalid path_key.' }, 400);
+    }
+
+    let resolvedSortOrder = sortOrder;
+    if (resolvedSortOrder === null) {
+      const row = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_sort FROM course_modules WHERE course_id = ?'
+      )
+        .bind(courseId)
+        .first();
+      resolvedSortOrder = Number(row?.next_sort || 0);
+    }
+
+    const nowMs = Date.now();
+    const moduleId = crypto.randomUUID();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_modules (
+         id, course_id, path_key, module_key, title, description, sort_order,
+         content_markdown, lab_type, unlock_policy, estimated_minutes, is_published, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        moduleId,
+        courseId,
+        pathKey,
+        moduleKey,
+        title,
+        description,
+        resolvedSortOrder,
+        contentMarkdown,
+        labType,
+        unlockPolicy,
+        estimatedMinutes,
+        isPublished,
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    return c.json({
+      ok: true,
+      module: {
+        id: moduleId,
+        course_id: courseId,
+        path_key: pathKey,
+        module_key: moduleKey,
+        title,
+        description,
+        sort_order: resolvedSortOrder,
+        lab_type: labType,
+        unlock_policy: unlockPolicy,
+        estimated_minutes: estimatedMinutes,
+        is_published: isPublished
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create module.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/cohorts', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.min(100, Math.max(1, Number(c.req.query('limit') || 40)));
+    const courseId = clean(c.req.query('course_id'), 64);
+    const orgId = clean(c.req.query('org_id'), 64);
+    const status = clean(c.req.query('status'), 32).toLowerCase();
+
+    const conditions = [];
+    const params = [];
+
+    if (courseId) {
+      conditions.push('co.course_id = ?');
+      params.push(courseId);
+    }
+    if (orgId) {
+      conditions.push('co.org_id = ?');
+      params.push(orgId);
+    }
+    if (status) {
+      conditions.push('co.status = ?');
+      params.push(status);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const query = `SELECT
+        co.id, co.org_id, co.course_id, co.name, co.mode, co.start_date, co.end_date, co.instructor_user_id,
+        co.fee_cents, co.status, co.updated_at_ms,
+        c.title AS course_title,
+        (SELECT COUNT(*) FROM cohort_enrollments e WHERE e.cohort_id = co.id) AS learner_count
+      FROM cohorts co
+      LEFT JOIN courses c ON c.id = co.course_id
+      ${whereClause}
+      ORDER BY co.updated_at_ms DESC
+      LIMIT ?`;
+
+    params.push(limit);
+    const result = await c.env.DEEPLEARN_DB.prepare(query)
+      .bind(...params)
+      .all();
+
+    return c.json({ cohorts: result.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list cohorts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/cohorts', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+    const courseId = clean(payload?.course_id, 64);
+    const orgId = clean(payload?.org_id, 64);
+    const name = clean(payload?.name, 180);
+    const mode = clean(payload?.mode, 40).toLowerCase() || 'instructor-led';
+    const status = clean(payload?.status, 32).toLowerCase() || 'draft';
+    const startDate = clean(payload?.start_date, 40);
+    const endDate = clean(payload?.end_date, 40);
+    const instructorUserId = clean(payload?.instructor_user_id, 120);
+    const feeCents = Number.isFinite(Number(payload?.fee_cents)) ? Number(payload.fee_cents) : 0;
+
+    if (!courseId || !name) {
+      return c.json({ error: 'course_id and name are required.' }, 400);
+    }
+    if (!COHORT_MODES.has(mode)) {
+      return c.json({ error: 'Invalid cohort mode.' }, 400);
+    }
+    if (!COHORT_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid cohort status.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const cohortId = crypto.randomUUID();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO cohorts (
+         id, org_id, course_id, name, mode, start_date, end_date, instructor_user_id, fee_cents, status, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(cohortId, orgId, courseId, name, mode, startDate, endDate, instructorUserId, feeCents, status, nowMs, nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      cohort: {
+        id: cohortId,
+        org_id: orgId,
+        course_id: courseId,
+        name,
+        mode,
+        status,
+        start_date: startDate,
+        end_date: endDate,
+        instructor_user_id: instructorUserId,
+        fee_cents: feeCents
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create cohort.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/cohorts/:cohortId/unlocks', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    if (!cohortId) return c.json({ error: 'cohortId is required.' }, 400);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         u.cohort_id, u.module_id, u.created_at_ms,
+         m.module_key, m.title
+       FROM cohort_module_unlocks u
+       LEFT JOIN course_modules m ON m.id = u.module_id
+       WHERE u.cohort_id = ?
+       ORDER BY u.created_at_ms ASC`
+    )
+      .bind(cohortId)
+      .all();
+
+    return c.json({ unlocks: result.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list cohort unlocks.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/cohorts/:cohortId/unlocks', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    const payload = await c.req.json();
+    let moduleId = clean(payload?.module_id, 64);
+    const moduleKey = slugify(clean(payload?.module_key, 120));
+
+    if (!cohortId) return c.json({ error: 'cohortId is required.' }, 400);
+
+    if (!moduleId && moduleKey) {
+      const cohort = await c.env.DEEPLEARN_DB.prepare('SELECT course_id FROM cohorts WHERE id = ?').bind(cohortId).first();
+      const resolvedModule = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT id FROM course_modules WHERE course_id = ? AND module_key = ? LIMIT 1'
+      )
+        .bind(clean(cohort?.course_id || '', 64), moduleKey)
+        .first();
+      moduleId = clean(resolvedModule?.id || '', 64);
+    }
+
+    if (!moduleId) {
+      return c.json({ error: 'module_id (or module_key resolvable in this cohort course) is required.' }, 400);
+    }
+
+    await c.env.DEEPLEARN_DB.prepare(
+      'INSERT OR IGNORE INTO cohort_module_unlocks (cohort_id, module_id, created_at_ms) VALUES (?, ?, ?)'
+    )
+      .bind(cohortId, moduleId, Date.now())
+      .run();
+
+    return c.json({ ok: true, cohort_id: cohortId, module_id: moduleId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to unlock module for cohort.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -1805,6 +2246,17 @@ function parseJsonArray(value) {
     return parsed.map((item) => (typeof item === 'string' ? item : '')).filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+function parseJsonObjectOrDefault(value, fallback) {
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return fallback;
+    return parsed;
+  } catch {
+    return fallback;
   }
 }
 
