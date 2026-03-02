@@ -132,7 +132,7 @@ npm run cf:secret:put -- ALERT_WEBHOOK_SECRET
 ```
 
 Optional Worker vars (set in `wrangler.toml` `[vars]`):
-- `LEAD_WEBHOOK_URL`: CRM endpoint for lead + payment updates.
+- `LEAD_WEBHOOK_URL`: Optional external integration endpoint for lead + payment mirrors (internal CRM works without this).
 - `ALERT_WEBHOOK_URL`: incident channel endpoint (Slack/Discord/custom) for ops alerts.
 
 ## Platform routes
@@ -163,9 +163,12 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 - Tutor auth behavior: `BYOK + server fallback` (current).
 - Analytics storage: `Cloudflare D1` for edge click/lead counts and funnel queries.
 - Lead payload storage: `Cloudflare R2` bucket (`gbdeeplearn-leads`) for submitted registration details.
-- Lead submission endpoint: `POST /api/lead/submit` (Cloudflare Worker, no external CRM required).
+- Lead submission endpoint: `POST /api/lead/submit` (Cloudflare Worker, internal CRM-first).
 - Turnstile: Enabled on lead form, server-verified in Worker.
-- Optional CRM forwarding: set `LEAD_WEBHOOK_URL` and signer/auth secrets to push lead + payment events to your CRM.
+- Internal CRM endpoints:
+  - `GET /api/admin/crm/leads`
+  - `POST /api/admin/crm/leads/:leadId`
+- Optional external forwarding remains available only if you set `LEAD_WEBHOOK_URL`.
 
 ### Webinar events captured (`POST /api/track`)
 

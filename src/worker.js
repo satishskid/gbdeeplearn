@@ -32,6 +32,7 @@ const SESSION_STATUSES = new Set(['scheduled', 'live', 'completed', 'cancelled']
 const ATTENDANCE_STATUSES = new Set(['present', 'absent', 'late', 'excused']);
 const MODULE_PROGRESS_STATUSES = new Set(['locked', 'unlocked', 'in_progress', 'submitted', 'completed', 'passed', 'failed']);
 const PAYMENT_STATUSES = new Set(['registered', 'paid', 'failed', 'refunded']);
+const CRM_STAGES = new Set(['new', 'contacted', 'qualified', 'payment_pending', 'won', 'lost']);
 const ALERT_SEVERITIES = new Set(['info', 'warning', 'critical']);
 const ALERT_STATUSES = new Set(['open', 'acknowledged', 'resolved']);
 
@@ -54,6 +55,8 @@ app.get('/', (c) => {
       '/api/admin/analytics/summary',
       '/api/admin/analytics/paths',
       '/api/admin/analytics/learning-trends',
+      '/api/admin/crm/leads',
+      '/api/admin/crm/leads/:leadId',
       '/api/content/posts',
       '/api/admin/overview',
       '/api/admin/organizations',
@@ -1503,6 +1506,217 @@ app.get('/api/admin/analytics/paths', async (c) => {
     return c.json(
       {
         error: 'Failed to load path analytics.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/crm/leads', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const days = Math.max(1, Math.min(365, Number(c.req.query('days') || 90)));
+    const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+    const paymentStatus = clean(c.req.query('payment_status'), 24).toLowerCase();
+    const stageFilter = clean(c.req.query('stage'), 32).toLowerCase();
+    const q = clean(c.req.query('q'), 160).toLowerCase();
+    const limit = Math.max(1, Math.min(300, Number(c.req.query('limit') || 120)));
+    if (stageFilter && !normalizeCrmStage(stageFilter)) {
+      return c.json({ error: 'Invalid CRM stage filter.' }, 400);
+    }
+
+    const querySql = `SELECT
+        lr.lead_id, lr.full_name, lr.email, lr.phone, lr.webinar_id, lr.source, lr.session_id,
+        lr.course_id, lr.course_slug, lr.cohort_id, lr.user_id, lr.payment_status, lr.payment_ref,
+        lr.payment_provider, lr.paid_at_ms, lr.metadata_json, lr.created_at_ms, lr.updated_at_ms,
+        c.title AS course_title,
+        h.name AS cohort_name
+      FROM lead_registrations lr
+      LEFT JOIN courses c ON c.id = lr.course_id OR (lr.course_id = '' AND lr.course_slug <> '' AND c.slug = lr.course_slug)
+      LEFT JOIN cohorts h ON h.id = lr.cohort_id
+      WHERE lr.created_at_ms >= ?
+        AND (? = '' OR lr.payment_status = ?)
+      ORDER BY lr.updated_at_ms DESC
+      LIMIT ?`;
+
+    const result = await c.env.DEEPLEARN_DB.prepare(querySql).bind(sinceMs, paymentStatus, paymentStatus, limit).all();
+
+    const rows = (result.results || []).map((row) => {
+      const metadata = parseJsonObjectOrDefault(row.metadata_json, {});
+      const crmStage = normalizeCrmStage(metadata.crm_stage || deriveCrmStageFromPaymentStatus(row.payment_status));
+      const crmOwner = clean(metadata.crm_owner_user_id || '', 120);
+      const crmNotes = clean(metadata.crm_notes || '', 1000);
+      const crmNextActionAtMs = Number(metadata.crm_next_action_at_ms || 0);
+
+      return {
+        lead_id: clean(row.lead_id || '', 64),
+        full_name: clean(row.full_name || '', 120),
+        email: clean(row.email || '', 200),
+        phone: clean(row.phone || '', 24),
+        webinar_id: clean(row.webinar_id || '', 64),
+        source: clean(row.source || '', 64),
+        session_id: clean(row.session_id || '', 64),
+        course_id: clean(row.course_id || '', 64),
+        course_slug: clean(row.course_slug || '', 120),
+        course_title: clean(row.course_title || '', 180),
+        cohort_id: clean(row.cohort_id || '', 64),
+        cohort_name: clean(row.cohort_name || '', 180),
+        user_id: clean(row.user_id || '', 120),
+        payment_status: clean(row.payment_status || 'registered', 24),
+        payment_ref: clean(row.payment_ref || '', 120),
+        payment_provider: clean(row.payment_provider || '', 64),
+        paid_at_ms: Number(row.paid_at_ms || 0),
+        created_at_ms: Number(row.created_at_ms || 0),
+        updated_at_ms: Number(row.updated_at_ms || 0),
+        crm: {
+          stage: crmStage,
+          owner_user_id: crmOwner,
+          notes: crmNotes,
+          next_action_at_ms: Number.isFinite(crmNextActionAtMs) ? crmNextActionAtMs : 0
+        }
+      };
+    });
+
+    const filtered = rows.filter((row) => {
+      if (stageFilter && normalizeCrmStage(stageFilter) !== row.crm.stage) {
+        return false;
+      }
+      if (!q) return true;
+      return (
+        row.full_name.toLowerCase().includes(q) ||
+        row.email.toLowerCase().includes(q) ||
+        row.phone.toLowerCase().includes(q) ||
+        row.course_title.toLowerCase().includes(q) ||
+        row.course_slug.toLowerCase().includes(q) ||
+        row.crm.owner_user_id.toLowerCase().includes(q)
+      );
+    });
+
+    const summary = {
+      total: filtered.length,
+      by_payment_status: {
+        registered: 0,
+        paid: 0,
+        failed: 0,
+        refunded: 0
+      },
+      by_stage: {
+        new: 0,
+        contacted: 0,
+        qualified: 0,
+        payment_pending: 0,
+        won: 0,
+        lost: 0
+      }
+    };
+    for (const row of filtered) {
+      const statusKey = clean(row.payment_status || '', 24).toLowerCase();
+      if (summary.by_payment_status[statusKey] !== undefined) {
+        summary.by_payment_status[statusKey] += 1;
+      }
+      if (summary.by_stage[row.crm.stage] !== undefined) {
+        summary.by_stage[row.crm.stage] += 1;
+      }
+    }
+
+    return c.json({
+      days,
+      filters: {
+        payment_status: paymentStatus || '',
+        stage: normalizeCrmStage(stageFilter),
+        q
+      },
+      summary,
+      leads: filtered
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load CRM leads.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/crm/leads/:leadId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const leadId = clean(c.req.param('leadId'), 64);
+    if (!leadId) return c.json({ error: 'leadId is required.' }, 400);
+
+    const payload = await c.req.json();
+    const requestedStage = normalizeCrmStage(payload?.stage);
+    const ownerUserId = clean(payload?.owner_user_id, 120);
+    const notes = clean(payload?.notes, 1000);
+    const nextActionAtMsRaw = Number(payload?.next_action_at_ms);
+    const nextActionAtMs = Number.isFinite(nextActionAtMsRaw) ? Math.max(0, Math.round(nextActionAtMsRaw)) : 0;
+
+    const existing = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT metadata_json, payment_status
+       FROM lead_registrations
+       WHERE lead_id = ?
+       LIMIT 1`
+    )
+      .bind(leadId)
+      .first();
+    if (!existing) {
+      return c.json({ error: 'Lead not found.' }, 404);
+    }
+
+    const metadata = parseJsonObjectOrDefault(existing.metadata_json, {});
+    const finalStage = requestedStage || normalizeCrmStage(metadata.crm_stage || deriveCrmStageFromPaymentStatus(existing.payment_status));
+    if (requestedStage && !CRM_STAGES.has(requestedStage)) {
+      return c.json({ error: 'Invalid CRM stage.' }, 400);
+    }
+
+    const nextMetadata = {
+      ...metadata,
+      crm_stage: finalStage,
+      crm_owner_user_id: ownerUserId || metadata.crm_owner_user_id || '',
+      crm_notes: notes || metadata.crm_notes || '',
+      crm_next_action_at_ms: nextActionAtMs || Number(metadata.crm_next_action_at_ms || 0),
+      crm_updated_at_ms: Date.now()
+    };
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE lead_registrations
+       SET metadata_json = ?, updated_at_ms = ?
+       WHERE lead_id = ?`
+    )
+      .bind(JSON.stringify(nextMetadata), Date.now(), leadId)
+      .run();
+
+    return c.json({
+      ok: true,
+      lead_id: leadId,
+      crm: {
+        stage: finalStage,
+        owner_user_id: clean(nextMetadata.crm_owner_user_id || '', 120),
+        notes: clean(nextMetadata.crm_notes || '', 1000),
+        next_action_at_ms: Number(nextMetadata.crm_next_action_at_ms || 0)
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update CRM lead.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -6897,6 +7111,20 @@ function decodeXml(value) {
     .replace(/&gt;/g, '>')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizeCrmStage(value) {
+  const normalized = clean(String(value || ''), 40).toLowerCase();
+  if (!normalized) return '';
+  return CRM_STAGES.has(normalized) ? normalized : '';
+}
+
+function deriveCrmStageFromPaymentStatus(paymentStatus) {
+  const status = clean(String(paymentStatus || ''), 24).toLowerCase();
+  if (status === 'paid') return 'won';
+  if (status === 'failed' || status === 'refunded') return 'lost';
+  if (status === 'registered') return 'payment_pending';
+  return 'new';
 }
 
 function parseJsonArray(value) {

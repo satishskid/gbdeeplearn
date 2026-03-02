@@ -47,6 +47,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [loadingCapstones, setLoadingCapstones] = useState(false);
   const [loadingLabTrends, setLoadingLabTrends] = useState(false);
   const [loadingCapstoneTrends, setLoadingCapstoneTrends] = useState(false);
+  const [loadingCrm, setLoadingCrm] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [coordinatorView, setCoordinatorView] = useState('operations');
@@ -184,6 +185,21 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     passed: 'auto',
     feedback: ''
   });
+  const [crmLeads, setCrmLeads] = useState([]);
+  const [crmSummary, setCrmSummary] = useState(null);
+  const [crmFilter, setCrmFilter] = useState({
+    q: '',
+    paymentStatus: '',
+    stage: '',
+    days: '90'
+  });
+  const [crmEdit, setCrmEdit] = useState({
+    leadId: '',
+    stage: '',
+    ownerUserId: '',
+    notes: '',
+    nextActionAt: ''
+  });
 
   const roleSet = useMemo(() => new Set((userRoles || []).map((role) => String(role).trim().toLowerCase())), [userRoles]);
   const isCtoUser = roleSet.has('cto');
@@ -208,6 +224,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   }, [roleSet, availableTabs]);
 
   const [activeRole, setActiveRole] = useState(defaultTab);
+  const hasAdminToken = Boolean(adminToken.trim());
+  const isCoordinator = isCoordinatorUser && activeRole === 'coordinator';
+  const isTeacher = isTeacherUser && activeRole === 'teacher';
+  const isLearner = isLearnerUser && activeRole === 'learner';
+  const isCto = isCtoUser && activeRole === 'cto';
+  const canManageContent = (isCoordinatorUser || isCtoUser) && hasAdminToken;
 
   const adminHeaders = useMemo(() => {
     const headers = { 'Content-Type': 'application/json' };
@@ -333,6 +355,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       setAnalyticsSummary(null);
       setPathAnalytics([]);
       setOpsAlerts([]);
+      setCrmLeads([]);
+      setCrmSummary(null);
       setCourseModules([]);
       setRubricModules([]);
       setUnlockModules([]);
@@ -491,6 +515,16 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       setActiveRole(defaultTab);
     }
   }, [activeRole, availableTabs, defaultTab]);
+
+  useEffect(() => {
+    if (!hasAdminToken) return;
+    if (!isCoordinator) return;
+    if (coordinatorView !== 'crm') return;
+    void loadCrmLeads().catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to load CRM leads.');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coordinatorView, hasAdminToken, isCoordinator, crmFilter.days]);
 
   const runAction = async (handler) => {
     setError('');
@@ -897,6 +931,52 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     }
   };
 
+  const loadCrmLeads = async () => {
+    setLoadingCrm(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('days', String(Math.max(1, Math.min(365, Number(crmFilter.days || 90)))));
+      params.set('limit', '200');
+      if (crmFilter.q.trim()) params.set('q', crmFilter.q.trim());
+      if (crmFilter.paymentStatus.trim()) params.set('payment_status', crmFilter.paymentStatus.trim());
+      if (crmFilter.stage.trim()) params.set('stage', crmFilter.stage.trim());
+
+      const response = await fetch(apiUrl(`/api/admin/crm/leads?${params.toString()}`), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'CRM lead load failed.');
+      setCrmLeads(payload?.leads || []);
+      setCrmSummary(payload?.summary || null);
+      return `Loaded ${Number(payload?.leads?.length || 0)} CRM leads.`;
+    } finally {
+      setLoadingCrm(false);
+    }
+  };
+
+  const saveCrmLead = async () => {
+    if (!crmEdit.leadId.trim()) throw new Error('Select a lead first.');
+    const body = {
+      stage: crmEdit.stage,
+      owner_user_id: crmEdit.ownerUserId,
+      notes: crmEdit.notes
+    };
+    const nextActionMs = parseDateTimeToMs(crmEdit.nextActionAt);
+    if (Number.isFinite(nextActionMs)) {
+      body.next_action_at_ms = nextActionMs;
+    }
+
+    const response = await fetch(apiUrl(`/api/admin/crm/leads/${encodeURIComponent(crmEdit.leadId.trim())}`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify(body)
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'CRM lead update failed.');
+    await loadCrmLeads();
+    return `CRM lead updated (${payload?.crm?.stage || crmEdit.stage || 'stage unchanged'}).`;
+  };
+
   const ingestLogisticsContext = async () => {
     const response = await fetch(apiUrl('/api/admin/knowledge/ingest-logistics'), {
       method: 'POST',
@@ -1053,13 +1133,6 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     await loadCapstoneArtifacts();
     return `Capstone reviewed (${status}).`;
   };
-
-  const isCoordinator = isCoordinatorUser && activeRole === 'coordinator';
-  const isTeacher = isTeacherUser && activeRole === 'teacher';
-  const isLearner = isLearnerUser && activeRole === 'learner';
-  const isCto = isCtoUser && activeRole === 'cto';
-  const hasAdminToken = Boolean(adminToken.trim());
-  const canManageContent = (isCoordinatorUser || isCtoUser) && hasAdminToken;
 
   const labMetrics = useMemo(() => {
     const totalRuns = labRuns.length;
@@ -1257,6 +1330,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         <div className="mb-6 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3">
           {[
             { id: 'operations', label: 'Operations' },
+            { id: 'crm', label: 'CRM Pipeline' },
             { id: 'lab-ops', label: 'Lab Ops' },
             { id: 'capstone-review', label: 'Capstone Review' }
           ].map((tab) => (
@@ -2025,6 +2099,157 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               ))}
               {rubrics.length === 0 && <p className="text-xs text-slate-500">No rubrics for selected course.</p>}
             </div>
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminToken && coordinatorView === 'crm' && (
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Internal CRM Pipeline</h3>
+            <p className="mb-3 text-sm text-slate-600">
+              Lead capture, payment follow-up, and owner/stage management are handled fully inside this platform.
+            </p>
+            <div className="mb-3 grid gap-2 sm:grid-cols-4">
+              <Metric label="Total Leads" value={crmSummary?.total ?? crmLeads.length} />
+              <Metric label="Won (Paid)" value={crmSummary?.by_stage?.won ?? 0} />
+              <Metric label="Pending Payment" value={crmSummary?.by_stage?.payment_pending ?? 0} />
+              <Metric label="Lost" value={crmSummary?.by_stage?.lost ?? 0} />
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-4">
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Search name/email/phone"
+                value={crmFilter.q}
+                onChange={(e) => setCrmFilter((p) => ({ ...p, q: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={crmFilter.paymentStatus}
+                onChange={(e) => setCrmFilter((p) => ({ ...p, paymentStatus: e.target.value }))}
+              >
+                <option value="">All payment statuses</option>
+                <option value="registered">Registered</option>
+                <option value="paid">Paid</option>
+                <option value="failed">Failed</option>
+                <option value="refunded">Refunded</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={crmFilter.stage}
+                onChange={(e) => setCrmFilter((p) => ({ ...p, stage: e.target.value }))}
+              >
+                <option value="">All stages</option>
+                <option value="new">New</option>
+                <option value="contacted">Contacted</option>
+                <option value="qualified">Qualified</option>
+                <option value="payment_pending">Payment pending</option>
+                <option value="won">Won</option>
+                <option value="lost">Lost</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={crmFilter.days}
+                onChange={(e) => setCrmFilter((p) => ({ ...p, days: e.target.value }))}
+              >
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="180">Last 180 days</option>
+                <option value="365">Last 365 days</option>
+              </select>
+            </div>
+            <button
+              className="mt-3 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+              onClick={() => void runAction(loadCrmLeads)}
+              type="button"
+              disabled={loadingCrm}
+            >
+              {loadingCrm ? 'Loading CRM...' : 'Refresh CRM'}
+            </button>
+
+            <div className="mt-4 max-h-[28rem] space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {crmLeads.map((lead) => (
+                <div key={lead.lead_id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{lead.full_name || lead.email || lead.lead_id}</p>
+                      <p className="text-xs text-slate-600">{lead.email} · {lead.phone}</p>
+                      <p className="text-xs text-slate-500">
+                        {lead.course_title || lead.course_slug || 'unmapped course'} · {lead.payment_status} · stage {lead?.crm?.stage || 'new'}
+                      </p>
+                      <p className="text-xs text-slate-500">Updated: {formatMs(lead.updated_at_ms)}</p>
+                    </div>
+                    <button
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                      onClick={() =>
+                        setCrmEdit({
+                          leadId: lead.lead_id,
+                          stage: lead?.crm?.stage || '',
+                          ownerUserId: lead?.crm?.owner_user_id || '',
+                          notes: lead?.crm?.notes || '',
+                          nextActionAt: lead?.crm?.next_action_at_ms ? new Date(lead.crm.next_action_at_ms).toISOString().slice(0, 16) : ''
+                        })
+                      }
+                      type="button"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {crmLeads.length === 0 ? <p className="text-sm text-slate-500">No leads found for current filter.</p> : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Update Lead</h3>
+            <div className="grid gap-2">
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Lead ID"
+                value={crmEdit.leadId}
+                onChange={(e) => setCrmEdit((p) => ({ ...p, leadId: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={crmEdit.stage}
+                onChange={(e) => setCrmEdit((p) => ({ ...p, stage: e.target.value }))}
+              >
+                <option value="">Keep existing stage</option>
+                <option value="new">New</option>
+                <option value="contacted">Contacted</option>
+                <option value="qualified">Qualified</option>
+                <option value="payment_pending">Payment pending</option>
+                <option value="won">Won</option>
+                <option value="lost">Lost</option>
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Owner user_id"
+                value={crmEdit.ownerUserId}
+                onChange={(e) => setCrmEdit((p) => ({ ...p, ownerUserId: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                type="datetime-local"
+                value={crmEdit.nextActionAt}
+                onChange={(e) => setCrmEdit((p) => ({ ...p, nextActionAt: e.target.value }))}
+              />
+              <textarea
+                className="min-h-24 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Coordinator notes"
+                value={crmEdit.notes}
+                onChange={(e) => setCrmEdit((p) => ({ ...p, notes: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(saveCrmLead)}
+              type="button"
+            >
+              Save CRM Update
+            </button>
           </div>
         </div>
       )}
