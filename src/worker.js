@@ -37,6 +37,8 @@ app.get('/', (c) => {
       '/api/funnel/register',
       '/api/funnel/payment/success',
       '/api/analytics/funnel',
+      '/api/admin/analytics/summary',
+      '/api/admin/analytics/paths',
       '/api/content/posts',
       '/api/admin/overview',
       '/api/admin/organizations',
@@ -797,6 +799,193 @@ app.get('/api/admin/overview', async (c) => {
     return c.json(
       {
         error: 'Failed to fetch overview.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/analytics/summary', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const days = Math.max(1, Math.min(365, Number(c.req.query('days') || 30)));
+    const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const registrationRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         COUNT(*) AS registrations,
+         SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END) AS paid
+       FROM lead_registrations
+       WHERE created_at_ms >= ?`
+    )
+      .bind(sinceMs)
+      .first();
+
+    const paymentRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END) AS paid,
+         SUM(CASE WHEN payment_status = 'failed' THEN 1 ELSE 0 END) AS failed,
+         SUM(CASE WHEN payment_status = 'refunded' THEN 1 ELSE 0 END) AS refunded
+       FROM lead_registrations
+       WHERE updated_at_ms >= ?`
+    )
+      .bind(sinceMs)
+      .first();
+
+    const learnerRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+         SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed
+       FROM course_enrollments`
+    ).first();
+
+    const assignmentRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         COUNT(*) AS submitted,
+         SUM(CASE WHEN status = 'graded' THEN 1 ELSE 0 END) AS graded,
+         SUM(CASE WHEN passed = 1 THEN 1 ELSE 0 END) AS passed
+       FROM assignment_submissions
+       WHERE submitted_at_ms >= ?`
+    )
+      .bind(sinceMs)
+      .first();
+
+    const certificateRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT COUNT(*) AS issued
+       FROM course_enrollments
+       WHERE status = 'completed'
+         AND completed_at_ms >= ?`
+    )
+      .bind(sinceMs)
+      .first();
+
+    const registrations = Number(registrationRow?.registrations || 0);
+    const paid = Number(paymentRow?.paid || 0);
+
+    return c.json({
+      days,
+      funnel: {
+        registrations,
+        paid,
+        failed: Number(paymentRow?.failed || 0),
+        refunded: Number(paymentRow?.refunded || 0),
+        paid_rate_pct: registrations > 0 ? Number(((paid / registrations) * 100).toFixed(2)) : 0
+      },
+      learners: {
+        active: Number(learnerRow?.active || 0),
+        completed: Number(learnerRow?.completed || 0)
+      },
+      assignments: {
+        submitted: Number(assignmentRow?.submitted || 0),
+        graded: Number(assignmentRow?.graded || 0),
+        passed: Number(assignmentRow?.passed || 0)
+      },
+      certificates: {
+        issued_in_window: Number(certificateRow?.issued || 0)
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load analytics summary.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/analytics/paths', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const days = Math.max(1, Math.min(365, Number(c.req.query('days') || 30)));
+    const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `WITH course_path AS (
+         SELECT course_id, MIN(path_key) AS path_key
+         FROM course_modules
+         GROUP BY course_id
+       ),
+       enrollment_stats AS (
+         SELECT
+           cp.path_key AS path_key,
+           COUNT(*) AS enrollments,
+           SUM(CASE WHEN e.status = 'completed' THEN 1 ELSE 0 END) AS completions,
+           ROUND(AVG(e.progress_pct), 2) AS avg_progress_pct
+         FROM course_path cp
+         LEFT JOIN course_enrollments e ON e.course_id = cp.course_id
+         GROUP BY cp.path_key
+       ),
+       lead_stats AS (
+         SELECT
+           COALESCE(cp.path_key, 'unmapped') AS path_key,
+           COUNT(*) AS leads,
+           SUM(CASE WHEN lr.payment_status = 'paid' THEN 1 ELSE 0 END) AS paid
+         FROM lead_registrations lr
+         LEFT JOIN courses c
+           ON c.id = lr.course_id
+            OR (lr.course_id = '' AND lr.course_slug <> '' AND c.slug = lr.course_slug)
+         LEFT JOIN course_path cp ON cp.course_id = c.id
+         WHERE lr.updated_at_ms >= ?
+         GROUP BY COALESCE(cp.path_key, 'unmapped')
+       )
+       SELECT
+         p.path_key,
+         (SELECT COUNT(DISTINCT cp.course_id) FROM course_path cp WHERE cp.path_key = p.path_key) AS courses,
+         (SELECT COUNT(*) FROM course_modules m WHERE m.path_key = p.path_key) AS modules,
+         COALESCE(es.enrollments, 0) AS enrollments,
+         COALESCE(es.completions, 0) AS completions,
+         COALESCE(es.avg_progress_pct, 0) AS avg_progress_pct,
+         COALESCE(ls.leads, 0) AS leads,
+         COALESCE(ls.paid, 0) AS paid
+       FROM (
+         SELECT 'productivity' AS path_key
+         UNION ALL SELECT 'research'
+         UNION ALL SELECT 'entrepreneurship'
+       ) p
+       LEFT JOIN enrollment_stats es ON es.path_key = p.path_key
+       LEFT JOIN lead_stats ls ON ls.path_key = p.path_key`
+    )
+      .bind(sinceMs)
+      .all();
+
+    const paths = (result.results || []).map((row) => {
+      const leads = Number(row.leads || 0);
+      const paid = Number(row.paid || 0);
+      return {
+        path_key: clean(row.path_key || '', 40),
+        courses: Number(row.courses || 0),
+        modules: Number(row.modules || 0),
+        enrollments: Number(row.enrollments || 0),
+        completions: Number(row.completions || 0),
+        avg_progress_pct: Number(row.avg_progress_pct || 0),
+        leads,
+        paid,
+        paid_rate_pct: leads > 0 ? Number(((paid / leads) * 100).toFixed(2)) : 0
+      };
+    });
+
+    return c.json({ days, paths });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load path analytics.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -1794,15 +1983,80 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
       .first();
     const completedModules = Number(completedRow?.count || 0);
     const progressPct = totalModules > 0 ? Number(((completedModules / totalModules) * 100).toFixed(2)) : 0;
+    const currentEnrollment = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT status, completed_at_ms, certificate_url
+       FROM course_enrollments
+       WHERE course_id = ? AND user_id = ?
+       LIMIT 1`
+    )
+      .bind(courseId, userId)
+      .first();
+    const enrollmentWasCompleted = clean(currentEnrollment?.status || '', 32) === 'completed';
+    const reachedCompletion = progressPct >= 100;
+    const enrollmentStatus = enrollmentWasCompleted || reachedCompletion ? 'completed' : 'active';
+    const completionMs =
+      enrollmentStatus === 'completed'
+        ? Number(currentEnrollment?.completed_at_ms || 0) || nowMs
+        : null;
+    let certificateUrl = clean(currentEnrollment?.certificate_url || '', 400);
+    if (enrollmentStatus === 'completed' && !certificateUrl) {
+      certificateUrl = buildCertificateUrl(c.env, { courseId, userId, issuedAtMs: completionMs || nowMs });
+    }
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_enrollments (
+         course_id, user_id, status, progress_pct, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(course_id, user_id) DO UPDATE SET
+         status = excluded.status,
+         progress_pct = excluded.progress_pct,
+         completed_at_ms = excluded.completed_at_ms,
+         certificate_url = excluded.certificate_url,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(courseId, userId, enrollmentStatus, progressPct, completionMs, certificateUrl, nowMs, nowMs)
+      .run();
 
     if (cohortId) {
-      const completionState = progressPct >= 100 ? 'completed' : 'in_progress';
-      await c.env.DEEPLEARN_DB.prepare(
-        `UPDATE cohort_enrollments
-         SET progress_pct = ?, completion_state = ?, completed_at_ms = ?, updated_at_ms = ?
-         WHERE cohort_id = ? AND user_id = ?`
+      const cohortRow = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT status, completed_at_ms, certificate_url
+         FROM cohort_enrollments
+         WHERE cohort_id = ? AND user_id = ?
+         LIMIT 1`
       )
-        .bind(progressPct, completionState, completionState === 'completed' ? nowMs : null, nowMs, cohortId, userId)
+        .bind(cohortId, userId)
+        .first();
+      const cohortCompleted = clean(cohortRow?.status || '', 32) === 'completed' || reachedCompletion;
+      const completionState = cohortCompleted ? 'completed' : 'in_progress';
+      const cohortStatus = cohortCompleted ? 'completed' : 'enrolled';
+      const cohortCompletionMs = cohortCompleted ? Number(cohortRow?.completed_at_ms || 0) || nowMs : null;
+      const cohortCertificateUrl = cohortCompleted
+        ? clean(cohortRow?.certificate_url || '', 400) || certificateUrl
+        : clean(cohortRow?.certificate_url || '', 400);
+      await c.env.DEEPLEARN_DB.prepare(
+        `INSERT INTO cohort_enrollments (
+           cohort_id, course_id, user_id, status, progress_pct, completion_state, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(cohort_id, user_id) DO UPDATE SET
+           status = excluded.status,
+           progress_pct = excluded.progress_pct,
+           completion_state = excluded.completion_state,
+           completed_at_ms = excluded.completed_at_ms,
+           certificate_url = excluded.certificate_url,
+           updated_at_ms = excluded.updated_at_ms`
+      )
+        .bind(
+          cohortId,
+          courseId,
+          userId,
+          cohortStatus,
+          progressPct,
+          completionState,
+          cohortCompletionMs,
+          cohortCertificateUrl,
+          nowMs,
+          nowMs
+        )
         .run();
     }
 
@@ -1814,6 +2068,27 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
       .bind('', courseId, moduleId, cohortId, userId, 'module_progress_updated', 1, JSON.stringify({ status, score }), nowMs)
       .run();
 
+    if (!enrollmentWasCompleted && enrollmentStatus === 'completed') {
+      await c.env.DEEPLEARN_DB.prepare(
+        `INSERT INTO assessment_events (
+           org_id, course_id, module_id, cohort_id, user_id, event_name, score, passed, metadata_json, created_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          '',
+          courseId,
+          moduleId,
+          cohortId,
+          userId,
+          'certificate_issued',
+          100,
+          1,
+          JSON.stringify({ certificate_url: certificateUrl }),
+          nowMs
+        )
+        .run();
+    }
+
     return c.json({
       ok: true,
       progress: {
@@ -1823,7 +2098,9 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
         user_id: userId,
         status,
         score,
-        progress_pct: progressPct
+        progress_pct: progressPct,
+        enrollment_status: enrollmentStatus,
+        certificate_url: certificateUrl
       }
     });
   } catch (error) {
@@ -3590,6 +3867,17 @@ function msToIsoDate(value) {
   const ms = Number(value);
   if (!Number.isFinite(ms) || ms <= 0) return '';
   return new Date(ms).toISOString().slice(0, 10);
+}
+
+function buildCertificateUrl(env, { courseId, userId, issuedAtMs }) {
+  const customBase = clean(env.CERTIFICATE_PUBLIC_BASE_URL || '', 400);
+  if (customBase) {
+    return `${customBase.replace(/\/+$/, '')}/${courseId}/${userId}.pdf`;
+  }
+
+  const bucket = clean(env.CERTIFICATE_BUCKET || 'gbdeeplearn-certificates', 120);
+  const datePart = msToIsoDate(issuedAtMs || Date.now()) || 'today';
+  return `https://${bucket}.r2.dev/certificates/${courseId}/${userId}-${datePart}.pdf`;
 }
 
 function clean(value, maxLen) {

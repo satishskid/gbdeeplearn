@@ -27,6 +27,8 @@ export default function PlatformConsole({ userRoles = [] }) {
   const [unlockModules, setUnlockModules] = useState([]);
   const [rubrics, setRubrics] = useState([]);
   const [cohortEnrollments, setCohortEnrollments] = useState([]);
+  const [analyticsSummary, setAnalyticsSummary] = useState(null);
+  const [pathAnalytics, setPathAnalytics] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -185,12 +187,14 @@ export default function PlatformConsole({ userRoles = [] }) {
     setLoading(true);
     setError('');
     try {
-      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes] = await Promise.all([
+      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes, analyticsSummaryRes, pathAnalyticsRes] = await Promise.all([
         fetch(apiUrl('/api/admin/overview'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/courses'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/content/posts?limit=20'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/organizations?limit=50'), { headers: adminHeaders }),
-        fetch(apiUrl('/api/admin/cohorts?limit=50'), { headers: adminHeaders })
+        fetch(apiUrl('/api/admin/cohorts?limit=50'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/analytics/summary?days=30'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/analytics/paths?days=30'), { headers: adminHeaders })
       ]);
 
       const overviewPayload = await overviewRes.json();
@@ -198,18 +202,24 @@ export default function PlatformConsole({ userRoles = [] }) {
       const contentPayload = await contentRes.json();
       const organizationsPayload = await organizationsRes.json();
       const cohortsPayload = await cohortsRes.json();
+      const analyticsSummaryPayload = await analyticsSummaryRes.json();
+      const pathAnalyticsPayload = await pathAnalyticsRes.json();
 
       if (!overviewRes.ok) throw new Error(overviewPayload?.error || 'Overview load failed.');
       if (!coursesRes.ok) throw new Error(coursesPayload?.error || 'Courses load failed.');
       if (!contentRes.ok) throw new Error(contentPayload?.error || 'Content load failed.');
       if (!organizationsRes.ok) throw new Error(organizationsPayload?.error || 'Organizations load failed.');
       if (!cohortsRes.ok) throw new Error(cohortsPayload?.error || 'Cohorts load failed.');
+      if (!analyticsSummaryRes.ok) throw new Error(analyticsSummaryPayload?.error || 'Analytics summary load failed.');
+      if (!pathAnalyticsRes.ok) throw new Error(pathAnalyticsPayload?.error || 'Path analytics load failed.');
 
       setOverview(overviewPayload);
       setCourses(coursesPayload.courses || []);
       setContentPosts(contentPayload.posts || []);
       setOrganizations(organizationsPayload.organizations || []);
       setCohorts(cohortsPayload.cohorts || []);
+      setAnalyticsSummary(analyticsSummaryPayload);
+      setPathAnalytics(pathAnalyticsPayload.paths || []);
 
       const candidateCourseId = moduleForm.courseId || coursesPayload?.courses?.[0]?.id || '';
       if (candidateCourseId) {
@@ -659,6 +669,54 @@ export default function PlatformConsole({ userRoles = [] }) {
           <Metric label="Teachers" value={overview?.staffing?.teachers ?? 0} />
           <Metric label="Learners" value={overview?.learners?.total ?? 0} />
           <Metric label="Completion" value={`${overview?.learners?.completion_rate_pct ?? 0}%`} />
+        </div>
+      )}
+
+      {analyticsSummary && (
+        <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <Metric label="30d Registrations" value={analyticsSummary?.funnel?.registrations ?? 0} />
+          <Metric label="30d Paid" value={analyticsSummary?.funnel?.paid ?? 0} />
+          <Metric label="Paid Rate" value={`${analyticsSummary?.funnel?.paid_rate_pct ?? 0}%`} />
+          <Metric label="Assignments 30d" value={analyticsSummary?.assignments?.submitted ?? 0} />
+          <Metric label="Certificates 30d" value={analyticsSummary?.certificates?.issued_in_window ?? 0} />
+        </div>
+      )}
+
+      {pathAnalytics.length > 0 && (
+        <div className="mb-6 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+            <h3 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-700">Path Analytics (Last 30 Days)</h3>
+          </div>
+          <table className="w-full border-collapse text-left text-sm">
+            <thead className="bg-slate-100 text-slate-700">
+              <tr>
+                <th className="px-3 py-2">Path</th>
+                <th className="px-3 py-2">Courses</th>
+                <th className="px-3 py-2">Modules</th>
+                <th className="px-3 py-2">Leads</th>
+                <th className="px-3 py-2">Paid</th>
+                <th className="px-3 py-2">Enrollments</th>
+                <th className="px-3 py-2">Completions</th>
+                <th className="px-3 py-2">Avg Progress</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pathAnalytics.map((row) => (
+                <tr key={row.path_key} className="border-t border-slate-200 bg-white">
+                  <td className="px-3 py-2 font-semibold text-slate-900">{row.path_key}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.courses}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.modules}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.leads}</td>
+                  <td className="px-3 py-2 text-slate-700">
+                    {row.paid} ({row.paid_rate_pct}%)
+                  </td>
+                  <td className="px-3 py-2 text-slate-700">{row.enrollments}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.completions}</td>
+                  <td className="px-3 py-2 text-slate-700">{row.avg_progress_pct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

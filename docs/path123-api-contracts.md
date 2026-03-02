@@ -18,6 +18,8 @@ Scope: Shared platform APIs for Productivity (Path 1), Research (Path 2), and En
 - `POST /api/funnel/register`
 - `POST /api/funnel/payment/success`
 - `GET /api/analytics/funnel`
+- `GET /api/admin/analytics/summary?days=30`
+- `GET /api/admin/analytics/paths?days=30`
 - `GET|POST /api/admin/courses`
 - `POST /api/admin/courses/:courseId/publish`
 - `POST /api/admin/courses/:courseId/staff`
@@ -66,6 +68,7 @@ Scope: Shared platform APIs for Productivity (Path 1), Research (Path 2), and En
 - `GET /api/learn/access?user_id=`
 - `POST /api/learn/modules/:moduleId/progress`
   - Input: `{ course_id, cohort_id, status, score, artifact_url, notes }`
+  - Behavior: auto-issues certificate URL when computed course progress reaches 100%.
 - `GET /api/admin/courses/:courseId/rubrics`
 - `POST /api/admin/courses/:courseId/rubrics`
   - Input: `{ module_id, title, pass_threshold, rubric }`

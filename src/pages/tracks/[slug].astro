@@ -15,6 +15,7 @@ const rawTrack = getTrackBySlug(trackSlug);
 const catalog = await getCourseCatalog();
 const track = hydrateTrack(rawTrack, catalog);
 const hasResearchLab = track?.slug === 'ai-research-accelerator';
+const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
 ---
 
 <BaseLayout
@@ -48,6 +49,14 @@ const hasResearchLab = track?.slug === 'ai-research-accelerator';
           Open In-Silico Research Lab
         </a>
       ) : null}
+      {hasVentureStudio ? (
+        <a
+          href="/venture-studio"
+          class="inline-flex rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20"
+        >
+          Open Venture Studio
+        </a>
+      ) : null}
     </div>
   </section>
 
@@ -72,6 +81,23 @@ const hasResearchLab = track?.slug === 'ai-research-accelerator';
         </div>
         <a href="/research-lab" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
           View Path 2 Scaffold
+        </a>
+      </div>
+    </section>
+  ) : null}
+
+  {hasVentureStudio ? (
+    <section class="mb-8 rounded-3xl border border-amber-200 bg-amber-50/70 p-5 shadow-sm">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-amber-700">Path 3 Venture Stack</p>
+          <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Doctor-Led AI Venture Execution</h2>
+          <p class="mt-1 text-sm text-slate-700">
+            Move from clinical pain point to investable capstone with no-code AI product workflows and governance checkpoints.
+          </p>
+        </div>
+        <a href="/venture-studio" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+          View Path 3 Scaffold
         </a>
       </div>
     </section>
