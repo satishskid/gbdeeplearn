@@ -40,7 +40,9 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [cohortEnrollments, setCohortEnrollments] = useState([]);
   const [analyticsSummary, setAnalyticsSummary] = useState(null);
   const [pathAnalytics, setPathAnalytics] = useState([]);
+  const [opsAlerts, setOpsAlerts] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
   const [loadingLabRuns, setLoadingLabRuns] = useState(false);
   const [loadingCapstones, setLoadingCapstones] = useState(false);
   const [loadingLabTrends, setLoadingLabTrends] = useState(false);
@@ -191,12 +193,13 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
 
   const availableTabs = useMemo(() => {
     return ROLE_TABS.filter((tab) => {
-      if (isCoordinatorUser) return true;
-      if (tab.id === 'teacher') return isTeacherUser;
-      if (tab.id === 'learner') return isLearnerUser;
+      if (tab.id === 'coordinator') return isCoordinatorUser;
+      if (tab.id === 'cto') return isCtoUser;
+      if (tab.id === 'teacher') return isTeacherUser || isCoordinatorUser;
+      if (tab.id === 'learner') return isLearnerUser || isCoordinatorUser;
       return false;
     });
-  }, [isCoordinatorUser, isTeacherUser, isLearnerUser]);
+  }, [isCoordinatorUser, isCtoUser, isTeacherUser, isLearnerUser]);
 
   const defaultTab = useMemo(() => {
     const preferred = preferredPlatformTab(Array.from(roleSet));
@@ -321,17 +324,35 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   };
 
   const loadConsoleData = async () => {
+    if (!adminToken.trim()) {
+      setOverview(null);
+      setCourses([]);
+      setContentPosts([]);
+      setOrganizations([]);
+      setCohorts([]);
+      setAnalyticsSummary(null);
+      setPathAnalytics([]);
+      setOpsAlerts([]);
+      setCourseModules([]);
+      setRubricModules([]);
+      setUnlockModules([]);
+      setRubrics([]);
+      setCohortEnrollments([]);
+      return;
+    }
+
     setLoading(true);
     setError('');
     try {
-      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes, analyticsSummaryRes, pathAnalyticsRes] = await Promise.all([
+      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes, analyticsSummaryRes, pathAnalyticsRes, alertsRes] = await Promise.all([
         fetch(apiUrl('/api/admin/overview'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/courses'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/content/posts?limit=20'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/organizations?limit=50'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/cohorts?limit=50'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/analytics/summary?days=30'), { headers: adminHeaders }),
-        fetch(apiUrl('/api/admin/analytics/paths?days=30'), { headers: adminHeaders })
+        fetch(apiUrl('/api/admin/analytics/paths?days=30'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/alerts?status=open&limit=20'), { headers: adminHeaders })
       ]);
 
       const overviewPayload = await overviewRes.json();
@@ -341,6 +362,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       const cohortsPayload = await cohortsRes.json();
       const analyticsSummaryPayload = await analyticsSummaryRes.json();
       const pathAnalyticsPayload = await pathAnalyticsRes.json();
+      const alertsPayload = await alertsRes.json();
 
       if (!overviewRes.ok) throw new Error(overviewPayload?.error || 'Overview load failed.');
       if (!coursesRes.ok) throw new Error(coursesPayload?.error || 'Courses load failed.');
@@ -349,6 +371,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       if (!cohortsRes.ok) throw new Error(cohortsPayload?.error || 'Cohorts load failed.');
       if (!analyticsSummaryRes.ok) throw new Error(analyticsSummaryPayload?.error || 'Analytics summary load failed.');
       if (!pathAnalyticsRes.ok) throw new Error(pathAnalyticsPayload?.error || 'Path analytics load failed.');
+      if (!alertsRes.ok) throw new Error(alertsPayload?.error || 'Alert load failed.');
 
       setOverview(overviewPayload);
       setCourses(coursesPayload.courses || []);
@@ -357,6 +380,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       setCohorts(cohortsPayload.cohorts || []);
       setAnalyticsSummary(analyticsSummaryPayload);
       setPathAnalytics(pathAnalyticsPayload.paths || []);
+      setOpsAlerts(alertsPayload.alerts || []);
 
       const candidateCourseId = moduleForm.courseId || coursesPayload?.courses?.[0]?.id || '';
       if (candidateCourseId) {
@@ -873,6 +897,32 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     }
   };
 
+  const ingestLogisticsContext = async () => {
+    const response = await fetch(apiUrl('/api/admin/knowledge/ingest-logistics'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({})
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Logistics ingestion failed.');
+    return `Counselor logistics ingested (${payload?.upserted || 0} vectors).`;
+  };
+
+  const loadOpsAlerts = async () => {
+    setLoadingAlerts(true);
+    try {
+      const response = await fetch(apiUrl('/api/admin/alerts?status=open&limit=40'), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Alert load failed.');
+      setOpsAlerts(payload?.alerts || []);
+      return `Loaded ${Number(payload?.alerts?.length || 0)} open alerts.`;
+    } finally {
+      setLoadingAlerts(false);
+    }
+  };
+
   const generateDailyBrief = async () => {
     const response = await fetch(apiUrl('/api/admin/content/generate-daily'), {
       method: 'POST',
@@ -1008,7 +1058,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const isTeacher = isTeacherUser && activeRole === 'teacher';
   const isLearner = isLearnerUser && activeRole === 'learner';
   const isCto = isCtoUser && activeRole === 'cto';
-  const canManageContent = isCoordinatorUser || isCtoUser;
+  const hasAdminToken = Boolean(adminToken.trim());
+  const canManageContent = (isCoordinatorUser || isCtoUser) && hasAdminToken;
 
   const labMetrics = useMemo(() => {
     const totalRuns = labRuns.length;
@@ -1138,6 +1189,11 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       {loading && <p className="mb-4 text-sm text-slate-500">Loading console data...</p>}
       {error && <p className="mb-4 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
       {notice && <p className="mb-4 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</p>}
+      {!hasAdminToken ? (
+        <p className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
+          Enter your admin token to unlock coordinator/CTO data and controls.
+        </p>
+      ) : null}
 
       {overview && (
         <div className="mb-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -1197,7 +1253,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && (
+      {isCoordinator && hasAdminToken && (
         <div className="mb-6 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3">
           {[
             { id: 'operations', label: 'Operations' },
@@ -1218,7 +1274,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && coordinatorView === 'operations' && (
+      {isCoordinator && hasAdminToken && coordinatorView === 'operations' && (
         <div className="grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Create Course</h3>
@@ -1376,7 +1432,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && coordinatorView === 'operations' && (
+      {isCoordinator && hasAdminToken && coordinatorView === 'operations' && (
         <div className="mt-6 grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Create Organization</h3>
@@ -1973,7 +2029,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && coordinatorView === 'lab-ops' && (
+      {isCoordinator && hasAdminToken && coordinatorView === 'lab-ops' && (
         <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Lab Operations Console</h3>
@@ -2127,7 +2183,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && coordinatorView === 'capstone-review' && (
+      {isCoordinator && hasAdminToken && coordinatorView === 'capstone-review' && (
         <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Capstone Review Board</h3>
@@ -2333,21 +2389,70 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       )}
 
       {isCto && (
-        <div className="rounded-2xl border border-slate-200 bg-white p-4">
-          <h3 className="mb-3 text-lg font-bold text-slate-900">CTO Controls</h3>
-          <div className="grid gap-2 md:grid-cols-2">
-            {[
-              'Manage provider secrets (Groq, Turnstile, payments)',
-              'Rotate keys and enforce admin token for /api/admin/*',
-              'Configure AI Gateway route and model defaults',
-              'Audit edge analytics and D1 growth metrics',
-              'Manage teacher/coordinator access policy',
-              'Set compliance and certificate storage policy'
-            ].map((item) => (
-              <p key={item} className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                {item}
-              </p>
-            ))}
+        <div className="grid gap-5 lg:grid-cols-[1.1fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">CTO Controls</h3>
+            <div className="grid gap-2 md:grid-cols-2">
+              {[
+                'Manage provider secrets (Groq, Turnstile, payments)',
+                'Rotate keys and enforce admin token for /api/admin/*',
+                'Configure AI Gateway route and model defaults',
+                'Audit edge analytics and D1 growth metrics',
+                'Manage teacher/coordinator access policy',
+                'Set compliance and certificate storage policy'
+              ].map((item) => (
+                <p key={item} className="rounded-xl bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                  {item}
+                </p>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void runAction(ingestLogisticsContext)}
+                type="button"
+                disabled={!hasAdminToken}
+              >
+                Ingest Counselor Logistics
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void runAction(loadOpsAlerts)}
+                type="button"
+                disabled={!hasAdminToken || loadingAlerts}
+              >
+                {loadingAlerts ? 'Refreshing...' : 'Refresh Open Alerts'}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Open Ops Alerts</h3>
+            <div className="max-h-72 space-y-2 overflow-auto">
+              {opsAlerts.map((alert) => (
+                <div key={alert.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-semibold text-slate-900">{alert.message}</p>
+                    <span
+                      className={`rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] ${
+                        String(alert.severity || '').toLowerCase() === 'critical'
+                          ? 'bg-rose-100 text-rose-700'
+                          : String(alert.severity || '').toLowerCase() === 'warning'
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-sky-100 text-sky-700'
+                      }`}
+                    >
+                      {alert.severity || 'warning'}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-600">
+                    {alert.source} · {alert.event_type} · {formatMs(alert.created_at_ms)}
+                  </p>
+                </div>
+              ))}
+              {opsAlerts.length === 0 ? <p className="text-sm text-slate-500">No open alerts.</p> : null}
+            </div>
           </div>
         </div>
       )}
@@ -2455,7 +2560,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                   {course.learner_count} / {course.completed_count} completed
                 </td>
                 <td className="px-3 py-2">
-                  {isCoordinatorUser ? (
+                  {isCoordinatorUser && hasAdminToken ? (
                     <div className="flex flex-wrap gap-2">
                       <button
                         className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
@@ -2473,7 +2578,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                       </button>
                     </div>
                   ) : (
-                    <span className="text-xs text-slate-500">View only</span>
+                    <span className="text-xs text-slate-500">{isCoordinatorUser ? 'Add admin token' : 'View only'}</span>
                   )}
                 </td>
               </tr>

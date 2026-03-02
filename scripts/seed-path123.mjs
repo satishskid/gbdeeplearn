@@ -195,7 +195,9 @@ async function main() {
     cohorts_reused: 0,
     unlocks_created: 0,
     enrollments_upserted: 0,
-    completions_marked: 0
+    completions_marked: 0,
+    logistics_docs: 0,
+    logistics_chunks: 0
   };
 
   const orgs = await listOrganizations();
@@ -342,6 +344,10 @@ async function main() {
     stats.completions_marked += 1;
   }
 
+  const logistics = await ingestLogisticsContext();
+  stats.logistics_docs = Number(logistics?.documents || 0);
+  stats.logistics_chunks = Number(logistics?.chunks || 0);
+
   console.log('\nSeed completed');
   console.table(stats);
   console.log(`API base: ${API_BASE_URL}`);
@@ -375,6 +381,10 @@ async function listCohorts(courseId) {
 async function listUnlocks(cohortId) {
   const response = await get(`/api/admin/cohorts/${cohortId}/unlocks`);
   return response.unlocks || [];
+}
+
+async function ingestLogisticsContext() {
+  return post('/api/admin/knowledge/ingest-logistics', {});
 }
 
 async function get(path) {

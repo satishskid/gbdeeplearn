@@ -32,6 +32,8 @@ const SESSION_STATUSES = new Set(['scheduled', 'live', 'completed', 'cancelled']
 const ATTENDANCE_STATUSES = new Set(['present', 'absent', 'late', 'excused']);
 const MODULE_PROGRESS_STATUSES = new Set(['locked', 'unlocked', 'in_progress', 'submitted', 'completed', 'passed', 'failed']);
 const PAYMENT_STATUSES = new Set(['registered', 'paid', 'failed', 'refunded']);
+const ALERT_SEVERITIES = new Set(['info', 'warning', 'critical']);
+const ALERT_STATUSES = new Set(['open', 'acknowledged', 'resolved']);
 
 app.get('/', (c) => {
   return c.json({
@@ -76,6 +78,8 @@ app.get('/', (c) => {
       '/api/learn/assignments/:submissionId/grade',
       '/api/admin/content/generate-daily',
       '/api/admin/content/posts',
+      '/api/admin/alerts',
+      '/api/admin/knowledge/ingest-logistics',
       '/api/certificates/verify',
       '/health'
     ]
@@ -229,6 +233,14 @@ app.post('/api/chat/counselor', async (c) => {
     const reply = payload?.choices?.[0]?.message?.content ?? 'Please share your course query in one line.';
     return c.json({ reply, contextUsed: context });
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'counselor_chat',
+      severity: 'warning',
+      eventType: 'counselor_request_failed',
+      message: 'Counselor chat request failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'counselor_request_failed'
+    });
     return c.json(
       {
         error: 'Failed to process counselor request.',
@@ -422,6 +434,20 @@ app.post('/api/lead/submit', async (c) => {
         .run();
     }
 
+    await queueLeadDestination(c, 'lead_submitted', {
+      lead_id: leadId,
+      webinar_id: webinarId,
+      source,
+      session_id: sessionId,
+      full_name: fullName,
+      email,
+      phone,
+      course_id: target.courseId || '',
+      course_slug: target.courseSlug || '',
+      cohort_id: target.cohortId || '',
+      payment_status: 'registered'
+    });
+
     return c.json({
       ok: true,
       lead_id: leadId,
@@ -434,6 +460,14 @@ app.post('/api/lead/submit', async (c) => {
       }
     });
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'lead_capture',
+      severity: 'warning',
+      eventType: 'lead_submit_failed',
+      message: 'Lead submit failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'lead_submit_failed'
+    });
     return c.json(
       {
         error: 'Failed to submit lead.',
@@ -554,6 +588,20 @@ app.post('/api/funnel/register', async (c) => {
       emailHash
     });
 
+    await queueLeadDestination(c, 'funnel_registered', {
+      lead_id: leadId,
+      webinar_id: webinarId,
+      source,
+      session_id: sessionId,
+      full_name: fullName,
+      email,
+      phone,
+      course_id: target.courseId || '',
+      course_slug: target.courseSlug || '',
+      cohort_id: target.cohortId || '',
+      payment_status: 'registered'
+    });
+
     return c.json({
       ok: true,
       lead_id: leadId,
@@ -566,6 +614,14 @@ app.post('/api/funnel/register', async (c) => {
       }
     });
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'lead_capture',
+      severity: 'warning',
+      eventType: 'funnel_register_failed',
+      message: 'Funnel registration failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'funnel_register_failed'
+    });
     return c.json(
       {
         error: 'Failed to register funnel lead.',
@@ -630,6 +686,14 @@ app.post('/api/funnel/payment/create-order', async (c) => {
 
     if (!keyId || !keySecret) {
       if (!allowDemoPayments) {
+        await recordOpsAlert(c.env, {
+          source: 'payment_gateway',
+          severity: 'critical',
+          eventType: 'razorpay_not_configured',
+          message: 'Razorpay credentials are missing in production mode.',
+          details: { route: '/api/funnel/payment/create-order' },
+          dedupeKey: 'razorpay_not_configured_create_order'
+        });
         return c.json({ error: 'Razorpay is not configured.' }, 503);
       }
 
@@ -752,6 +816,14 @@ app.post('/api/funnel/payment/create-order', async (c) => {
       }
     });
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'payment_gateway',
+      severity: 'warning',
+      eventType: 'create_order_failed',
+      message: 'Failed to create Razorpay order.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'payment_create_order_failed'
+    });
     return c.json(
       {
         error: 'Failed to create payment order.',
@@ -852,6 +924,14 @@ app.post('/api/funnel/payment/verify', async (c) => {
     const keyId = clean(c.env.RAZORPAY_KEY_ID || '', 120);
     const keySecret = clean(c.env.RAZORPAY_KEY_SECRET || '', 240);
     if (!keyId || !keySecret) {
+      await recordOpsAlert(c.env, {
+        source: 'payment_gateway',
+        severity: 'critical',
+        eventType: 'razorpay_not_configured',
+        message: 'Razorpay credentials are missing for payment verify.',
+        details: { route: '/api/funnel/payment/verify' },
+        dedupeKey: 'razorpay_not_configured_verify'
+      });
       return c.json({ error: 'Razorpay is not configured.' }, 503);
     }
 
@@ -861,6 +941,14 @@ app.post('/api/funnel/payment/verify', async (c) => {
       paymentId
     });
     if (!safeStringEqual(expectedSignature, signature)) {
+      await recordOpsAlert(c.env, {
+        source: 'payment_verify',
+        severity: 'critical',
+        eventType: 'invalid_checkout_signature',
+        message: 'Invalid Razorpay checkout signature on verify endpoint.',
+        details: { order_id: orderId, payment_id: paymentId },
+        dedupeKey: 'payment_verify_invalid_signature'
+      });
       return c.json({ error: 'Invalid Razorpay signature.' }, 401);
     }
 
@@ -913,6 +1001,14 @@ app.post('/api/funnel/payment/verify', async (c) => {
       }
     });
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'payment_verify',
+      severity: 'warning',
+      eventType: 'verify_failed',
+      message: 'Payment verify endpoint failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'payment_verify_failed'
+    });
     return c.json(
       {
         error: 'Failed to verify Razorpay payment.',
@@ -931,17 +1027,41 @@ app.post('/api/funnel/payment/razorpay/webhook', async (c) => {
   try {
     const webhookSecret = clean(c.env.RAZORPAY_WEBHOOK_SECRET || '', 240);
     if (!webhookSecret) {
+      await recordOpsAlert(c.env, {
+        source: 'payment_webhook',
+        severity: 'critical',
+        eventType: 'webhook_secret_missing',
+        message: 'Razorpay webhook secret is not configured.',
+        details: { route: '/api/funnel/payment/razorpay/webhook' },
+        dedupeKey: 'razorpay_webhook_secret_missing'
+      });
       return c.json({ error: 'Razorpay webhook secret is not configured.' }, 503);
     }
 
     const rawBody = await c.req.text();
     const signature = clean(c.req.header('x-razorpay-signature') || '', 200);
     if (!signature) {
+      await recordOpsAlert(c.env, {
+        source: 'payment_webhook',
+        severity: 'critical',
+        eventType: 'webhook_signature_missing',
+        message: 'Missing Razorpay webhook signature.',
+        details: {},
+        dedupeKey: 'razorpay_webhook_signature_missing'
+      });
       return c.json({ error: 'Missing Razorpay signature.' }, 401);
     }
 
     const expected = await hmacSha256Hex(webhookSecret, rawBody);
     if (!safeStringEqual(expected, signature)) {
+      await recordOpsAlert(c.env, {
+        source: 'payment_webhook',
+        severity: 'critical',
+        eventType: 'webhook_signature_invalid',
+        message: 'Invalid Razorpay webhook signature.',
+        details: {},
+        dedupeKey: 'razorpay_webhook_signature_invalid'
+      });
       return c.json({ error: 'Invalid webhook signature.' }, 401);
     }
 
@@ -1004,6 +1124,14 @@ app.post('/api/funnel/payment/razorpay/webhook', async (c) => {
       enrollment: result.enrollment
     });
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'payment_webhook',
+      severity: 'critical',
+      eventType: 'webhook_processing_failed',
+      message: 'Razorpay webhook processing failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'razorpay_webhook_processing_failed'
+    });
     return c.json(
       {
         error: 'Failed to process Razorpay webhook.',
@@ -1026,6 +1154,14 @@ app.post('/api/funnel/payment/success', async (c) => {
     const allowDemoPayments = isDemoPaymentsAllowed(c.env);
 
     if (configuredToken && configuredToken !== providedToken) {
+      await recordOpsAlert(c.env, {
+        source: 'payment_callback',
+        severity: 'warning',
+        eventType: 'manual_callback_unauthorized',
+        message: 'Rejected manual payment callback due to invalid token.',
+        details: {},
+        dedupeKey: 'manual_payment_callback_unauthorized'
+      });
       return c.json({ error: 'Unauthorized payment callback.' }, 401);
     }
     if (!configuredToken && !allowDemoPayments) {
@@ -1037,6 +1173,14 @@ app.post('/api/funnel/payment/success', async (c) => {
     });
     return c.json(result);
   } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'payment_callback',
+      severity: 'warning',
+      eventType: 'manual_callback_failed',
+      message: 'Manual payment success callback failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'manual_payment_callback_failed'
+    });
     return c.json(
       {
         error: 'Failed to activate learner after payment.',
@@ -4035,6 +4179,127 @@ app.post('/api/admin/content/posts/:postId/status', async (c) => {
   }
 });
 
+app.get('/api/admin/alerts', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const requestedStatus = clean(c.req.query('status'), 32).toLowerCase() || 'open';
+    const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 100)));
+    if (requestedStatus !== 'all' && !ALERT_STATUSES.has(requestedStatus)) {
+      return c.json({ error: 'Invalid alert status filter.' }, 400);
+    }
+
+    const whereClause = requestedStatus === 'all' ? '' : 'WHERE status = ?';
+    const query = `SELECT
+        id, source, severity, event_type, message, details_json, dedupe_key, status, created_at_ms, updated_at_ms
+      FROM ops_alerts
+      ${whereClause}
+      ORDER BY created_at_ms DESC
+      LIMIT ?`;
+    const statement = c.env.DEEPLEARN_DB.prepare(query);
+    const result =
+      whereClause ? await statement.bind(requestedStatus, limit).all() : await statement.bind(limit).all();
+
+    return c.json({
+      alerts: (result.results || []).map((row) => ({
+        ...row,
+        details: parseJsonObjectOrDefault(row.details_json, {})
+      }))
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list alerts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/alerts/:alertId/status', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const alertId = clean(c.req.param('alertId'), 64);
+    const payload = await c.req.json();
+    const status = clean(payload?.status, 32).toLowerCase();
+    if (!alertId) return c.json({ error: 'alertId is required.' }, 400);
+    if (!ALERT_STATUSES.has(status)) return c.json({ error: 'Invalid alert status.' }, 400);
+
+    const nowMs = Date.now();
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE ops_alerts
+       SET status = ?, updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(status, nowMs, alertId)
+      .run();
+
+    if (!result.success || Number(result.meta?.changes || 0) === 0) {
+      return c.json({ error: 'Alert not found.' }, 404);
+    }
+
+    return c.json({ ok: true, alert_id: alertId, status });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update alert status.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/knowledge/ingest-logistics', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB || !c.env.DEEPLEARN_INDEX || !c.env.AI) {
+    return c.json({ error: 'D1, Vectorize, and AI bindings are required.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const docs = await buildLogisticsKnowledgeDocs(c.env.DEEPLEARN_DB);
+    const ingestion = await upsertKnowledgeDocuments(c.env, docs);
+    return c.json({
+      ok: true,
+      documents: docs.length,
+      chunks: ingestion.chunkCount,
+      upserted: ingestion.upserted
+    });
+  } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'knowledge_ingestion',
+      severity: 'warning',
+      eventType: 'ingest_failed',
+      message: 'Failed to ingest logistics context.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' }
+    });
+    return c.json(
+      {
+        error: 'Failed to ingest logistics context.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/certificates/verify', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -4537,7 +4802,25 @@ async function ensureOpsSchema(db) {
     `CREATE INDEX IF NOT EXISTS idx_assessment_events_course_created
       ON assessment_events(course_id, module_id, created_at_ms)`,
     `CREATE INDEX IF NOT EXISTS idx_assessment_events_user_created
-      ON assessment_events(user_id, created_at_ms)`
+      ON assessment_events(user_id, created_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS ops_alerts (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'warning',
+      event_type TEXT NOT NULL DEFAULT '',
+      message TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}',
+      dedupe_key TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_ops_alerts_status_created
+      ON ops_alerts(status, created_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_ops_alerts_source_created
+      ON ops_alerts(source, created_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_ops_alerts_dedupe_created
+      ON ops_alerts(dedupe_key, created_at_ms)`
   ];
 
   for (const statement of ddl) {
@@ -4939,7 +5222,8 @@ async function queryCourseContext(env, message, moduleId) {
     message,
     type: 'content',
     moduleId: clean(moduleId || '', 64),
-    courseId: ''
+    courseId: '',
+    fallbackText: 'No relevant syllabus chunks found.'
   });
 }
 
@@ -4956,16 +5240,17 @@ async function queryLogisticsContext(env, message, { courseId, courseSlug } = {}
     }
   }
 
+  const fallbackText = await buildLogisticsSnapshotContext(env.DEEPLEARN_DB, { courseId: resolvedCourseId });
   return queryKnowledgeContext(env, {
     message,
     type: 'logistics',
     moduleId: '',
-    courseId: resolvedCourseId
+    courseId: resolvedCourseId,
+    fallbackText: fallbackText || 'No relevant logistics context found.'
   });
 }
 
-async function queryKnowledgeContext(env, { message, type, moduleId, courseId }) {
-  const embedding = await embedQuery(env, message);
+async function queryKnowledgeContext(env, { message, type, moduleId, courseId, fallbackText = '' }) {
   const filter = {
     type: clean(type || 'content', 32) || 'content'
   };
@@ -4976,24 +5261,31 @@ async function queryKnowledgeContext(env, { message, type, moduleId, courseId })
     filter.course_id = clean(courseId, 64);
   }
 
-  const result = await env.DEEPLEARN_INDEX.query(embedding, {
-    topK: 6,
-    returnMetadata: 'all',
-    filter
-  });
-
-  const chunks = (result?.matches ?? [])
-    .map((match) => match.metadata?.chunk_text)
-    .filter(Boolean)
-    .slice(0, 6);
-
-  if (chunks.length === 0) {
-    return filter.type === 'logistics'
-      ? 'No relevant logistics context found.'
-      : 'No relevant syllabus chunks found.';
+  if (!env.DEEPLEARN_INDEX || !env.AI) {
+    return fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
   }
 
-  return chunks.join('\n\n');
+  try {
+    const embedding = await embedQuery(env, message);
+    const result = await env.DEEPLEARN_INDEX.query(embedding, {
+      topK: 6,
+      returnMetadata: 'all',
+      filter
+    });
+
+    const chunks = (result?.matches ?? [])
+      .map((match) => match.metadata?.chunk_text)
+      .filter(Boolean)
+      .slice(0, 6);
+
+    if (chunks.length === 0) {
+      return fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
+    }
+
+    return chunks.join('\n\n');
+  } catch {
+    return fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
+  }
 }
 
 async function embedQuery(env, text) {
@@ -5008,6 +5300,262 @@ async function embedQuery(env, text) {
   }
 
   return vector;
+}
+
+async function buildLogisticsKnowledgeDocs(db) {
+  if (!db) return [];
+
+  const [courseRows, cohortRows] = await Promise.all([
+    db
+      .prepare(
+        `SELECT
+           c.id, c.slug, c.title, c.status, c.price_cents, c.start_date, c.end_date,
+           (SELECT COUNT(*) FROM cohorts h WHERE h.course_id = c.id) AS cohort_count,
+           (SELECT COUNT(*) FROM cohorts h WHERE h.course_id = c.id AND h.status IN ('open','live')) AS active_cohort_count,
+           (SELECT MIN(h.start_date) FROM cohorts h WHERE h.course_id = c.id AND h.status IN ('open','live','draft')) AS next_cohort_start
+         FROM courses c
+         ORDER BY c.updated_at_ms DESC
+         LIMIT 200`
+      )
+      .all(),
+    db
+      .prepare(
+        `SELECT
+           h.id, h.course_id, h.name, h.mode, h.status, h.start_date, h.end_date, h.fee_cents,
+           c.slug AS course_slug, c.title AS course_title
+         FROM cohorts h
+         LEFT JOIN courses c ON c.id = h.course_id
+         ORDER BY
+           CASE h.status WHEN 'live' THEN 0 WHEN 'open' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
+           h.updated_at_ms DESC
+         LIMIT 250`
+      )
+      .all()
+  ]);
+
+  const docs = [];
+  const generatedAt = msToIsoDate(Date.now());
+
+  docs.push({
+    document_id: 'logistics-platform-policy',
+    type: 'logistics',
+    course_id: '',
+    module_id: '',
+    chunk_text: [
+      'DeepLearn enrollment logistics policy:',
+      '- Registration captures lead details and creates payment-intent state.',
+      '- Payment modes: Razorpay order and optional UPI QR.',
+      '- Access policy: learner access activates after paid payment status.',
+      '- Completion policy: certificate issues when course completion criteria are met.',
+      `- Snapshot date: ${generatedAt}.`
+    ].join('\n')
+  });
+
+  for (const row of courseRows.results || []) {
+    const courseId = clean(row.id, 64);
+    if (!courseId) continue;
+    const title = clean(row.title, 180);
+    const slug = clean(row.slug, 120);
+    const fee = Number(row.price_cents || 0);
+    const feeText = fee > 0 ? `${(fee / 100).toFixed(2)} ${clean('USD', 8)}` : 'Contact coordinator';
+    docs.push({
+      document_id: `logistics-course-${courseId}`,
+      type: 'logistics',
+      course_id: courseId,
+      module_id: '',
+      chunk_text: [
+        `Course logistics for ${title} (${slug}):`,
+        `- Course status: ${clean(row.status || 'draft', 24)}.`,
+        `- Standard fee: ${feeText}.`,
+        `- Course window: ${clean(row.start_date || 'TBD', 24)} to ${clean(row.end_date || 'TBD', 24)}.`,
+        `- Total cohorts: ${Number(row.cohort_count || 0)}, active cohorts: ${Number(row.active_cohort_count || 0)}.`,
+        `- Next cohort start: ${clean(row.next_cohort_start || 'TBD', 24)}.`
+      ].join('\n')
+    });
+  }
+
+  for (const row of cohortRows.results || []) {
+    const courseId = clean(row.course_id, 64);
+    const cohortId = clean(row.id, 64);
+    if (!courseId || !cohortId) continue;
+    const fee = Number(row.fee_cents || 0);
+    const feeText = fee > 0 ? `${(fee / 100).toFixed(2)} USD` : 'TBD';
+    docs.push({
+      document_id: `logistics-cohort-${cohortId}`,
+      type: 'logistics',
+      course_id: courseId,
+      module_id: '',
+      chunk_text: [
+        `Cohort logistics for ${clean(row.course_title || 'course', 180)}:`,
+        `- Cohort: ${clean(row.name || cohortId, 180)} (${cohortId}).`,
+        `- Mode: ${clean(row.mode || 'instructor-led', 24)}.`,
+        `- Status: ${clean(row.status || 'draft', 24)}.`,
+        `- Start date: ${clean(row.start_date || 'TBD', 24)}.`,
+        `- End date: ${clean(row.end_date || 'TBD', 24)}.`,
+        `- Cohort fee: ${feeText}.`
+      ].join('\n')
+    });
+  }
+
+  return docs;
+}
+
+async function buildLogisticsSnapshotContext(db, { courseId } = {}) {
+  if (!db) return '';
+  try {
+    if (courseId) {
+      const course = await db.prepare(
+        `SELECT id, slug, title, status, price_cents, start_date, end_date
+         FROM courses
+         WHERE id = ?
+         LIMIT 1`
+      )
+        .bind(courseId)
+        .first();
+      if (!course) return '';
+
+      const cohorts = await db.prepare(
+        `SELECT name, mode, status, start_date, end_date, fee_cents
+         FROM cohorts
+         WHERE course_id = ?
+         ORDER BY
+           CASE status WHEN 'live' THEN 0 WHEN 'open' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
+           updated_at_ms DESC
+         LIMIT 3`
+      )
+        .bind(courseId)
+        .all();
+
+      const lines = [
+        `Course: ${clean(course.title || '', 180)} (${clean(course.slug || '', 120)})`,
+        `Status: ${clean(course.status || 'draft', 24)}`,
+        `Fee: ${Number(course.price_cents || 0) > 0 ? `${(Number(course.price_cents || 0) / 100).toFixed(2)} USD` : 'Contact coordinator'}`,
+        `Course dates: ${clean(course.start_date || 'TBD', 24)} to ${clean(course.end_date || 'TBD', 24)}`
+      ];
+      for (const cohort of cohorts.results || []) {
+        lines.push(
+          `Cohort ${clean(cohort.name || '', 160)} | ${clean(cohort.status || '', 20)} | ${clean(cohort.start_date || 'TBD', 24)} to ${clean(
+            cohort.end_date || 'TBD',
+            24
+          )} | Fee ${Number(cohort.fee_cents || 0) > 0 ? `${(Number(cohort.fee_cents || 0) / 100).toFixed(2)} USD` : 'TBD'}`
+        );
+      }
+      return lines.join('\n');
+    }
+
+    const rows = await db.prepare(
+      `SELECT
+         c.title, c.slug, c.status, c.price_cents,
+         (SELECT MIN(h.start_date) FROM cohorts h WHERE h.course_id = c.id AND h.status IN ('open','live','draft')) AS next_cohort_start
+       FROM courses c
+       ORDER BY
+         CASE c.status WHEN 'live' THEN 0 WHEN 'published' THEN 1 ELSE 2 END,
+         c.updated_at_ms DESC
+       LIMIT 5`
+    ).all();
+    if (!rows.results?.length) return '';
+
+    return (rows.results || [])
+      .map(
+        (row) =>
+          `${clean(row.title || '', 180)} (${clean(row.slug || '', 120)}) | status ${clean(row.status || 'draft', 24)} | fee ${
+            Number(row.price_cents || 0) > 0 ? `${(Number(row.price_cents || 0) / 100).toFixed(2)} USD` : 'contact coordinator'
+          } | next cohort ${clean(row.next_cohort_start || 'TBD', 24)}`
+      )
+      .join('\n');
+  } catch {
+    return '';
+  }
+}
+
+async function upsertKnowledgeDocuments(env, docs) {
+  if (!env.DEEPLEARN_INDEX || !env.AI || !Array.isArray(docs) || docs.length === 0) {
+    return { chunkCount: 0, upserted: 0 };
+  }
+
+  const chunks = [];
+  for (const doc of docs) {
+    const chunkTexts = chunkTextForEmbedding(clean(doc.chunk_text || '', 8000), 900);
+    for (let idx = 0; idx < chunkTexts.length; idx += 1) {
+      const chunkText = clean(chunkTexts[idx], 2000);
+      if (!chunkText) continue;
+      const rawId = `${doc.document_id || 'doc'}:${idx}:${chunkText}`;
+      const hash = await sha256Hex(rawId);
+      chunks.push({
+        vector_id: `kb_${hash.slice(0, 40)}`,
+        document_id: clean(doc.document_id || '', 120),
+        type: clean(doc.type || 'content', 32),
+        course_id: clean(doc.course_id || '', 64),
+        module_id: clean(doc.module_id || '', 64),
+        chunk_text: chunkText
+      });
+    }
+  }
+
+  const batchSize = 16;
+  let upserted = 0;
+  for (let offset = 0; offset < chunks.length; offset += batchSize) {
+    const batch = chunks.slice(offset, offset + batchSize);
+    const embeddingResponse = await env.AI.run('@cf/baai/bge-base-en-v1.5', {
+      text: batch.map((chunk) => chunk.chunk_text)
+    });
+    const vectors = Array.isArray(embeddingResponse?.data) ? embeddingResponse.data : [];
+    if (vectors.length !== batch.length) {
+      throw new Error('Embedding generation failed for knowledge ingestion.');
+    }
+
+    const records = batch.map((chunk, index) => ({
+      id: chunk.vector_id,
+      values: vectors[index],
+      metadata: {
+        type: chunk.type,
+        course_id: chunk.course_id,
+        module_id: chunk.module_id,
+        chunk_text: chunk.chunk_text,
+        document_id: chunk.document_id,
+        ingested_at_ms: Date.now()
+      }
+    }));
+
+    await env.DEEPLEARN_INDEX.upsert(records);
+    upserted += records.length;
+  }
+
+  return { chunkCount: chunks.length, upserted };
+}
+
+function chunkTextForEmbedding(text, maxChars = 900) {
+  const normalized = String(text || '').trim();
+  if (!normalized) return [];
+  if (normalized.length <= maxChars) return [normalized];
+
+  const paragraphs = normalized.split(/\n{2,}/).map((entry) => entry.trim()).filter(Boolean);
+  if (!paragraphs.length) {
+    const output = [];
+    for (let i = 0; i < normalized.length; i += maxChars) {
+      output.push(normalized.slice(i, i + maxChars));
+    }
+    return output;
+  }
+
+  const chunks = [];
+  let current = '';
+  for (const paragraph of paragraphs) {
+    if (!current) {
+      current = paragraph;
+      continue;
+    }
+    const candidate = `${current}\n\n${paragraph}`;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      chunks.push(current);
+      current = paragraph;
+    }
+  }
+  if (current) chunks.push(current);
+
+  return chunks;
 }
 
 async function writeGrowthEvent(env, cf, event) {
@@ -5054,6 +5602,168 @@ async function writeGrowthEvent(env, cf, event) {
       blobs: [event.leadId || '', event.sessionId || '', event.path || '', event.emailHash || ''],
       doubles: [nowMs, event.value ?? 1, botScore, asn]
     });
+  }
+}
+
+async function queueLeadDestination(c, eventType, payload) {
+  const task = deliverLeadDestination(c.env, eventType, payload);
+  if (c.executionCtx?.waitUntil) {
+    c.executionCtx.waitUntil(task);
+    return;
+  }
+  await task;
+}
+
+async function deliverLeadDestination(env, eventType, payload) {
+  const webhookUrl = clean(env.LEAD_WEBHOOK_URL || '', 600);
+  if (!webhookUrl) {
+    return { forwarded: false, reason: 'missing_webhook_url' };
+  }
+
+  const body = JSON.stringify({
+    event_type: clean(eventType || 'lead_event', 80),
+    event_at: new Date().toISOString(),
+    source: 'deeplearn-worker',
+    payload
+  });
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-deeplearn-event': clean(eventType || 'lead_event', 80)
+  };
+  const authToken = clean(env.LEAD_WEBHOOK_AUTH_TOKEN || '', 400);
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+  const signingSecret = clean(env.LEAD_WEBHOOK_SECRET || '', 240);
+  if (signingSecret) {
+    headers['x-deeplearn-signature-sha256'] = await hmacSha256Hex(signingSecret, body);
+  }
+
+  try {
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers,
+      body
+    });
+    if (!response.ok) {
+      const details = clean(await response.text(), 500);
+      await recordOpsAlert(env, {
+        source: 'crm_webhook',
+        severity: 'warning',
+        eventType: 'lead_forward_failed',
+        message: `CRM webhook returned ${response.status}`,
+        details: { event_type: eventType, response: details },
+        dedupeKey: `crm_webhook_${eventType}_${response.status}`
+      });
+      return { forwarded: false, reason: `http_${response.status}` };
+    }
+    return { forwarded: true };
+  } catch (error) {
+    await recordOpsAlert(env, {
+      source: 'crm_webhook',
+      severity: 'warning',
+      eventType: 'lead_forward_error',
+      message: 'CRM webhook delivery failed.',
+      details: {
+        event_type: eventType,
+        error: error instanceof Error ? error.message : 'unknown_error'
+      },
+      dedupeKey: `crm_webhook_${eventType}_exception`
+    });
+    return { forwarded: false, reason: 'exception' };
+  }
+}
+
+async function recordOpsAlert(
+  env,
+  { source, severity = 'warning', eventType = '', message, details = {}, dedupeKey = '', status = 'open' }
+) {
+  if (!env.DEEPLEARN_DB || !message) return null;
+
+  await ensureOpsSchema(env.DEEPLEARN_DB);
+  const nowMs = Date.now();
+  const normalizedSeverity = ALERT_SEVERITIES.has(clean(severity, 20).toLowerCase()) ? clean(severity, 20).toLowerCase() : 'warning';
+  const normalizedStatus = ALERT_STATUSES.has(clean(status, 20).toLowerCase()) ? clean(status, 20).toLowerCase() : 'open';
+  const normalizedDedupe = clean(dedupeKey, 120);
+
+  if (normalizedDedupe) {
+    const existing = await env.DEEPLEARN_DB.prepare(
+      `SELECT id
+       FROM ops_alerts
+       WHERE dedupe_key = ? AND status = 'open' AND created_at_ms >= ?
+       ORDER BY created_at_ms DESC
+       LIMIT 1`
+    )
+      .bind(normalizedDedupe, nowMs - 15 * 60 * 1000)
+      .first();
+    if (existing?.id) {
+      await env.DEEPLEARN_DB.prepare('UPDATE ops_alerts SET updated_at_ms = ? WHERE id = ?').bind(nowMs, existing.id).run();
+      return existing.id;
+    }
+  }
+
+  const alertId = crypto.randomUUID();
+  await env.DEEPLEARN_DB.prepare(
+    `INSERT INTO ops_alerts (
+       id, source, severity, event_type, message, details_json, dedupe_key, status, created_at_ms, updated_at_ms
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      alertId,
+      clean(source || 'worker', 80) || 'worker',
+      normalizedSeverity,
+      clean(eventType, 80),
+      clean(message, 500),
+      JSON.stringify(details && typeof details === 'object' ? details : {}),
+      normalizedDedupe,
+      normalizedStatus,
+      nowMs,
+      nowMs
+    )
+    .run();
+
+  void sendAlertNotification(env, {
+    id: alertId,
+    source: clean(source || 'worker', 80) || 'worker',
+    severity: normalizedSeverity,
+    event_type: clean(eventType, 80),
+    message: clean(message, 500),
+    details
+  });
+
+  return alertId;
+}
+
+async function sendAlertNotification(env, alertPayload) {
+  const webhookUrl = clean(env.ALERT_WEBHOOK_URL || '', 600);
+  if (!webhookUrl) return;
+
+  const body = JSON.stringify({
+    event_type: 'ops_alert',
+    event_at: new Date().toISOString(),
+    source: 'deeplearn-worker',
+    alert: alertPayload
+  });
+  const headers = {
+    'Content-Type': 'application/json'
+  };
+  const authToken = clean(env.ALERT_WEBHOOK_AUTH_TOKEN || '', 400);
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+  const signingSecret = clean(env.ALERT_WEBHOOK_SECRET || '', 240);
+  if (signingSecret) {
+    headers['x-deeplearn-signature-sha256'] = await hmacSha256Hex(signingSecret, body);
+  }
+
+  try {
+    await fetch(webhookUrl, {
+      method: 'POST',
+      headers,
+      body
+    });
+  } catch {
+    // Do not recurse by alerting failures in the alert channel itself.
   }
 }
 
@@ -5421,6 +6131,26 @@ async function activatePaymentRegistration(c, payload, { sourcePath }) {
     });
   }
 
+  await queueLeadDestination(c, 'payment_status_updated', {
+    lead_id: effectiveLeadId,
+    webinar_id: webinarId,
+    source,
+    session_id: sessionId,
+    user_id: userId,
+    full_name: fullName,
+    email,
+    phone,
+    course_id: target.courseId,
+    course_slug: target.courseSlug,
+    course_title: target.courseTitle,
+    cohort_id: target.cohortId,
+    payment_status: paymentStatus,
+    payment_ref: paymentRef,
+    payment_provider: paymentProvider,
+    amount_cents: amountCents,
+    currency
+  });
+
   return {
     ok: true,
     lead_id: effectiveLeadId,
@@ -5741,6 +6471,14 @@ async function runScheduledContentGeneration(env, cron) {
       status: 'error',
       message: error instanceof Error ? error.message : 'scheduled content generation failed',
       postId: ''
+    });
+    await recordOpsAlert(env, {
+      source: 'scheduled_job',
+      severity: 'warning',
+      eventType: 'daily_content_generation_failed',
+      message: 'Scheduled daily content generation failed.',
+      details: { cron, error: error instanceof Error ? error.message : 'scheduled content generation failed' },
+      dedupeKey: 'scheduled_daily_content_generation_failed'
     });
   }
 }

@@ -125,7 +125,15 @@ npm run cf:secret:list
 npm run cf:secret:put -- GROQ_API_KEY
 npm run cf:secret:put -- TURNSTILE_SECRET_KEY
 npm run cf:secret:put -- ADMIN_API_TOKEN
+npm run cf:secret:put -- LEAD_WEBHOOK_AUTH_TOKEN
+npm run cf:secret:put -- LEAD_WEBHOOK_SECRET
+npm run cf:secret:put -- ALERT_WEBHOOK_AUTH_TOKEN
+npm run cf:secret:put -- ALERT_WEBHOOK_SECRET
 ```
+
+Optional Worker vars (set in `wrangler.toml` `[vars]`):
+- `LEAD_WEBHOOK_URL`: CRM endpoint for lead + payment updates.
+- `ALERT_WEBHOOK_URL`: incident channel endpoint (Slack/Discord/custom) for ops alerts.
 
 ## Platform routes
 
@@ -157,6 +165,7 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 - Lead payload storage: `Cloudflare R2` bucket (`gbdeeplearn-leads`) for submitted registration details.
 - Lead submission endpoint: `POST /api/lead/submit` (Cloudflare Worker, no external CRM required).
 - Turnstile: Enabled on lead form, server-verified in Worker.
+- Optional CRM forwarding: set `LEAD_WEBHOOK_URL` and signer/auth secrets to push lead + payment events to your CRM.
 
 ### Webinar events captured (`POST /api/track`)
 
@@ -170,6 +179,35 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 
 Funnel summary endpoint:
 - `GET /api/analytics/funnel?webinar_id=deep-rag-live-webinar&days=30`
+
+### Counselor logistics ingestion
+
+Seed and embed logistics context into Vectorize:
+
+```bash
+npm run seed:path123
+```
+
+This now calls:
+- `POST /api/admin/knowledge/ingest-logistics`
+
+Manual trigger:
+
+```bash
+curl -X POST "$DEEPLEARN_API_BASE_URL/api/admin/knowledge/ingest-logistics" \
+  -H "x-admin-token: $ADMIN_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+```
+
+Counselor route still has DB-backed logistics fallback if vector chunks are empty.
+
+### Ops monitoring and payment failure alerts
+
+- Alerts API: `GET /api/admin/alerts?status=open&limit=100`
+- Alert status update: `POST /api/admin/alerts/:alertId/status` with `{ "status": "acknowledged|resolved" }`
+- Payment webhook and payment verification failures automatically create `ops_alerts` records.
+- Optional outbound alerting: set `ALERT_WEBHOOK_URL` (+ auth/signing vars) to forward alerts externally.
 
 ## Daily Content Pipeline (Cloudflare + BYOK/Fallback)
 
