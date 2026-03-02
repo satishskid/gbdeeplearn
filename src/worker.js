@@ -55,6 +55,8 @@ app.get('/', (c) => {
       '/api/admin/analytics/summary',
       '/api/admin/analytics/paths',
       '/api/admin/analytics/learning-trends',
+      '/api/admin/access/audit',
+      '/api/admin/content/runs',
       '/api/admin/crm/leads',
       '/api/admin/crm/leads/:leadId',
       '/api/content/posts',
@@ -1506,6 +1508,160 @@ app.get('/api/admin/analytics/paths', async (c) => {
     return c.json(
       {
         error: 'Failed to load path analytics.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/access/audit', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+
+    const [platformRoleRows, courseStaffRows, orgStaffRows, overlapRows, missingRoleRows] = await Promise.all([
+      c.env.DEEPLEARN_DB.prepare(
+        `SELECT role, COUNT(*) AS count
+         FROM platform_users
+         GROUP BY role
+         ORDER BY count DESC`
+      ).all(),
+      c.env.DEEPLEARN_DB.prepare(
+        `SELECT role, COUNT(*) AS count
+         FROM course_staff
+         GROUP BY role
+         ORDER BY count DESC`
+      ).all(),
+      c.env.DEEPLEARN_DB.prepare(
+        `SELECT role, COUNT(*) AS count
+         FROM organization_staff
+         GROUP BY role
+         ORDER BY count DESC`
+      ).all(),
+      c.env.DEEPLEARN_DB.prepare(
+        `SELECT
+           uid,
+           GROUP_CONCAT(DISTINCT role) AS roles
+         FROM (
+           SELECT uid AS uid, role AS role FROM platform_users
+           UNION ALL
+           SELECT user_id AS uid, role AS role FROM course_staff
+           UNION ALL
+           SELECT user_id AS uid, role AS role FROM organization_staff
+         )
+         GROUP BY uid
+         HAVING COUNT(DISTINCT role) > 1
+         LIMIT 50`
+      ).all(),
+      c.env.DEEPLEARN_DB.prepare(
+        `SELECT
+           s.user_id AS uid,
+           GROUP_CONCAT(DISTINCT s.role) AS staff_roles
+         FROM (
+           SELECT user_id, role FROM course_staff
+           UNION ALL
+           SELECT user_id, role FROM organization_staff
+         ) s
+         LEFT JOIN platform_users p ON p.uid = s.user_id
+         WHERE p.uid IS NULL
+         GROUP BY s.user_id
+         LIMIT 50`
+      ).all()
+    ]);
+
+    return c.json({
+      generated_at: new Date().toISOString(),
+      totals: {
+        platform_users: await scalarCount(c.env.DEEPLEARN_DB, 'SELECT COUNT(*) AS count FROM platform_users'),
+        course_staff: await scalarCount(c.env.DEEPLEARN_DB, 'SELECT COUNT(*) AS count FROM course_staff'),
+        organization_staff: await scalarCount(c.env.DEEPLEARN_DB, 'SELECT COUNT(*) AS count FROM organization_staff')
+      },
+      platform_roles: (platformRoleRows.results || []).map((row) => ({
+        role: clean(row.role || '', 40),
+        count: Number(row.count || 0)
+      })),
+      course_staff_roles: (courseStaffRows.results || []).map((row) => ({
+        role: clean(row.role || '', 40),
+        count: Number(row.count || 0)
+      })),
+      organization_staff_roles: (orgStaffRows.results || []).map((row) => ({
+        role: clean(row.role || '', 40),
+        count: Number(row.count || 0)
+      })),
+      findings: {
+        users_with_multiple_roles: (overlapRows.results || []).map((row) => ({
+          uid: clean(row.uid || '', 120),
+          roles: String(row.roles || '')
+            .split(',')
+            .map((item) => clean(item, 40))
+            .filter(Boolean)
+        })),
+        staff_missing_platform_user: (missingRoleRows.results || []).map((row) => ({
+          uid: clean(row.uid || '', 120),
+          staff_roles: String(row.staff_roles || '')
+            .split(',')
+            .map((item) => clean(item, 40))
+            .filter(Boolean)
+        }))
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load access audit.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/content/runs', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.max(1, Math.min(200, Number(c.req.query('limit') || 50)));
+    const statusFilter = clean(c.req.query('status'), 32).toLowerCase();
+    const runTypeFilter = clean(c.req.query('run_type'), 64).toLowerCase();
+
+    const rows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, run_type, status, message, post_id, created_at_ms
+       FROM content_generation_runs
+       WHERE (? = '' OR LOWER(status) = ?)
+         AND (? = '' OR LOWER(run_type) = ?)
+       ORDER BY created_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(statusFilter, statusFilter, runTypeFilter, runTypeFilter, limit)
+      .all();
+
+    return c.json({
+      runs: (rows.results || []).map((row) => ({
+        id: Number(row.id || 0),
+        run_type: clean(row.run_type || '', 80),
+        status: clean(row.status || '', 32),
+        message: clean(row.message || '', 400),
+        post_id: clean(row.post_id || '', 64),
+        created_at_ms: Number(row.created_at_ms || 0)
+      }))
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load content runs.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500

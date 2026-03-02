@@ -129,6 +129,7 @@ npm run cf:secret:put -- LEAD_WEBHOOK_AUTH_TOKEN
 npm run cf:secret:put -- LEAD_WEBHOOK_SECRET
 npm run cf:secret:put -- ALERT_WEBHOOK_AUTH_TOKEN
 npm run cf:secret:put -- ALERT_WEBHOOK_SECRET
+npm run readiness:check
 ```
 
 Optional Worker vars (set in `wrangler.toml` `[vars]`):
@@ -168,6 +169,8 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 - Internal CRM endpoints:
   - `GET /api/admin/crm/leads`
   - `POST /api/admin/crm/leads/:leadId`
+- Access + role audit endpoint:
+  - `GET /api/admin/access/audit`
 - Optional external forwarding remains available only if you set `LEAD_WEBHOOK_URL`.
 
 ### Webinar events captured (`POST /api/track`)
@@ -211,6 +214,19 @@ Counselor route still has DB-backed logistics fallback if vector chunks are empt
 - Alert status update: `POST /api/admin/alerts/:alertId/status` with `{ "status": "acknowledged|resolved" }`
 - Payment webhook and payment verification failures automatically create `ops_alerts` records.
 - Optional outbound alerting: set `ALERT_WEBHOOK_URL` (+ auth/signing vars) to forward alerts externally.
+
+### Production Readiness
+
+- Checklist: [docs/production-readiness-checklist.md](/Users/spr/gbdeeplearn/docs/production-readiness-checklist.md)
+- Incident runbook: [docs/incident-response-runbook.md](/Users/spr/gbdeeplearn/docs/incident-response-runbook.md)
+
+Run automated readiness checks:
+
+```bash
+ADMIN_API_TOKEN=... \
+DEEPLEARN_API_BASE_URL=https://deeplearn-worker.satish-9f4.workers.dev \
+npm run readiness:check
+```
 
 ## Daily Content Pipeline (Cloudflare + BYOK/Fallback)
 

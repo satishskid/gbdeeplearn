@@ -25,6 +25,7 @@
     "cf:bootstrap": "./scripts/cf-bootstrap.sh",
     "cf:d1:migrate": "./scripts/cf-ops-schema.sh",
     "seed:path123": "node scripts/seed-path123.mjs",
+    "readiness:check": "node scripts/prod-readiness-check.mjs",
     "cf:deploy:all": "npm run build && npm run cf:worker:deploy && npm run cf:pages:deploy"
   },
   "dependencies": {

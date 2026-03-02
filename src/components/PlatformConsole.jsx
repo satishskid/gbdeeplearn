@@ -41,8 +41,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [analyticsSummary, setAnalyticsSummary] = useState(null);
   const [pathAnalytics, setPathAnalytics] = useState([]);
   const [opsAlerts, setOpsAlerts] = useState([]);
+  const [accessAudit, setAccessAudit] = useState(null);
+  const [contentRuns, setContentRuns] = useState([]);
   const [loading, setLoading] = useState(false);
   const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [loadingAccessAudit, setLoadingAccessAudit] = useState(false);
+  const [loadingContentRuns, setLoadingContentRuns] = useState(false);
   const [loadingLabRuns, setLoadingLabRuns] = useState(false);
   const [loadingCapstones, setLoadingCapstones] = useState(false);
   const [loadingLabTrends, setLoadingLabTrends] = useState(false);
@@ -355,6 +359,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       setAnalyticsSummary(null);
       setPathAnalytics([]);
       setOpsAlerts([]);
+      setAccessAudit(null);
+      setContentRuns([]);
       setCrmLeads([]);
       setCrmSummary(null);
       setCourseModules([]);
@@ -368,7 +374,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     setLoading(true);
     setError('');
     try {
-      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes, analyticsSummaryRes, pathAnalyticsRes, alertsRes] = await Promise.all([
+      const [overviewRes, coursesRes, contentRes, organizationsRes, cohortsRes, analyticsSummaryRes, pathAnalyticsRes, alertsRes, accessAuditRes, contentRunsRes] = await Promise.all([
         fetch(apiUrl('/api/admin/overview'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/courses'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/content/posts?limit=20'), { headers: adminHeaders }),
@@ -376,7 +382,9 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         fetch(apiUrl('/api/admin/cohorts?limit=50'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/analytics/summary?days=30'), { headers: adminHeaders }),
         fetch(apiUrl('/api/admin/analytics/paths?days=30'), { headers: adminHeaders }),
-        fetch(apiUrl('/api/admin/alerts?status=open&limit=20'), { headers: adminHeaders })
+        fetch(apiUrl('/api/admin/alerts?status=open&limit=20'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/access/audit'), { headers: adminHeaders }),
+        fetch(apiUrl('/api/admin/content/runs?limit=20'), { headers: adminHeaders })
       ]);
 
       const overviewPayload = await overviewRes.json();
@@ -387,6 +395,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       const analyticsSummaryPayload = await analyticsSummaryRes.json();
       const pathAnalyticsPayload = await pathAnalyticsRes.json();
       const alertsPayload = await alertsRes.json();
+      const accessAuditPayload = await accessAuditRes.json();
+      const contentRunsPayload = await contentRunsRes.json();
 
       if (!overviewRes.ok) throw new Error(overviewPayload?.error || 'Overview load failed.');
       if (!coursesRes.ok) throw new Error(coursesPayload?.error || 'Courses load failed.');
@@ -396,6 +406,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       if (!analyticsSummaryRes.ok) throw new Error(analyticsSummaryPayload?.error || 'Analytics summary load failed.');
       if (!pathAnalyticsRes.ok) throw new Error(pathAnalyticsPayload?.error || 'Path analytics load failed.');
       if (!alertsRes.ok) throw new Error(alertsPayload?.error || 'Alert load failed.');
+      if (!accessAuditRes.ok) throw new Error(accessAuditPayload?.error || 'Access audit load failed.');
+      if (!contentRunsRes.ok) throw new Error(contentRunsPayload?.error || 'Content run load failed.');
 
       setOverview(overviewPayload);
       setCourses(coursesPayload.courses || []);
@@ -405,6 +417,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       setAnalyticsSummary(analyticsSummaryPayload);
       setPathAnalytics(pathAnalyticsPayload.paths || []);
       setOpsAlerts(alertsPayload.alerts || []);
+      setAccessAudit(accessAuditPayload || null);
+      setContentRuns(contentRunsPayload.runs || []);
 
       const candidateCourseId = moduleForm.courseId || coursesPayload?.courses?.[0]?.id || '';
       if (candidateCourseId) {
@@ -1000,6 +1014,36 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       return `Loaded ${Number(payload?.alerts?.length || 0)} open alerts.`;
     } finally {
       setLoadingAlerts(false);
+    }
+  };
+
+  const loadAccessAudit = async () => {
+    setLoadingAccessAudit(true);
+    try {
+      const response = await fetch(apiUrl('/api/admin/access/audit'), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Access audit load failed.');
+      setAccessAudit(payload || null);
+      return 'Access audit loaded.';
+    } finally {
+      setLoadingAccessAudit(false);
+    }
+  };
+
+  const loadContentRuns = async () => {
+    setLoadingContentRuns(true);
+    try {
+      const response = await fetch(apiUrl('/api/admin/content/runs?limit=30'), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Content run load failed.');
+      setContentRuns(payload?.runs || []);
+      return `Loaded ${Number(payload?.runs?.length || 0)} content runs.`;
+    } finally {
+      setLoadingContentRuns(false);
     }
   };
 
@@ -2649,6 +2693,22 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               >
                 {loadingAlerts ? 'Refreshing...' : 'Refresh Open Alerts'}
               </button>
+              <button
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void runAction(loadAccessAudit)}
+                type="button"
+                disabled={!hasAdminToken || loadingAccessAudit}
+              >
+                {loadingAccessAudit ? 'Refreshing...' : 'Refresh Access Audit'}
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => void runAction(loadContentRuns)}
+                type="button"
+                disabled={!hasAdminToken || loadingContentRuns}
+              >
+                {loadingContentRuns ? 'Refreshing...' : 'Refresh Content Runs'}
+              </button>
             </div>
           </div>
 
@@ -2677,6 +2737,56 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 </div>
               ))}
               {opsAlerts.length === 0 ? <p className="text-sm text-slate-500">No open alerts.</p> : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 lg:col-span-2">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Access And Content Ops Audit</h3>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <Metric label="Platform Users" value={accessAudit?.totals?.platform_users ?? 0} />
+              <Metric label="Course Staff" value={accessAudit?.totals?.course_staff ?? 0} />
+              <Metric label="Org Staff" value={accessAudit?.totals?.organization_staff ?? 0} />
+              <Metric label="Role Overlaps" value={(accessAudit?.findings?.users_with_multiple_roles || []).length} />
+            </div>
+            <div className="mt-3 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="mb-2 text-sm font-semibold text-slate-900">Users with multiple roles</p>
+                <div className="max-h-40 space-y-2 overflow-auto">
+                  {(accessAudit?.findings?.users_with_multiple_roles || []).map((row) => (
+                    <p key={row.uid} className="text-xs text-slate-700">
+                      {row.uid}: {(row.roles || []).join(', ')}
+                    </p>
+                  ))}
+                  {(accessAudit?.findings?.users_with_multiple_roles || []).length === 0 ? (
+                    <p className="text-xs text-slate-500">No overlaps found.</p>
+                  ) : null}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-3">
+                <p className="mb-2 text-sm font-semibold text-slate-900">Staff missing platform user profile</p>
+                <div className="max-h-40 space-y-2 overflow-auto">
+                  {(accessAudit?.findings?.staff_missing_platform_user || []).map((row) => (
+                    <p key={row.uid} className="text-xs text-slate-700">
+                      {row.uid}: {(row.staff_roles || []).join(', ')}
+                    </p>
+                  ))}
+                  {(accessAudit?.findings?.staff_missing_platform_user || []).length === 0 ? (
+                    <p className="text-xs text-slate-500">No missing profiles.</p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 p-3">
+              <p className="mb-2 text-sm font-semibold text-slate-900">Recent content generation runs</p>
+              <div className="max-h-40 space-y-2 overflow-auto">
+                {(contentRuns || []).map((run) => (
+                  <p key={`${run.id}:${run.created_at_ms}`} className="text-xs text-slate-700">
+                    {run.run_type} · {run.status} · {formatMs(run.created_at_ms)} · {run.message}
+                  </p>
+                ))}
+                {(contentRuns || []).length === 0 ? <p className="text-xs text-slate-500">No run history loaded.</p> : null}
+              </div>
             </div>
           </div>
         </div>
