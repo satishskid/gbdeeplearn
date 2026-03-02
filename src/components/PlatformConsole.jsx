@@ -20,6 +20,12 @@ function toNumberOrNull(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseDateTimeToMs(value) {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? Math.round(parsed) : null;
+}
+
 export default function PlatformConsole({ userRoles = [], currentUser = null }) {
   const [adminToken, setAdminToken] = useState('');
   const [overview, setOverview] = useState(null);
@@ -52,6 +58,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   });
   const [labTrendDays, setLabTrendDays] = useState('30');
   const [capstoneTrendDays, setCapstoneTrendDays] = useState('30');
+  const [loadingSessions, setLoadingSessions] = useState(false);
 
   const [courseForm, setCourseForm] = useState({
     title: '',
@@ -119,6 +126,26 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     email: '',
     displayName: '',
     userId: ''
+  });
+  const [sessionCohortId, setSessionCohortId] = useState('');
+  const [cohortSessions, setCohortSessions] = useState([]);
+  const [sessionForm, setSessionForm] = useState({
+    title: '',
+    description: '',
+    startsAt: '',
+    endsAt: '',
+    meetingUrl: '',
+    recordingUrl: '',
+    status: 'scheduled',
+    resourcesJson: '{\n  "slides": "",\n  "prep": ""\n}'
+  });
+  const [attendanceForm, setAttendanceForm] = useState({
+    sessionId: '',
+    userId: '',
+    status: 'present',
+    notes: '',
+    email: '',
+    displayName: ''
   });
 
   const [rubricForm, setRubricForm] = useState({
@@ -268,6 +295,31 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     setCohortEnrollments(payload.enrollments || []);
   };
 
+  const fetchCohortSessions = async (cohortId, headers = adminHeaders) => {
+    if (!cohortId) {
+      setCohortSessions([]);
+      setAttendanceForm((prev) => ({ ...prev, sessionId: '' }));
+      return;
+    }
+
+    setLoadingSessions(true);
+    try {
+      const response = await fetch(apiUrl(`/api/admin/cohorts/${cohortId}/sessions?limit=120`), { headers });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Session load failed.');
+      const sessions = payload.sessions || [];
+      setCohortSessions(sessions);
+      setAttendanceForm((prev) => {
+        if (prev.sessionId && sessions.some((session) => session.id === prev.sessionId)) {
+          return prev;
+        }
+        return { ...prev, sessionId: sessions[0]?.id || '' };
+      });
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
   const loadConsoleData = async () => {
     setLoading(true);
     setError('');
@@ -383,6 +435,32 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cohortEnrollForm.cohortId]);
+
+  useEffect(() => {
+    if (!cohorts.length) {
+      setSessionCohortId('');
+      setCohortSessions([]);
+      return;
+    }
+
+    if (sessionCohortId && cohorts.some((cohort) => cohort.id === sessionCohortId)) {
+      return;
+    }
+    setSessionCohortId(cohorts[0].id);
+  }, [cohorts, sessionCohortId]);
+
+  useEffect(() => {
+    if (!sessionCohortId) {
+      setCohortSessions([]);
+      setAttendanceForm((prev) => ({ ...prev, sessionId: '' }));
+      return;
+    }
+
+    fetchCohortSessions(sessionCohortId).catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to load sessions.');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionCohortId]);
 
   useEffect(() => {
     if (!availableTabs.some((tab) => tab.id === activeRole)) {
@@ -608,6 +686,88 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     if (!response.ok) throw new Error(payload?.error || 'Cohort completion update failed.');
     await fetchCohortEnrollments(cohortEnrollForm.cohortId);
     return `Learner marked completed: ${userId}`;
+  };
+
+  const createCohortSession = async () => {
+    if (!sessionCohortId) throw new Error('Select a cohort first.');
+    const startsAtMs = parseDateTimeToMs(sessionForm.startsAt);
+    const endsAtMs = parseDateTimeToMs(sessionForm.endsAt);
+    if (!sessionForm.title.trim() || !Number.isFinite(startsAtMs)) {
+      throw new Error('Session title and start date-time are required.');
+    }
+
+    let resources = {};
+    if (sessionForm.resourcesJson.trim()) {
+      try {
+        const parsed = JSON.parse(sessionForm.resourcesJson);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          resources = parsed;
+        } else {
+          throw new Error('Resources must be a JSON object.');
+        }
+      } catch {
+        throw new Error('Resources JSON is invalid.');
+      }
+    }
+
+    const response = await fetch(apiUrl(`/api/admin/cohorts/${sessionCohortId}/sessions`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        title: sessionForm.title,
+        description: sessionForm.description,
+        starts_at_ms: startsAtMs,
+        ends_at_ms: Number.isFinite(endsAtMs) ? endsAtMs : null,
+        meeting_url: sessionForm.meetingUrl,
+        recording_url: sessionForm.recordingUrl,
+        status: sessionForm.status,
+        resources
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Session creation failed.');
+
+    await fetchCohortSessions(sessionCohortId);
+    setSessionForm((prev) => ({
+      ...prev,
+      title: '',
+      description: '',
+      startsAt: '',
+      endsAt: '',
+      meetingUrl: '',
+      recordingUrl: '',
+      status: 'scheduled'
+    }));
+    return `Session created: ${payload?.session?.title || 'Untitled session'}`;
+  };
+
+  const saveSessionAttendance = async () => {
+    if (!attendanceForm.sessionId || !attendanceForm.userId.trim()) {
+      throw new Error('Session and learner user_id are required.');
+    }
+
+    const response = await fetch(apiUrl(`/api/admin/sessions/${attendanceForm.sessionId}/attendance`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        user_id: attendanceForm.userId.trim(),
+        status: attendanceForm.status,
+        notes: attendanceForm.notes,
+        email: attendanceForm.email,
+        display_name: attendanceForm.displayName
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Attendance update failed.');
+    await fetchCohortSessions(sessionCohortId);
+    setAttendanceForm((prev) => ({
+      ...prev,
+      userId: '',
+      notes: '',
+      email: '',
+      displayName: ''
+    }));
+    return `Attendance marked: ${payload?.status || attendanceForm.status}`;
   };
 
   const saveRubric = async () => {
@@ -1538,6 +1698,178 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 </div>
               ))}
               {cohortEnrollments.length === 0 && <p className="text-xs text-slate-500">No enrollments for selected cohort.</p>}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Session Planner + Attendance</h3>
+            <div className="grid gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={sessionCohortId}
+                onChange={(e) => setSessionCohortId(e.target.value)}
+              >
+                <option value="">Select cohort</option>
+                {cohorts.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>
+                    {cohort.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Session title"
+                value={sessionForm.title}
+                onChange={(e) => setSessionForm((p) => ({ ...p, title: e.target.value }))}
+              />
+              <textarea
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Session description (optional)"
+                value={sessionForm.description}
+                onChange={(e) => setSessionForm((p) => ({ ...p, description: e.target.value }))}
+              />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  type="datetime-local"
+                  value={sessionForm.startsAt}
+                  onChange={(e) => setSessionForm((p) => ({ ...p, startsAt: e.target.value }))}
+                />
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  type="datetime-local"
+                  value={sessionForm.endsAt}
+                  onChange={(e) => setSessionForm((p) => ({ ...p, endsAt: e.target.value }))}
+                />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Meeting URL"
+                  value={sessionForm.meetingUrl}
+                  onChange={(e) => setSessionForm((p) => ({ ...p, meetingUrl: e.target.value }))}
+                />
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Recording URL"
+                  value={sessionForm.recordingUrl}
+                  onChange={(e) => setSessionForm((p) => ({ ...p, recordingUrl: e.target.value }))}
+                />
+              </div>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={sessionForm.status}
+                onChange={(e) => setSessionForm((p) => ({ ...p, status: e.target.value }))}
+              >
+                <option value="scheduled">Scheduled</option>
+                <option value="live">Live</option>
+                <option value="completed">Completed</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+              <textarea
+                className="min-h-20 rounded-xl border border-slate-300 px-3 py-2 text-xs font-mono"
+                placeholder='Resources JSON (example: {"slides":"https://...","prep":"https://..."})'
+                value={sessionForm.resourcesJson}
+                onChange={(e) => setSessionForm((p) => ({ ...p, resourcesJson: e.target.value }))}
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                onClick={() => void runAction(createCohortSession)}
+                type="button"
+              >
+                Create Session
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(() => fetchCohortSessions(sessionCohortId))}
+                type="button"
+                disabled={loadingSessions || !sessionCohortId}
+              >
+                {loadingSessions ? 'Loading...' : 'Refresh Sessions'}
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 p-3">
+              <p className="mb-2 text-sm font-semibold text-slate-900">Attendance Update</p>
+              <div className="grid gap-2">
+                <select
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  value={attendanceForm.sessionId}
+                  onChange={(e) => setAttendanceForm((p) => ({ ...p, sessionId: e.target.value }))}
+                >
+                  <option value="">Select session</option>
+                  {cohortSessions.map((session) => (
+                    <option key={session.id} value={session.id}>
+                      {session.title} ({formatMs(session.starts_at_ms)})
+                    </option>
+                  ))}
+                </select>
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Learner user_id"
+                  value={attendanceForm.userId}
+                  onChange={(e) => setAttendanceForm((p) => ({ ...p, userId: e.target.value }))}
+                />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <input
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Learner email (optional)"
+                    value={attendanceForm.email}
+                    onChange={(e) => setAttendanceForm((p) => ({ ...p, email: e.target.value }))}
+                  />
+                  <input
+                    className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Display name (optional)"
+                    value={attendanceForm.displayName}
+                    onChange={(e) => setAttendanceForm((p) => ({ ...p, displayName: e.target.value }))}
+                  />
+                </div>
+                <select
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  value={attendanceForm.status}
+                  onChange={(e) => setAttendanceForm((p) => ({ ...p, status: e.target.value }))}
+                >
+                  <option value="present">Present</option>
+                  <option value="absent">Absent</option>
+                  <option value="late">Late</option>
+                  <option value="excused">Excused</option>
+                </select>
+                <textarea
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Attendance notes (optional)"
+                  value={attendanceForm.notes}
+                  onChange={(e) => setAttendanceForm((p) => ({ ...p, notes: e.target.value }))}
+                />
+              </div>
+              <button
+                className="mt-3 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(saveSessionAttendance)}
+                type="button"
+              >
+                Save Attendance
+              </button>
+            </div>
+
+            <div className="mt-4 max-h-56 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {cohortSessions.map((session) => (
+                <div key={session.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-slate-900">{session.title}</p>
+                  <p className="text-xs text-slate-500">
+                    {formatMs(session.starts_at_ms)} · {session.status}
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Attendance: {session.attendance_present || 0}/{session.attendance_total || 0}
+                  </p>
+                  {session.meeting_url ? (
+                    <a className="text-xs font-semibold text-cyan-700 hover:underline" href={session.meeting_url} target="_blank" rel="noreferrer">
+                      Meeting link
+                    </a>
+                  ) : null}
+                </div>
+              ))}
+              {cohortSessions.length === 0 && <p className="text-xs text-slate-500">No sessions for selected cohort.</p>}
             </div>
           </div>
 

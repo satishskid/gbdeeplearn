@@ -4,6 +4,11 @@ const app = new Hono();
 
 const TUTOR_PROMPT = `You are a Socratic Teaching Assistant. Use only the provided context.
 If context is missing, reply exactly: "I cannot find that in the syllabus."`;
+const COUNSELOR_PROMPT = `You are the Course Coordinator for GreyBrain Academy.
+Your goal is to help prospective learners with course logistics and enrollment clarity.
+Use only provided logistics context. If asked deep technical questions, reply:
+"That is covered in detail in the course modules. You can access them after enrolling."
+Tone: professional, concise, helpful. End with a gentle enrollment nudge.`;
 
 const WEBINAR_EVENTS = new Set([
   'webinar_landing_view',
@@ -23,6 +28,8 @@ const DAILY_PROMPT_VERSION = 'v1.0.0';
 const PATH_KEYS = new Set(['productivity', 'research', 'entrepreneurship']);
 const COHORT_MODES = new Set(['instructor-led', 'self-paced']);
 const COHORT_STATUSES = new Set(['draft', 'open', 'live', 'completed', 'archived']);
+const SESSION_STATUSES = new Set(['scheduled', 'live', 'completed', 'cancelled']);
+const ATTENDANCE_STATUSES = new Set(['present', 'absent', 'late', 'excused']);
 const MODULE_PROGRESS_STATUSES = new Set(['locked', 'unlocked', 'in_progress', 'submitted', 'completed', 'passed', 'failed']);
 const PAYMENT_STATUSES = new Set(['registered', 'paid', 'failed', 'refunded']);
 
@@ -32,6 +39,7 @@ app.get('/', (c) => {
     status: 'ok',
     endpoints: [
       '/api/chat/tutor',
+      '/api/chat/counselor',
       '/api/track',
       '/api/lead/submit',
       '/api/funnel/register',
@@ -51,10 +59,14 @@ app.get('/', (c) => {
       '/api/admin/courses/:courseId/modules',
       '/api/admin/courses/:courseId/rubrics',
       '/api/admin/cohorts',
+      '/api/admin/cohorts/:cohortId/sessions',
+      '/api/admin/sessions/:sessionId/attendance',
       '/api/admin/cohorts/:cohortId/enroll',
       '/api/admin/cohorts/:cohortId/enrollments',
       '/api/learn/modules/:moduleId/progress',
       '/api/learn/access',
+      '/api/learn/sessions',
+      '/api/learn/sessions/:sessionId/checkin',
       '/api/lab/run',
       '/api/lab/runs',
       '/api/learn/capstone/submit',
@@ -64,6 +76,7 @@ app.get('/', (c) => {
       '/api/learn/assignments/:submissionId/grade',
       '/api/admin/content/generate-daily',
       '/api/admin/content/posts',
+      '/api/certificates/verify',
       '/health'
     ]
   });
@@ -138,6 +151,87 @@ app.post('/api/chat/tutor', async (c) => {
     return c.json(
       {
         error: 'Failed to process tutor request.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/chat/counselor', async (c) => {
+  try {
+    const { message, course_id: courseId, course_slug: courseSlug } = await c.req.json();
+    const apiKey = (c.env.GROQ_API_KEY || '').trim();
+
+    if (!message || !apiKey) {
+      return c.json({ error: 'message and server GROQ_API_KEY are required.' }, 400);
+    }
+
+    const context = await queryLogisticsContext(c.env, message, {
+      courseId: clean(courseId, 64),
+      courseSlug: slugify(clean(courseSlug, 120))
+    });
+    const baseUrl = resolveGroqBaseUrl(c.env);
+    const model = resolveGroqModel(c.env, baseUrl);
+
+    let response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        messages: [
+          {
+            role: 'system',
+            content: `${COUNSELOR_PROMPT}\n\nLogistics Context:\n${context}`
+          },
+          { role: 'user', content: message }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      let details = await response.text();
+      if (shouldFallbackToDirectGroq(baseUrl, details)) {
+        const directBaseUrl = resolveDirectGroqBaseUrl(c.env);
+        const directModel = resolveGroqModel(c.env, directBaseUrl);
+        response = await fetch(`${directBaseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: directModel,
+            temperature: 0.2,
+            messages: [
+              {
+                role: 'system',
+                content: `${COUNSELOR_PROMPT}\n\nLogistics Context:\n${context}`
+              },
+              { role: 'user', content: message }
+            ]
+          })
+        });
+        if (!response.ok) {
+          details = await response.text();
+          return c.json({ error: 'Groq counselor request failed.', details }, 502);
+        }
+      } else {
+        return c.json({ error: 'Groq counselor request failed.', details }, 502);
+      }
+    }
+
+    const payload = await response.json();
+    const reply = payload?.choices?.[0]?.message?.content ?? 'Please share your course query in one line.';
+    return c.json({ reply, contextUsed: context });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to process counselor request.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -2329,7 +2423,6 @@ app.post('/api/admin/cohorts/:cohortId/enroll/:userId/complete', async (c) => {
     const cohortId = clean(c.req.param('cohortId'), 64);
     const userId = clean(c.req.param('userId'), 120);
     const payload = await c.req.json();
-    const certificateUrl = clean(payload?.certificate_url, 400);
     const nowMs = Date.now();
 
     if (!cohortId || !userId) {
@@ -2338,6 +2431,9 @@ app.post('/api/admin/cohorts/:cohortId/enroll/:userId/complete', async (c) => {
 
     const cohort = await c.env.DEEPLEARN_DB.prepare('SELECT course_id FROM cohorts WHERE id = ?').bind(cohortId).first();
     const courseId = clean(cohort?.course_id || '', 64);
+    const certificateUrl =
+      clean(payload?.certificate_url, 400) ||
+      (courseId ? await issueCertificateArtifact(c.env, { courseId, userId, issuedAtMs: nowMs }) : '');
 
     await c.env.DEEPLEARN_DB.prepare(
       `UPDATE cohort_enrollments
@@ -2378,6 +2474,352 @@ app.post('/api/admin/cohorts/:cohortId/enroll/:userId/complete', async (c) => {
     return c.json(
       {
         error: 'Failed to complete cohort enrollment.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/cohorts/:cohortId/sessions', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    const limit = Math.max(1, Math.min(200, Number(c.req.query('limit') || 60)));
+    if (!cohortId) return c.json({ error: 'cohortId is required.' }, 400);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         s.id, s.cohort_id, s.course_id, s.title, s.description, s.starts_at_ms, s.ends_at_ms,
+         s.meeting_url, s.recording_url, s.resources_json, s.status, s.created_at_ms, s.updated_at_ms,
+         (SELECT COUNT(*) FROM session_attendance a WHERE a.session_id = s.id) AS attendance_total,
+         (SELECT COUNT(*) FROM session_attendance a WHERE a.session_id = s.id AND a.status = 'present') AS attendance_present
+       FROM course_sessions s
+       WHERE s.cohort_id = ?
+       ORDER BY s.starts_at_ms ASC, s.created_at_ms ASC
+       LIMIT ?`
+    )
+      .bind(cohortId, limit)
+      .all();
+
+    return c.json({
+      sessions: (result.results || []).map((row) => ({
+        ...row,
+        resources: parseJsonObjectOrDefault(row.resources_json, {})
+      }))
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list cohort sessions.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/cohorts/:cohortId/sessions', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    const payload = await c.req.json();
+    const title = clean(payload?.title, 180);
+    const description = clean(payload?.description, 2000);
+    const startsAtMs = Number(payload?.starts_at_ms);
+    const endsAtMs = Number(payload?.ends_at_ms);
+    const meetingUrl = clean(payload?.meeting_url, 500);
+    const recordingUrl = clean(payload?.recording_url, 500);
+    const status = clean(payload?.status, 32).toLowerCase() || 'scheduled';
+    const resources = payload?.resources && typeof payload.resources === 'object' && !Array.isArray(payload.resources)
+      ? payload.resources
+      : {};
+
+    if (!cohortId || !title || !Number.isFinite(startsAtMs)) {
+      return c.json({ error: 'cohortId, title, and starts_at_ms are required.' }, 400);
+    }
+    if (!SESSION_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid session status.' }, 400);
+    }
+    if (Number.isFinite(endsAtMs) && endsAtMs < startsAtMs) {
+      return c.json({ error: 'ends_at_ms must be greater than starts_at_ms.' }, 400);
+    }
+
+    const cohort = await c.env.DEEPLEARN_DB.prepare('SELECT course_id FROM cohorts WHERE id = ? LIMIT 1').bind(cohortId).first();
+    const courseId = clean(cohort?.course_id || '', 64);
+    if (!courseId) return c.json({ error: 'Cohort not found.' }, 404);
+
+    const nowMs = Date.now();
+    const sessionId = crypto.randomUUID();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_sessions (
+         id, cohort_id, course_id, title, description, starts_at_ms, ends_at_ms,
+         meeting_url, recording_url, resources_json, status, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        sessionId,
+        cohortId,
+        courseId,
+        title,
+        description,
+        Math.round(startsAtMs),
+        Number.isFinite(endsAtMs) ? Math.round(endsAtMs) : null,
+        meetingUrl,
+        recordingUrl,
+        JSON.stringify(resources),
+        status,
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    return c.json({
+      ok: true,
+      session: {
+        id: sessionId,
+        cohort_id: cohortId,
+        course_id: courseId,
+        title,
+        description,
+        starts_at_ms: Math.round(startsAtMs),
+        ends_at_ms: Number.isFinite(endsAtMs) ? Math.round(endsAtMs) : null,
+        meeting_url: meetingUrl,
+        recording_url: recordingUrl,
+        resources,
+        status
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create cohort session.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/sessions/:sessionId/attendance', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const sessionId = clean(c.req.param('sessionId'), 64);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120);
+    const status = clean(payload?.status, 32).toLowerCase();
+    const notes = clean(payload?.notes, 600);
+    const email = clean(payload?.email, 220).toLowerCase();
+    const displayName = clean(payload?.display_name, 140);
+
+    if (!sessionId || !userId || !status) {
+      return c.json({ error: 'sessionId, user_id, and status are required.' }, 400);
+    }
+    if (!ATTENDANCE_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid attendance status.' }, 400);
+    }
+
+    const session = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT cohort_id, course_id FROM course_sessions WHERE id = ? LIMIT 1`
+    )
+      .bind(sessionId)
+      .first();
+    if (!session?.course_id) {
+      return c.json({ error: 'Session not found.' }, 404);
+    }
+
+    if (email || displayName) {
+      await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role: 'learner' });
+    }
+
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO session_attendance (
+         session_id, cohort_id, course_id, user_id, status, checkin_at_ms, notes, source, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'admin', ?)
+       ON CONFLICT(session_id, user_id) DO UPDATE SET
+         status = excluded.status,
+         checkin_at_ms = excluded.checkin_at_ms,
+         notes = excluded.notes,
+         source = excluded.source,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(
+        sessionId,
+        clean(session.cohort_id || '', 64),
+        clean(session.course_id || '', 64),
+        userId,
+        status,
+        nowMs,
+        notes,
+        nowMs
+      )
+      .run();
+
+    return c.json({ ok: true, session_id: sessionId, user_id: userId, status, checkin_at_ms: nowMs });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update session attendance.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/learn/sessions', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    const requestedUserId = clean(c.req.query('user_id'), 120);
+    const targetUserId = requestedUserId || actor.userId;
+    const actorAccessError = assertActorCanAccessUser(actor, targetUserId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
+
+    const courseId = clean(c.req.query('course_id'), 64);
+    const limit = Math.max(1, Math.min(200, Number(c.req.query('limit') || 60)));
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         s.id, s.cohort_id, s.course_id, s.title, s.description, s.starts_at_ms, s.ends_at_ms,
+         s.meeting_url, s.recording_url, s.resources_json, s.status, s.updated_at_ms,
+         a.status AS attendance_status, a.checkin_at_ms, a.notes AS attendance_notes,
+         c.title AS course_title
+       FROM cohort_enrollments ce
+       INNER JOIN course_sessions s ON s.cohort_id = ce.cohort_id
+       LEFT JOIN session_attendance a ON a.session_id = s.id AND a.user_id = ce.user_id
+       LEFT JOIN courses c ON c.id = s.course_id
+       WHERE ce.user_id = ?
+         AND (? = '' OR s.course_id = ?)
+       ORDER BY s.starts_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(targetUserId, courseId, courseId, limit)
+      .all();
+
+    return c.json({
+      user_id: targetUserId,
+      sessions: (result.results || []).map((row) => ({
+        ...row,
+        resources: parseJsonObjectOrDefault(row.resources_json, {})
+      }))
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list learner sessions.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/learn/sessions/:sessionId/checkin', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const sessionId = clean(c.req.param('sessionId'), 64);
+    const payload = await c.req.json();
+    const requestedUserId = clean(payload?.user_id, 120);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    const userId = requestedUserId || actor.userId;
+    const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
+
+    if (!sessionId || !userId) {
+      return c.json({ error: 'sessionId and user identity are required.' }, 400);
+    }
+
+    const session = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, cohort_id, course_id FROM course_sessions WHERE id = ? LIMIT 1`
+    )
+      .bind(sessionId)
+      .first();
+    if (!session?.course_id) {
+      return c.json({ error: 'Session not found.' }, 404);
+    }
+
+    let hasAccess = false;
+    if (clean(session.cohort_id || '', 64)) {
+      const cohortEnrollment = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT 1 AS ok FROM cohort_enrollments WHERE cohort_id = ? AND user_id = ? LIMIT 1`
+      )
+        .bind(clean(session.cohort_id || '', 64), userId)
+        .first();
+      hasAccess = Boolean(cohortEnrollment?.ok);
+    } else {
+      const courseEnrollment = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT 1 AS ok FROM course_enrollments WHERE course_id = ? AND user_id = ? LIMIT 1`
+      )
+        .bind(clean(session.course_id || '', 64), userId)
+        .first();
+      hasAccess = Boolean(courseEnrollment?.ok);
+    }
+
+    if (!hasAccess && !hasAnyRole(actor.roles, ['teacher', 'coordinator', 'cto'])) {
+      return c.json({ error: 'User is not enrolled for this session.' }, 403);
+    }
+
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO session_attendance (
+         session_id, cohort_id, course_id, user_id, status, checkin_at_ms, notes, source, updated_at_ms
+       ) VALUES (?, ?, ?, ?, 'present', ?, '', 'self-checkin', ?)
+       ON CONFLICT(session_id, user_id) DO UPDATE SET
+         status = 'present',
+         checkin_at_ms = excluded.checkin_at_ms,
+         source = excluded.source,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(
+        sessionId,
+        clean(session.cohort_id || '', 64),
+        clean(session.course_id || '', 64),
+        userId,
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    return c.json({ ok: true, session_id: sessionId, user_id: userId, status: 'present', checkin_at_ms: nowMs });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to check in learner.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -2478,7 +2920,11 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
         : null;
     let certificateUrl = clean(currentEnrollment?.certificate_url || '', 400);
     if (enrollmentStatus === 'completed' && !certificateUrl) {
-      certificateUrl = buildCertificateUrl(c.env, { courseId, userId, issuedAtMs: completionMs || nowMs });
+      certificateUrl = await issueCertificateArtifact(c.env, {
+        courseId,
+        userId,
+        issuedAtMs: completionMs || nowMs
+      });
     }
 
     await c.env.DEEPLEARN_DB.prepare(
@@ -2708,6 +3154,7 @@ app.post('/api/lab/run', async (c) => {
     const toolType = clean(payload?.tool_type, 80);
     const provider = clean(payload?.provider, 80);
     const modelName = clean(payload?.model_name, 120);
+    const byokApiKey = clean(payload?.api_key || payload?.groq_key, 4096);
     const input = typeof payload?.input === 'string' ? payload.input.slice(0, 8000) : '';
 
     if (!userId || !courseId || !moduleId || !pathKey || !toolType || !input.trim()) {
@@ -2719,7 +3166,15 @@ app.post('/api/lab/run', async (c) => {
 
     const startedAt = Date.now();
     const inputHash = await sha256Hex(input);
-    const sampleOutput = generateLabRunOutput({ pathKey, toolType, modelName, input });
+    const labOutput = await runLabInference({
+      env: c.env,
+      pathKey,
+      toolType,
+      provider,
+      modelName,
+      input,
+      byokApiKey
+    });
     const latencyMs = Date.now() - startedAt;
     const runId = crypto.randomUUID();
 
@@ -2740,7 +3195,7 @@ app.post('/api/lab/run', async (c) => {
         provider,
         modelName,
         inputHash,
-        JSON.stringify(sampleOutput),
+        JSON.stringify(labOutput),
         latencyMs,
         0,
         Date.now()
@@ -2767,7 +3222,7 @@ app.post('/api/lab/run', async (c) => {
         provider,
         model_name: modelName,
         latency_ms: latencyMs,
-        output: sampleOutput
+        output: labOutput
       }
     });
   } catch (error) {
@@ -3313,12 +3768,15 @@ app.post('/api/admin/courses/:courseId/enroll/:userId/complete', async (c) => {
     const courseId = clean(c.req.param('courseId'), 64);
     const userId = clean(c.req.param('userId'), 120);
     const payload = await c.req.json();
-    const certificateUrl = clean(payload?.certificate_url, 400);
     const nowMs = Date.now();
 
     if (!courseId || !userId) {
       return c.json({ error: 'courseId and userId are required.' }, 400);
     }
+
+    const certificateUrl =
+      clean(payload?.certificate_url, 400) ||
+      (await issueCertificateArtifact(c.env, { courseId, userId, issuedAtMs: nowMs }));
 
     await c.env.DEEPLEARN_DB.prepare(
       `UPDATE course_enrollments
@@ -3577,10 +4035,122 @@ app.post('/api/admin/content/posts/:postId/status', async (c) => {
   }
 });
 
+app.get('/api/certificates/verify', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.query('course_id'), 64);
+    const userId = clean(c.req.query('user_id'), 120);
+
+    if (!courseId || !userId) {
+      return c.json({ error: 'course_id and user_id are required.' }, 400);
+    }
+
+    const enrollment = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT status, completed_at_ms, certificate_url
+       FROM course_enrollments
+       WHERE course_id = ? AND user_id = ?
+       LIMIT 1`
+    )
+      .bind(courseId, userId)
+      .first();
+
+    if (!enrollment || clean(enrollment.status || '', 32) !== 'completed') {
+      return c.json({
+        ok: false,
+        valid: false,
+        reason: 'not_completed',
+        course_id: courseId,
+        user_id: userId
+      });
+    }
+
+    const certificateUrl = clean(enrollment.certificate_url || '', 500);
+    if (!certificateUrl) {
+      return c.json({
+        ok: true,
+        valid: false,
+        reason: 'missing_certificate_url',
+        course_id: courseId,
+        user_id: userId
+      });
+    }
+
+    const bucket = c.env.DEEPLEARN_CERTIFICATES;
+    if (!bucket) {
+      return c.json({
+        ok: true,
+        valid: null,
+        reason: 'certificate_bucket_not_bound',
+        course_id: courseId,
+        user_id: userId,
+        certificate_url: certificateUrl
+      });
+    }
+
+    const dateFromUrl = extractCertificateDateFromUrl(certificateUrl);
+    const issuedDate = dateFromUrl || msToIsoDate(Number(enrollment.completed_at_ms || 0)) || 'today';
+    const certPath = `certificates/${courseId}/${userId}-${issuedDate}`;
+    const raw = await bucket.get(`${certPath}.json`);
+    if (!raw) {
+      return c.json({
+        ok: true,
+        valid: false,
+        reason: 'certificate_artifact_missing',
+        course_id: courseId,
+        user_id: userId,
+        certificate_url: certificateUrl
+      });
+    }
+
+    const certificate = parseJsonObjectOrDefault(await raw.text(), {});
+    const core = {
+      certificate_id: clean(certificate.certificate_id || '', 80),
+      course_id: clean(certificate.course_id || '', 64),
+      user_id: clean(certificate.user_id || '', 120),
+      issued_on: clean(certificate.issued_on || '', 20)
+    };
+    const expectedSignature = await signCertificateCore(c.env, core);
+    const signature = clean(certificate.signature || '', 200);
+
+    return c.json({
+      ok: true,
+      valid:
+        core.course_id === courseId &&
+        core.user_id === userId &&
+        core.issued_on === issuedDate &&
+        safeStringEqual(signature, expectedSignature),
+      course_id: courseId,
+      user_id: userId,
+      certificate_url: certificateUrl,
+      certificate: {
+        certificate_id: core.certificate_id,
+        issued_on: core.issued_on,
+        signature
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to verify certificate.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 async function assertAdmin(c) {
+  const allowOpenAdmin = (c.env.ALLOW_OPEN_ADMIN || 'false').toLowerCase() === 'true';
   const configuredToken = (c.env.ADMIN_API_TOKEN || '').trim();
   if (!configuredToken) {
-    return null;
+    if (allowOpenAdmin) {
+      return null;
+    }
+    return c.json({ error: 'ADMIN_API_TOKEN is not configured.' }, 503);
   }
 
   const requestToken = (c.req.header('x-admin-token') || '').trim();
@@ -3803,6 +4373,42 @@ async function ensureOpsSchema(db) {
       ON cohort_enrollments(cohort_id, status, updated_at_ms)`,
     `CREATE INDEX IF NOT EXISTS idx_cohort_enrollments_course_user
       ON cohort_enrollments(course_id, user_id)`,
+    `CREATE TABLE IF NOT EXISTS course_sessions (
+      id TEXT PRIMARY KEY,
+      cohort_id TEXT NOT NULL DEFAULT '',
+      course_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      starts_at_ms INTEGER NOT NULL,
+      ends_at_ms INTEGER,
+      meeting_url TEXT NOT NULL DEFAULT '',
+      recording_url TEXT NOT NULL DEFAULT '',
+      resources_json TEXT NOT NULL DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'scheduled',
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_course_sessions_cohort_start
+      ON course_sessions(cohort_id, starts_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_course_sessions_course_start
+      ON course_sessions(course_id, starts_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS session_attendance (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      cohort_id TEXT NOT NULL DEFAULT '',
+      course_id TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'present',
+      checkin_at_ms INTEGER,
+      notes TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT 'self-checkin',
+      updated_at_ms INTEGER NOT NULL,
+      UNIQUE(session_id, user_id)
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_session_attendance_session
+      ON session_attendance(session_id, status)`,
+    `CREATE INDEX IF NOT EXISTS idx_session_attendance_user
+      ON session_attendance(user_id, updated_at_ms)`,
     `CREATE TABLE IF NOT EXISTS module_progress (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       cohort_id TEXT NOT NULL DEFAULT '',
@@ -4329,15 +4935,51 @@ function shouldFallbackToDirectGroq(baseUrl, details) {
 }
 
 async function queryCourseContext(env, message, moduleId) {
+  return queryKnowledgeContext(env, {
+    message,
+    type: 'content',
+    moduleId: clean(moduleId || '', 64),
+    courseId: ''
+  });
+}
+
+async function queryLogisticsContext(env, message, { courseId, courseSlug } = {}) {
+  let resolvedCourseId = clean(courseId || '', 64);
+  const resolvedCourseSlug = slugify(clean(courseSlug || '', 120));
+
+  if (!resolvedCourseId && resolvedCourseSlug && env.DEEPLEARN_DB) {
+    try {
+      const course = await env.DEEPLEARN_DB.prepare('SELECT id FROM courses WHERE slug = ? LIMIT 1').bind(resolvedCourseSlug).first();
+      resolvedCourseId = clean(course?.id || '', 64);
+    } catch {
+      resolvedCourseId = '';
+    }
+  }
+
+  return queryKnowledgeContext(env, {
+    message,
+    type: 'logistics',
+    moduleId: '',
+    courseId: resolvedCourseId
+  });
+}
+
+async function queryKnowledgeContext(env, { message, type, moduleId, courseId }) {
   const embedding = await embedQuery(env, message);
+  const filter = {
+    type: clean(type || 'content', 32) || 'content'
+  };
+  if (moduleId) {
+    filter.module_id = clean(moduleId, 64);
+  }
+  if (courseId) {
+    filter.course_id = clean(courseId, 64);
+  }
 
   const result = await env.DEEPLEARN_INDEX.query(embedding, {
     topK: 6,
     returnMetadata: 'all',
-    filter: {
-      type: 'content',
-      ...(moduleId ? { module_id: moduleId } : {})
-    }
+    filter
   });
 
   const chunks = (result?.matches ?? [])
@@ -4346,7 +4988,9 @@ async function queryCourseContext(env, message, moduleId) {
     .slice(0, 6);
 
   if (chunks.length === 0) {
-    return 'No relevant syllabus chunks found.';
+    return filter.type === 'logistics'
+      ? 'No relevant logistics context found.'
+      : 'No relevant syllabus chunks found.';
   }
 
   return chunks.join('\n\n');
@@ -4448,7 +5092,7 @@ async function verifyTurnstile({ secret, token, remoteIp }) {
 }
 
 function isDemoPaymentsAllowed(env) {
-  return (env.ALLOW_DEMO_PAYMENTS || 'true').toLowerCase() !== 'false';
+  return (env.ALLOW_DEMO_PAYMENTS || 'false').toLowerCase() === 'true';
 }
 
 async function findLeadRegistrationForPayment(db, { leadId, email, razorpayOrderId }) {
@@ -4897,6 +5541,142 @@ function summarizeLabInput(input) {
   const text = String(input || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   return text.length <= 220 ? text : `${text.slice(0, 217)}...`;
+}
+
+async function runLabInference({ env, pathKey, toolType, provider, modelName, input, byokApiKey }) {
+  const fallback = generateLabRunOutput({ pathKey, toolType, modelName, input });
+  const normalizedProvider = clean(provider || '', 80).toLowerCase();
+  const systemPrompt = `You are a medical AI lab assistant.
+Return strict JSON only (no markdown) with keys:
+- output_type (string)
+- insight (string)
+- actions (array of max 3 short strings)
+- caution (string)
+- token_estimate (number)
+Context:
+path_key=${pathKey}
+tool_type=${toolType}
+model_name=${modelName || 'default'}`;
+  const userPrompt = `Analyze this learner input and produce a concise lab output:\n${String(input || '').slice(0, 7000)}`;
+
+  const parseLabJson = (text) => {
+    const parsed = parseJsonObject(text);
+    return {
+      output_type: clean(parsed?.output_type || `${pathKey}-analysis`, 80) || `${pathKey}-analysis`,
+      insight: clean(parsed?.insight || '', 1600) || 'No clear insight was generated.',
+      actions: Array.isArray(parsed?.actions)
+        ? parsed.actions.map((item) => clean(String(item || ''), 180)).filter(Boolean).slice(0, 3)
+        : [],
+      caution: clean(parsed?.caution || '', 800) || 'Validate all outputs against course evidence.',
+      token_estimate: Number.isFinite(Number(parsed?.token_estimate))
+        ? Math.max(1, Math.min(120000, Math.round(Number(parsed.token_estimate))))
+        : Math.max(8, Math.round(String(input || '').length / 4))
+    };
+  };
+
+  try {
+    if (normalizedProvider.includes('byok') && byokApiKey) {
+      const baseUrl = resolveGroqBaseUrl(env);
+      const model = resolveGroqModel(env, baseUrl);
+      let response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${byokApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model,
+          temperature: 0.2,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        const details = await response.text();
+        if (!shouldFallbackToDirectGroq(baseUrl, details)) {
+          throw new Error(clean(details, 240) || `Groq BYOK failed (${response.status})`);
+        }
+        const directBase = resolveDirectGroqBaseUrl(env);
+        const directModel = resolveGroqModel(env, directBase);
+        response = await fetch(`${directBase}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${byokApiKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            model: directModel,
+            temperature: 0.2,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ]
+          })
+        });
+        if (!response.ok) {
+          const retryDetails = await response.text();
+          throw new Error(clean(retryDetails, 240) || `Groq BYOK failed (${response.status})`);
+        }
+      }
+
+      const payload = await response.json();
+      const content = payload?.choices?.[0]?.message?.content || '{}';
+      return {
+        ...parseLabJson(content),
+        source: 'groq-byok',
+        provider: normalizedProvider || 'byok',
+        model_name: modelName || resolveGroqModel(env, resolveGroqBaseUrl(env)),
+        fallback_used: false
+      };
+    }
+
+    if (env.AI) {
+      const aiModel = modelName || '@cf/meta/llama-3.1-8b-instruct';
+      const aiResponse = await env.AI.run(aiModel, {
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.2,
+        max_tokens: 450
+      });
+
+      const text = clean(
+        String(aiResponse?.response || aiResponse?.result?.response || aiResponse?.output_text || aiResponse?.text || '{}'),
+        8000
+      );
+      return {
+        ...parseLabJson(text || '{}'),
+        source: 'workers-ai',
+        provider: normalizedProvider || 'workers-ai',
+        model_name: aiModel,
+        fallback_used: false
+      };
+    }
+  } catch (error) {
+    return {
+      ...fallback,
+      source: 'fallback',
+      provider: normalizedProvider || 'fallback',
+      model_name: modelName || 'fallback-model',
+      fallback_used: true,
+      fallback_reason: clean(error instanceof Error ? error.message : 'inference_failed', 280)
+    };
+  }
+
+  return {
+    ...fallback,
+    source: 'fallback',
+    provider: normalizedProvider || 'fallback',
+    model_name: modelName || 'fallback-model',
+    fallback_used: true,
+    fallback_reason: 'No inference provider configured.'
+  };
 }
 
 function generateLabRunOutput({ pathKey, toolType, modelName, input }) {
@@ -5429,15 +6209,107 @@ function msToIsoDate(value) {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function buildCertificateUrl(env, { courseId, userId, issuedAtMs }) {
+function buildCertificateUrl(env, { courseId, userId, issuedAtMs, ext = 'pdf' }) {
   const customBase = clean(env.CERTIFICATE_PUBLIC_BASE_URL || '', 400);
   if (customBase) {
-    return `${customBase.replace(/\/+$/, '')}/${courseId}/${userId}.pdf`;
+    return `${customBase.replace(/\/+$/, '')}/${courseId}/${userId}.${ext}`;
   }
 
   const bucket = clean(env.CERTIFICATE_BUCKET || 'gbdeeplearn-certificates', 120);
   const datePart = msToIsoDate(issuedAtMs || Date.now()) || 'today';
-  return `https://${bucket}.r2.dev/certificates/${courseId}/${userId}-${datePart}.pdf`;
+  return `https://${bucket}.r2.dev/certificates/${courseId}/${userId}-${datePart}.${ext}`;
+}
+
+function extractCertificateDateFromUrl(certificateUrl) {
+  const match = String(certificateUrl || '').match(/-(\d{4}-\d{2}-\d{2})\.(?:pdf|svg|json)$/i);
+  return clean(match?.[1] || '', 20);
+}
+
+function renderCertificateSvg({ certificateId, courseId, userId, issuedOn }) {
+  const safeCourse = escapeXml(clean(courseId, 64));
+  const safeUser = escapeXml(clean(userId, 120));
+  const safeDate = escapeXml(clean(issuedOn, 20));
+  const safeCertId = escapeXml(clean(certificateId, 80));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1131" viewBox="0 0 1600 1131" role="img" aria-label="DeepLearn Certificate">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1220"/>
+      <stop offset="100%" stop-color="#1f3b6b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="1131" fill="url(#bg)"/>
+  <rect x="64" y="64" width="1472" height="1003" rx="24" fill="#f8fafc" stroke="#0f172a" stroke-width="4"/>
+  <text x="800" y="220" text-anchor="middle" font-size="36" fill="#0f172a" font-family="Georgia, serif">GreyBrain Academy</text>
+  <text x="800" y="300" text-anchor="middle" font-size="64" fill="#0f172a" font-family="Georgia, serif">Certificate of Completion</text>
+  <text x="800" y="390" text-anchor="middle" font-size="30" fill="#334155" font-family="Arial, sans-serif">Awarded for successful completion</text>
+  <text x="800" y="500" text-anchor="middle" font-size="44" fill="#0f172a" font-family="Arial, sans-serif">${safeCourse}</text>
+  <text x="800" y="570" text-anchor="middle" font-size="28" fill="#334155" font-family="Arial, sans-serif">Learner ID: ${safeUser}</text>
+  <text x="800" y="640" text-anchor="middle" font-size="24" fill="#475569" font-family="Arial, sans-serif">Issued on ${safeDate}</text>
+  <text x="800" y="710" text-anchor="middle" font-size="20" fill="#64748b" font-family="Arial, sans-serif">Certificate ID: ${safeCertId}</text>
+  <line x1="300" y1="860" x2="620" y2="860" stroke="#0f172a" stroke-width="2"/>
+  <line x1="980" y1="860" x2="1300" y2="860" stroke="#0f172a" stroke-width="2"/>
+  <text x="460" y="890" text-anchor="middle" font-size="18" fill="#0f172a" font-family="Arial, sans-serif">Program Director</text>
+  <text x="1140" y="890" text-anchor="middle" font-size="18" fill="#0f172a" font-family="Arial, sans-serif">GreyBrain Academy</text>
+</svg>`;
+}
+
+function escapeXml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function signCertificateCore(env, core) {
+  const data = JSON.stringify({
+    certificate_id: clean(core?.certificate_id || '', 80),
+    course_id: clean(core?.course_id || '', 64),
+    user_id: clean(core?.user_id || '', 120),
+    issued_on: clean(core?.issued_on || '', 20)
+  });
+  const signingSecret = clean(env.CERTIFICATE_SIGNING_SECRET || env.ADMIN_API_TOKEN || '', 240);
+  if (signingSecret) {
+    return hmacSha256Hex(signingSecret, data);
+  }
+  return sha256Hex(data);
+}
+
+async function issueCertificateArtifact(env, { courseId, userId, issuedAtMs }) {
+  const cleanCourseId = clean(courseId || '', 64);
+  const cleanUserId = clean(userId || '', 120);
+  const issuedOn = msToIsoDate(issuedAtMs || Date.now()) || 'today';
+  if (!cleanCourseId || !cleanUserId) {
+    return buildCertificateUrl(env, { courseId: cleanCourseId || 'unknown-course', userId: cleanUserId || 'unknown-user', issuedAtMs, ext: 'svg' });
+  }
+
+  const certificateId = clean(`${cleanCourseId}-${cleanUserId}-${issuedOn}`.replace(/[^a-zA-Z0-9_-]/g, '-'), 80);
+  const core = {
+    certificate_id: certificateId,
+    course_id: cleanCourseId,
+    user_id: cleanUserId,
+    issued_on: issuedOn
+  };
+  const signature = await signCertificateCore(env, core);
+  const certificatePayload = {
+    ...core,
+    signature,
+    issued_at_ms: Number(issuedAtMs || Date.now())
+  };
+
+  const certPath = `certificates/${cleanCourseId}/${cleanUserId}-${issuedOn}`;
+  if (env.DEEPLEARN_CERTIFICATES?.put) {
+    await env.DEEPLEARN_CERTIFICATES.put(`${certPath}.json`, JSON.stringify(certificatePayload, null, 2), {
+      httpMetadata: { contentType: 'application/json' }
+    });
+    await env.DEEPLEARN_CERTIFICATES.put(`${certPath}.svg`, renderCertificateSvg(core), {
+      httpMetadata: { contentType: 'image/svg+xml' }
+    });
+  }
+
+  return buildCertificateUrl(env, { courseId: cleanCourseId, userId: cleanUserId, issuedAtMs, ext: 'svg' });
 }
 
 function clean(value, maxLen) {

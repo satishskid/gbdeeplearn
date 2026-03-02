@@ -93,9 +93,12 @@ export default function LearnerWorkspace() {
   });
   const [submissionId, setSubmissionId] = useState('');
   const [access, setAccess] = useState([]);
+  const [sessions, setSessions] = useState([]);
   const [labRuns, setLabRuns] = useState([]);
   const [capstoneArtifacts, setCapstoneArtifacts] = useState([]);
   const [loadingAccess, setLoadingAccess] = useState(false);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [checkingInSessionId, setCheckingInSessionId] = useState('');
   const [loadingLabRuns, setLoadingLabRuns] = useState(false);
   const [loadingCapstones, setLoadingCapstones] = useState(false);
   const [notice, setNotice] = useState('');
@@ -111,6 +114,46 @@ export default function LearnerWorkspace() {
       {({ user, roles, onSignOut }) => {
         const canReviewCapstones = hasAnyRole(roles, ['teacher', 'coordinator', 'cto']);
         const targetLearnerId = (labForm.userId || capstoneForm.userId || '').trim() || user.uid;
+
+        const loadSessions = async () => {
+          setLoadingSessions(true);
+          setError('');
+          try {
+            const params = new URLSearchParams();
+            params.set('user_id', user.uid);
+            params.set('limit', '30');
+            if (statusForm.courseId.trim()) params.set('course_id', statusForm.courseId.trim());
+            const response = await actorFetch(user, roles, apiUrl(`/api/learn/sessions?${params.toString()}`));
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.error || 'Failed to load sessions.');
+            setSessions(payload?.sessions || []);
+            setNotice('Sessions loaded.');
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to load sessions.');
+          } finally {
+            setLoadingSessions(false);
+          }
+        };
+
+        const checkInSession = async (sessionId) => {
+          setCheckingInSessionId(sessionId);
+          setError('');
+          try {
+            const response = await actorFetch(user, roles, apiUrl(`/api/learn/sessions/${encodeURIComponent(sessionId)}/checkin`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ user_id: user.uid })
+            });
+            const payload = await response.json();
+            if (!response.ok) throw new Error(payload?.error || 'Failed to check in.');
+            setNotice('Session check-in recorded.');
+            await loadSessions();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Failed to check in.');
+          } finally {
+            setCheckingInSessionId('');
+          }
+        };
 
         const loadCapstones = async () => {
           setLoadingCapstones(true);
@@ -253,6 +296,74 @@ export default function LearnerWorkspace() {
                   </article>
                 ))}
                 {access.length === 0 ? <p className="text-xs text-slate-500">No enrollments loaded yet.</p> : null}
+              </div>
+            </div>
+
+            <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-lg font-bold text-slate-900">Live Session Desk</h3>
+                <button
+                  className="rounded-xl border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                  type="button"
+                  disabled={loadingSessions}
+                  onClick={() => void loadSessions()}
+                >
+                  {loadingSessions ? 'Loading...' : 'Load Sessions'}
+                </button>
+              </div>
+              <div className="mt-3 space-y-2">
+                {(sessions || []).slice(0, 8).map((session) => {
+                  const startText = Number.isFinite(Number(session.starts_at_ms))
+                    ? new Date(Number(session.starts_at_ms)).toLocaleString()
+                    : 'Time TBA';
+                  const attendanceStatus = String(session.attendance_status || '').toLowerCase();
+                  const canCheckIn = ['scheduled', 'live'].includes(String(session.status || '').toLowerCase());
+                  return (
+                    <article key={session.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{session.title}</p>
+                        <span className="rounded-full bg-slate-200 px-2 py-0.5 text-[11px] font-semibold text-slate-700">
+                          {session.status}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-600">{startText}</p>
+                      <p className="text-[11px] text-slate-500">Attendance: {attendanceStatus || 'not checked in'}</p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {session.meeting_url ? (
+                          <a
+                            className="rounded-lg border border-sky-300 bg-sky-50 px-2 py-1 text-[11px] font-semibold text-sky-800"
+                            href={session.meeting_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Join Session
+                          </a>
+                        ) : null}
+                        {session.recording_url ? (
+                          <a
+                            className="rounded-lg border border-violet-300 bg-violet-50 px-2 py-1 text-[11px] font-semibold text-violet-800"
+                            href={session.recording_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Recording
+                          </a>
+                        ) : null}
+                        {canCheckIn && attendanceStatus !== 'present' ? (
+                          <button
+                            className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800"
+                            type="button"
+                            disabled={checkingInSessionId === session.id}
+                            onClick={() => void checkInSession(session.id)}
+                          >
+                            {checkingInSessionId === session.id ? 'Checking in...' : 'Check In'}
+                          </button>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
+                {sessions.length === 0 ? <p className="text-xs text-slate-500">No sessions loaded yet.</p> : null}
               </div>
             </div>
 

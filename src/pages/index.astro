@@ -1,6 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 import ChatInterface from '../components/ChatInterface.jsx';
+import CounselorChat from '../components/CounselorChat.jsx';
 import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
 import ClinicalFeedPanel from '../components/ClinicalFeedPanel.jsx';
 import { getClinicalFeedPosts, getCourseCatalog } from '../lib/academyData';
@@ -186,6 +187,7 @@ const structuredData = {
     </article>
   </section>
 
+  <CounselorChat client:load />
   <WebinarLeadForm client:load siteKey={turnstileSiteKey} />
   <ChatInterface client:load />
 
