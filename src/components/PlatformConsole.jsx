@@ -772,6 +772,57 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const isCto = isCtoUser && activeRole === 'cto';
   const canManageContent = isCoordinatorUser || isCtoUser;
 
+  const labMetrics = useMemo(() => {
+    const totalRuns = labRuns.length;
+    const uniqueLearners = new Set(labRuns.map((run) => String(run.user_id || '')).filter(Boolean)).size;
+    const latencyValues = labRuns.map((run) => Number(run.latency_ms)).filter((value) => Number.isFinite(value) && value >= 0);
+    const avgLatencyMs =
+      latencyValues.length > 0
+        ? Math.round(latencyValues.reduce((sum, value) => sum + value, 0) / latencyValues.length)
+        : 0;
+    const pathCounts = labRuns.reduce(
+      (acc, run) => {
+        const path = String(run.path_key || '').toLowerCase();
+        if (path === 'productivity') acc.productivity += 1;
+        else if (path === 'entrepreneurship') acc.entrepreneurship += 1;
+        else acc.research += 1;
+        return acc;
+      },
+      { productivity: 0, research: 0, entrepreneurship: 0 }
+    );
+
+    return {
+      totalRuns,
+      uniqueLearners,
+      avgLatencyMs,
+      pathCounts
+    };
+  }, [labRuns]);
+
+  const capstoneMetrics = useMemo(() => {
+    const totalArtifacts = capstoneArtifacts.length;
+    const acceptedCount = capstoneArtifacts.filter((artifact) => {
+      if (String(artifact.status || '').toLowerCase() === 'accepted') return true;
+      return artifact?.feedback?.passed === true;
+    }).length;
+    const pendingCount = capstoneArtifacts.filter((artifact) =>
+      ['submitted', 'needs_revision'].includes(String(artifact.status || '').toLowerCase())
+    ).length;
+    const scoredValues = capstoneArtifacts
+      .map((artifact) => Number(artifact.score))
+      .filter((value) => Number.isFinite(value));
+    const avgScore = scoredValues.length > 0 ? Math.round(scoredValues.reduce((sum, value) => sum + value, 0) / scoredValues.length) : 0;
+    const acceptanceRatePct = totalArtifacts > 0 ? Number(((acceptedCount / totalArtifacts) * 100).toFixed(1)) : 0;
+
+    return {
+      totalArtifacts,
+      acceptedCount,
+      pendingCount,
+      avgScore,
+      acceptanceRatePct
+    };
+  }, [capstoneArtifacts]);
+
   return (
     <section className="rounded-[1.75rem] border border-slate-900/10 bg-white/80 p-5 shadow-xl backdrop-blur-sm md:p-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -1486,6 +1537,18 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Lab Operations Console</h3>
             <p className="mb-3 text-sm text-slate-600">Run supervised lab experiments and inspect run history per learner.</p>
+            <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+              <Metric label="Runs Loaded" value={labMetrics.totalRuns} />
+              <Metric label="Learners In Scope" value={labMetrics.uniqueLearners} />
+              <Metric label="Avg Latency (ms)" value={labMetrics.avgLatencyMs} />
+              <Metric
+                label="Path Mix"
+                value={`${labMetrics.pathCounts.productivity}/${labMetrics.pathCounts.research}/${labMetrics.pathCounts.entrepreneurship}`}
+              />
+            </div>
+            <p className="mb-3 text-xs text-slate-500">
+              Scope uses current user/course/module filters. Path mix order: productivity / research / entrepreneurship.
+            </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <input
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
@@ -1592,6 +1655,14 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Capstone Review Board</h3>
+            <div className="mb-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              <Metric label="Artifacts Loaded" value={capstoneMetrics.totalArtifacts} />
+              <Metric label="Pending Review" value={capstoneMetrics.pendingCount} />
+              <Metric label="Accepted" value={capstoneMetrics.acceptedCount} />
+              <Metric label="Acceptance Rate" value={`${capstoneMetrics.acceptanceRatePct}%`} />
+              <Metric label="Avg Score" value={capstoneMetrics.avgScore} />
+            </div>
+            <p className="mb-3 text-xs text-slate-500">Metrics are scoped to the active user/course/status filters in this board.</p>
             <div className="grid gap-2 sm:grid-cols-3">
               <input
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
