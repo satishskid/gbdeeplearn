@@ -15,7 +15,12 @@ function parseMoneyToCents(value) {
   return Math.max(0, Math.round(parsed * 100));
 }
 
-export default function PlatformConsole({ userRoles = [] }) {
+function toNumberOrNull(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export default function PlatformConsole({ userRoles = [], currentUser = null }) {
   const [adminToken, setAdminToken] = useState('');
   const [overview, setOverview] = useState(null);
   const [courses, setCourses] = useState([]);
@@ -30,8 +35,13 @@ export default function PlatformConsole({ userRoles = [] }) {
   const [analyticsSummary, setAnalyticsSummary] = useState(null);
   const [pathAnalytics, setPathAnalytics] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadingLabRuns, setLoadingLabRuns] = useState(false);
+  const [loadingCapstones, setLoadingCapstones] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [coordinatorView, setCoordinatorView] = useState('operations');
+  const [labRuns, setLabRuns] = useState([]);
+  const [capstoneArtifacts, setCapstoneArtifacts] = useState([]);
 
   const [courseForm, setCourseForm] = useState({
     title: '',
@@ -110,6 +120,32 @@ export default function PlatformConsole({ userRoles = [] }) {
     rubricJson: '{\n  "criteria": [\n    "Clinical clarity",\n    "Methodological correctness",\n    "Evidence-backed reasoning"\n  ]\n}'
   });
 
+  const [labOpsForm, setLabOpsForm] = useState({
+    targetUserId: '',
+    courseId: '',
+    moduleId: '',
+    cohortId: '',
+    pathKey: 'research',
+    toolType: 'literature-scan',
+    provider: 'byok',
+    modelName: '',
+    input: ''
+  });
+
+  const [capstoneFilter, setCapstoneFilter] = useState({
+    userId: '',
+    courseId: '',
+    status: ''
+  });
+
+  const [capstoneReviewForm, setCapstoneReviewForm] = useState({
+    artifactId: '',
+    status: 'reviewed',
+    score: '',
+    passed: 'auto',
+    feedback: ''
+  });
+
   const roleSet = useMemo(() => new Set((userRoles || []).map((role) => String(role).trim().toLowerCase())), [userRoles]);
   const isCtoUser = roleSet.has('cto');
   const isCoordinatorUser = isCtoUser || roleSet.has('coordinator');
@@ -140,6 +176,21 @@ export default function PlatformConsole({ userRoles = [] }) {
     }
     return headers;
   }, [adminToken]);
+
+  const actorHeaders = useMemo(() => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (currentUser?.uid) {
+      headers['x-user-id'] = currentUser.uid;
+    }
+    const normalizedRoles = (userRoles || []).map((role) => String(role).trim().toLowerCase()).filter(Boolean);
+    if (normalizedRoles.length > 0) {
+      headers['x-user-roles'] = normalizedRoles.join(',');
+    }
+    if (adminToken.trim()) {
+      headers['x-admin-token'] = adminToken.trim();
+    }
+    return headers;
+  }, [currentUser?.uid, userRoles, adminToken]);
 
   const loadModulesRaw = async (courseId, headers = adminHeaders) => {
     if (!courseId) {
@@ -609,6 +660,112 @@ export default function PlatformConsole({ userRoles = [] }) {
     return `Content moved to ${status}.`;
   };
 
+  const runLabExperiment = async () => {
+    const targetUserId = String(labOpsForm.targetUserId || '').trim();
+    if (!targetUserId || !labOpsForm.courseId || !labOpsForm.moduleId || !labOpsForm.input.trim()) {
+      throw new Error('target user, course, module, and input are required.');
+    }
+
+    const response = await fetch(apiUrl('/api/lab/run'), {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify({
+        user_id: targetUserId,
+        course_id: labOpsForm.courseId,
+        module_id: labOpsForm.moduleId,
+        cohort_id: labOpsForm.cohortId,
+        path_key: labOpsForm.pathKey,
+        tool_type: labOpsForm.toolType,
+        provider: labOpsForm.provider,
+        model_name: labOpsForm.modelName,
+        input: labOpsForm.input
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Lab experiment failed.');
+
+    const run = payload?.run || null;
+    if (run) {
+      setLabRuns((current) => [run, ...(current || [])].slice(0, 30));
+    }
+    return `Lab run completed${run?.id ? ` (${run.id})` : ''}.`;
+  };
+
+  const loadLabExperimentRuns = async () => {
+    const targetUserId = String(labOpsForm.targetUserId || '').trim();
+    if (!targetUserId) {
+      throw new Error('target user_id is required to load lab runs.');
+    }
+
+    setLoadingLabRuns(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('user_id', targetUserId);
+      params.set('limit', '30');
+      if (labOpsForm.courseId) params.set('course_id', labOpsForm.courseId);
+      if (labOpsForm.moduleId) params.set('module_id', labOpsForm.moduleId);
+      if (labOpsForm.pathKey) params.set('path_key', labOpsForm.pathKey);
+
+      const response = await fetch(apiUrl(`/api/lab/runs?${params.toString()}`), {
+        headers: actorHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Lab runs load failed.');
+      setLabRuns(payload?.runs || []);
+      return 'Lab runs loaded.';
+    } finally {
+      setLoadingLabRuns(false);
+    }
+  };
+
+  const loadCapstoneArtifacts = async () => {
+    setLoadingCapstones(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('limit', '40');
+      if (capstoneFilter.userId.trim()) params.set('user_id', capstoneFilter.userId.trim());
+      if (capstoneFilter.courseId.trim()) params.set('course_id', capstoneFilter.courseId.trim());
+      if (capstoneFilter.status.trim()) params.set('status', capstoneFilter.status.trim());
+
+      const response = await fetch(apiUrl(`/api/learn/capstone/artifacts?${params.toString()}`), {
+        headers: actorHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Capstone list failed.');
+      setCapstoneArtifacts(payload?.artifacts || []);
+      return 'Capstone artifacts loaded.';
+    } finally {
+      setLoadingCapstones(false);
+    }
+  };
+
+  const submitCapstoneReview = async () => {
+    const artifactId = capstoneReviewForm.artifactId.trim();
+    if (!artifactId) throw new Error('artifactId is required.');
+
+    const body = {
+      status: capstoneReviewForm.status,
+      feedback: capstoneReviewForm.feedback
+    };
+
+    const score = toNumberOrNull(capstoneReviewForm.score);
+    if (score !== null) body.score = score;
+    if (capstoneReviewForm.passed === 'true') body.passed = true;
+    if (capstoneReviewForm.passed === 'false') body.passed = false;
+
+    const response = await fetch(apiUrl(`/api/learn/capstone/${encodeURIComponent(artifactId)}/review`), {
+      method: 'POST',
+      headers: actorHeaders,
+      body: JSON.stringify(body)
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Capstone review failed.');
+
+    const status = payload?.review?.status || capstoneReviewForm.status;
+    await loadCapstoneArtifacts();
+    return `Capstone reviewed (${status}).`;
+  };
+
   const isCoordinator = isCoordinatorUser && activeRole === 'coordinator';
   const isTeacher = isTeacherUser && activeRole === 'teacher';
   const isLearner = isLearnerUser && activeRole === 'learner';
@@ -721,6 +878,27 @@ export default function PlatformConsole({ userRoles = [] }) {
       )}
 
       {isCoordinator && (
+        <div className="mb-6 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3">
+          {[
+            { id: 'operations', label: 'Operations' },
+            { id: 'lab-ops', label: 'Lab Ops' },
+            { id: 'capstone-review', label: 'Capstone Review' }
+          ].map((tab) => (
+            <button
+              key={tab.id}
+              className={`rounded-xl px-3 py-2 text-sm font-semibold ${
+                coordinatorView === tab.id ? 'bg-slate-900 text-white' : 'border border-slate-300 bg-white text-slate-700'
+              }`}
+              onClick={() => setCoordinatorView(tab.id)}
+              type="button"
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {isCoordinator && coordinatorView === 'operations' && (
         <div className="grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Create Course</h3>
@@ -878,7 +1056,7 @@ export default function PlatformConsole({ userRoles = [] }) {
         </div>
       )}
 
-      {isCoordinator && (
+      {isCoordinator && coordinatorView === 'operations' && (
         <div className="mt-6 grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Create Organization</h3>
@@ -1299,6 +1477,235 @@ export default function PlatformConsole({ userRoles = [] }) {
               ))}
               {rubrics.length === 0 && <p className="text-xs text-slate-500">No rubrics for selected course.</p>}
             </div>
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && coordinatorView === 'lab-ops' && (
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Lab Operations Console</h3>
+            <p className="mb-3 text-sm text-slate-600">Run supervised lab experiments and inspect run history per learner.</p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Target learner user_id"
+                value={labOpsForm.targetUserId}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, targetUserId: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={labOpsForm.courseId}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, courseId: e.target.value }))}
+              >
+                <option value="">Select course</option>
+                {courses.map((course) => (
+                  <option key={course.id} value={course.id}>
+                    {course.title}
+                  </option>
+                ))}
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Module ID"
+                value={labOpsForm.moduleId}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, moduleId: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Cohort ID (optional)"
+                value={labOpsForm.cohortId}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, cohortId: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={labOpsForm.pathKey}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, pathKey: e.target.value }))}
+              >
+                <option value="productivity">Path 1: Productivity</option>
+                <option value="research">Path 2: Research</option>
+                <option value="entrepreneurship">Path 3: Entrepreneurship</option>
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Tool type"
+                value={labOpsForm.toolType}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, toolType: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Provider"
+                value={labOpsForm.provider}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, provider: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Model name (optional)"
+                value={labOpsForm.modelName}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, modelName: e.target.value }))}
+              />
+              <textarea
+                className="min-h-24 rounded-xl border border-slate-300 px-3 py-2 text-sm sm:col-span-2"
+                placeholder="Experiment input"
+                value={labOpsForm.input}
+                onChange={(e) => setLabOpsForm((p) => ({ ...p, input: e.target.value }))}
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                onClick={() => void runAction(runLabExperiment)}
+                type="button"
+              >
+                Run Experiment
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(loadLabExperimentRuns)}
+                type="button"
+                disabled={loadingLabRuns}
+              >
+                {loadingLabRuns ? 'Loading...' : 'Load Runs'}
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Recent Lab Runs</h3>
+            <div className="max-h-[28rem] space-y-2 overflow-auto">
+              {labRuns.map((run) => (
+                <div key={run.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <p className="text-sm font-semibold text-slate-900">
+                    {run.path_key} · {run.tool_type}
+                  </p>
+                  <p className="text-xs text-slate-600">{run.user_id}</p>
+                  <p className="text-xs text-slate-500">{run.output?.input_summary || 'No summary'}</p>
+                </div>
+              ))}
+              {labRuns.length === 0 && <p className="text-sm text-slate-500">No lab runs loaded.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && coordinatorView === 'capstone-review' && (
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Capstone Review Board</h3>
+            <div className="grid gap-2 sm:grid-cols-3">
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Filter user_id"
+                value={capstoneFilter.userId}
+                onChange={(e) => setCapstoneFilter((p) => ({ ...p, userId: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Filter course_id"
+                value={capstoneFilter.courseId}
+                onChange={(e) => setCapstoneFilter((p) => ({ ...p, courseId: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={capstoneFilter.status}
+                onChange={(e) => setCapstoneFilter((p) => ({ ...p, status: e.target.value }))}
+              >
+                <option value="">All statuses</option>
+                <option value="submitted">Submitted</option>
+                <option value="reviewed">Reviewed</option>
+                <option value="accepted">Accepted</option>
+                <option value="needs_revision">Needs revision</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </div>
+            <button
+              className="mt-3 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+              onClick={() => void runAction(loadCapstoneArtifacts)}
+              type="button"
+              disabled={loadingCapstones}
+            >
+              {loadingCapstones ? 'Loading...' : 'Load Artifacts'}
+            </button>
+
+            <div className="mt-4 max-h-[28rem] space-y-2 overflow-auto">
+              {capstoneArtifacts.map((artifact) => (
+                <div key={artifact.id} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{artifact.title}</p>
+                      <p className="text-xs text-slate-600">
+                        {artifact.user_id} · {artifact.status} · score {artifact.score ?? '-'}
+                      </p>
+                    </div>
+                    <button
+                      className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700"
+                      onClick={() =>
+                        setCapstoneReviewForm((current) => ({
+                          ...current,
+                          artifactId: artifact.id,
+                          status: artifact.status || 'reviewed',
+                          score: artifact.score ?? ''
+                        }))
+                      }
+                      type="button"
+                    >
+                      Select
+                    </button>
+                  </div>
+                </div>
+              ))}
+              {capstoneArtifacts.length === 0 && <p className="text-sm text-slate-500">No artifacts loaded.</p>}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Submit Review</h3>
+            <div className="grid gap-2">
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Artifact ID"
+                value={capstoneReviewForm.artifactId}
+                onChange={(e) => setCapstoneReviewForm((p) => ({ ...p, artifactId: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={capstoneReviewForm.status}
+                onChange={(e) => setCapstoneReviewForm((p) => ({ ...p, status: e.target.value }))}
+              >
+                <option value="reviewed">Reviewed</option>
+                <option value="accepted">Accepted</option>
+                <option value="needs_revision">Needs revision</option>
+                <option value="rejected">Rejected</option>
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Score (0-100, optional)"
+                value={capstoneReviewForm.score}
+                onChange={(e) => setCapstoneReviewForm((p) => ({ ...p, score: e.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={capstoneReviewForm.passed}
+                onChange={(e) => setCapstoneReviewForm((p) => ({ ...p, passed: e.target.value }))}
+              >
+                <option value="auto">Passed: Auto</option>
+                <option value="true">Passed: Yes</option>
+                <option value="false">Passed: No</option>
+              </select>
+              <textarea
+                className="min-h-24 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Review feedback"
+                value={capstoneReviewForm.feedback}
+                onChange={(e) => setCapstoneReviewForm((p) => ({ ...p, feedback: e.target.value }))}
+              />
+            </div>
+            <button
+              className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+              onClick={() => void runAction(submitCapstoneReview)}
+              type="button"
+            >
+              Save Review
+            </button>
           </div>
         </div>
       )}

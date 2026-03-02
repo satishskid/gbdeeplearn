@@ -34,7 +34,7 @@ export default function PlatformWorkspace() {
             </div>
           </section>
 
-          <PlatformConsole userRoles={roles} />
+          <PlatformConsole userRoles={roles} currentUser={user} />
         </div>
       )}
     </AuthRoleGate>
