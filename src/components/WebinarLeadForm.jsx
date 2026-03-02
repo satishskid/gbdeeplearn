@@ -4,6 +4,7 @@ import { apiUrl } from '../lib/api';
 const TRACK_ENDPOINT = apiUrl('/api/track');
 const REGISTER_ENDPOINT = apiUrl('/api/funnel/register');
 const PAYMENT_ORDER_ENDPOINT = apiUrl('/api/funnel/payment/create-order');
+const PAYMENT_STATUS_ENDPOINT = apiUrl('/api/funnel/payment/status');
 const PAYMENT_VERIFY_ENDPOINT = apiUrl('/api/funnel/payment/verify');
 const PAYMENT_SUCCESS_ENDPOINT = apiUrl('/api/funnel/payment/success');
 const DEFAULT_WEBINAR_ID = 'deep-rag-live-webinar';
@@ -115,11 +116,16 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
   const [message, setMessage] = useState('');
   const [activation, setActivation] = useState(null);
   const [isActivating, setIsActivating] = useState(false);
+  const [isGeneratingQr, setIsGeneratingQr] = useState(false);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
+  const [upiQr, setUpiQr] = useState(null);
   const [turnstileToken, setTurnstileToken] = useState('');
   const sessionId = useMemo(() => getSessionId(), []);
 
   const turnstileContainerRef = useRef(null);
   const widgetIdRef = useRef('');
+  const paymentPollTimerRef = useRef(0);
+  const paymentPollBusyRef = useRef(false);
 
   const postEvent = async (eventName, extra = {}) => {
     try {
@@ -148,6 +154,65 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
 
     window.turnstile.reset(widgetIdRef.current);
     setTurnstileToken('');
+  };
+
+  const stopPaymentPolling = () => {
+    if (typeof window !== 'undefined' && paymentPollTimerRef.current) {
+      window.clearInterval(paymentPollTimerRef.current);
+      paymentPollTimerRef.current = 0;
+    }
+  };
+
+  const syncPaymentStatus = async ({ silent = false } = {}) => {
+    if (!leadId) return false;
+    if (paymentPollBusyRef.current) return false;
+
+    paymentPollBusyRef.current = true;
+    if (!silent) setIsCheckingStatus(true);
+
+    try {
+      const params = new URLSearchParams();
+      params.set('lead_id', leadId);
+      if (email) params.set('email', email);
+
+      const response = await fetch(`${PAYMENT_STATUS_ENDPOINT}?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Unable to fetch payment status.');
+      }
+
+      const paymentStatus = String(payload?.payment?.status || '').toLowerCase();
+      if (paymentStatus === 'paid' && payload?.enrollment?.user_id) {
+        setActivation(payload.enrollment);
+        setStatus('success');
+        setMessage('Payment confirmed. Learner access is now active.');
+        setUpiQr(null);
+        stopPaymentPolling();
+        return true;
+      }
+
+      if (!silent) {
+        setStatus('success');
+        setMessage(`Current payment status: ${paymentStatus || 'registered'}.`);
+      }
+      return false;
+    } catch (error) {
+      if (!silent) {
+        setStatus('error');
+        setMessage(error instanceof Error ? error.message : 'Failed to check payment status.');
+      }
+      return false;
+    } finally {
+      paymentPollBusyRef.current = false;
+      if (!silent) setIsCheckingStatus(false);
+    }
+  };
+
+  const startPaymentPolling = () => {
+    if (typeof window === 'undefined' || paymentPollTimerRef.current || !leadId) return;
+    paymentPollTimerRef.current = window.setInterval(() => {
+      void syncPaymentStatus({ silent: true });
+    }, 5000);
   };
 
   useEffect(() => {
@@ -191,11 +256,19 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
     };
   }, [siteKey]);
 
+  useEffect(() => {
+    return () => {
+      stopPaymentPolling();
+    };
+  }, []);
+
   const onRegister = async (event) => {
     event.preventDefault();
     setStatus('loading');
     setMessage('');
     setActivation(null);
+    setUpiQr(null);
+    stopPaymentPolling();
 
     await postEvent(WEBINAR_EVENTS.registerStart);
 
@@ -317,6 +390,14 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
             lead_id: leadId,
             course_slug: selectedCourseSlug
           },
+          method: {
+            upi: true,
+            card: false,
+            netbanking: false,
+            wallet: false,
+            emi: false,
+            paylater: false
+          },
           handler: (response) => resolve(response),
           modal: {
             ondismiss: () => reject(new Error('Payment was cancelled.'))
@@ -343,6 +424,8 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
       }
 
       setActivation(verifyData?.enrollment || null);
+      setUpiQr(null);
+      stopPaymentPolling();
       setStatus('success');
       setMessage('Payment confirmed. Learner access is now active.');
       await postEvent(WEBINAR_EVENTS.paymentComplete, { lead_id: leadId });
@@ -351,6 +434,50 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
       setMessage(error instanceof Error ? error.message : 'Payment activation failed.');
     } finally {
       setIsActivating(false);
+    }
+  };
+
+  const onGenerateUpiQr = async () => {
+    if (!leadId) {
+      setMessage('Register first to generate a lead ID.');
+      setStatus('error');
+      return;
+    }
+
+    setIsGeneratingQr(true);
+    setMessage('');
+    try {
+      const orderResponse = await fetch(PAYMENT_ORDER_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lead_id: leadId,
+          course_slug: selectedCourseSlug,
+          email,
+          full_name: fullName,
+          source: 'landing',
+          payment_mode: 'upi_qr',
+          qr_close_seconds: 900
+        })
+      });
+      const orderData = await orderResponse.json();
+      if (!orderResponse.ok) {
+        throw new Error(orderData?.error || 'Unable to generate UPI QR.');
+      }
+
+      if (!orderData?.upi_qr?.image_url) {
+        throw new Error('UPI QR was not returned by payment gateway.');
+      }
+
+      setUpiQr(orderData.upi_qr);
+      setStatus('success');
+      setMessage('UPI QR generated. Scan and pay; access will auto-activate.');
+      startPaymentPolling();
+    } catch (error) {
+      setStatus('error');
+      setMessage(error instanceof Error ? error.message : 'UPI QR generation failed.');
+    } finally {
+      setIsGeneratingQr(false);
     }
   };
 
@@ -438,14 +565,32 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           )}
 
           {status === 'success' && leadId && (
-            <button
-              className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100"
-              onClick={() => void onActivateAccess()}
-              type="button"
-              disabled={isActivating}
-            >
-              {isActivating ? 'Activating...' : 'Complete Payment + Activate Access'}
-            </button>
+            <>
+              <button
+                className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100"
+                onClick={() => void onActivateAccess()}
+                type="button"
+                disabled={isActivating}
+              >
+                {isActivating ? 'Opening UPI...' : 'Pay via UPI App'}
+              </button>
+              <button
+                className="rounded-xl border border-violet-300 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 transition hover:bg-violet-100"
+                onClick={() => void onGenerateUpiQr()}
+                type="button"
+                disabled={isGeneratingQr}
+              >
+                {isGeneratingQr ? 'Generating QR...' : 'Generate UPI QR'}
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                onClick={() => void syncPaymentStatus()}
+                type="button"
+                disabled={isCheckingStatus}
+              >
+                {isCheckingStatus ? 'Checking...' : 'Check Payment Status'}
+              </button>
+            </>
           )}
 
           {activation?.user_id ? (
@@ -462,6 +607,19 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           <p className="md:col-span-3 text-xs text-slate-500">
             Activated user: {activation.user_id} · Course: {activation.course_title || activation.course_slug || activation.course_id}
           </p>
+        ) : null}
+
+        {upiQr?.image_url ? (
+          <div className="md:col-span-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+            <p className="text-sm font-semibold text-violet-900">Scan to pay via UPI</p>
+            <p className="mt-1 text-xs text-violet-700">After payment, access auto-activates within a few seconds.</p>
+            <img
+              src={upiQr.image_url}
+              alt="UPI QR code"
+              className="mt-3 h-56 w-56 rounded-lg border border-violet-200 bg-white p-2"
+              loading="lazy"
+            />
+          </div>
         ) : null}
       </form>
     </section>

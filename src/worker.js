@@ -36,6 +36,7 @@ app.get('/', (c) => {
       '/api/lead/submit',
       '/api/funnel/register',
       '/api/funnel/payment/create-order',
+      '/api/funnel/payment/status',
       '/api/funnel/payment/verify',
       '/api/funnel/payment/razorpay/webhook',
       '/api/funnel/payment/success',
@@ -491,6 +492,8 @@ app.post('/api/funnel/payment/create-order', async (c) => {
     const payload = await c.req.json();
     const leadId = clean(payload?.lead_id, 64);
     const email = clean(payload?.email, 200).toLowerCase();
+    const paymentMode = clean(payload?.payment_mode, 24).toLowerCase();
+    const includeUpiQr = paymentMode === 'upi_qr' || payload?.include_upi_qr === true;
 
     if (!leadId && !email) {
       return c.json({ error: 'lead_id or email is required.' }, 400);
@@ -568,6 +571,40 @@ app.post('/api/funnel/payment/create-order', async (c) => {
       }
     });
 
+    let upiQr = null;
+    if (includeUpiQr) {
+      const qrCloseSecondsRaw = Number(payload?.qr_close_seconds);
+      const qrCloseSeconds = Number.isFinite(qrCloseSecondsRaw)
+        ? Math.max(180, Math.min(3600, Math.floor(qrCloseSecondsRaw)))
+        : 900;
+      const closeBy = Math.floor(Date.now() / 1000) + qrCloseSeconds;
+      const qrName = clean(payload?.full_name, 80) || clean(registration.full_name || '', 80) || 'DeepLearn Enrollment';
+      const qrDescription = clean(target.courseTitle || 'DeepLearn Course Enrollment', 120);
+      const qrCode = await createRazorpayUpiQr({
+        keyId,
+        keySecret,
+        amountCents,
+        closeBy,
+        name: qrName,
+        description: qrDescription,
+        notes: {
+          lead_id: clean(registration.lead_id || leadId, 64),
+          course_id: target.courseId,
+          course_slug: target.courseSlug,
+          cohort_id: target.cohortId,
+          email: clean(registration.email || email, 200)
+        }
+      });
+
+      upiQr = {
+        id: clean(qrCode.id || '', 120),
+        status: clean(qrCode.status || 'active', 32),
+        image_url: clean(qrCode.image_url || '', 600),
+        close_by: Number(qrCode.close_by || closeBy),
+        payment_amount: Number(qrCode.payment_amount || amountCents)
+      };
+    }
+
     const existingMetadata = parseJsonObjectOrDefault(registration.metadata_json, {});
     const metadata = {
       ...existingMetadata,
@@ -576,6 +613,11 @@ app.post('/api/funnel/payment/create-order', async (c) => {
       currency,
       route: '/api/funnel/payment/create-order'
     };
+    if (upiQr?.id) {
+      metadata.razorpay_qr_id = upiQr.id;
+      metadata.razorpay_qr_image_url = upiQr.image_url;
+      metadata.razorpay_qr_close_by = upiQr.close_by;
+    }
     const nowMs = Date.now();
 
     await c.env.DEEPLEARN_DB.prepare(
@@ -607,6 +649,7 @@ app.post('/api/funnel/payment/create-order', async (c) => {
         status: clean(razorpayOrder.status || 'created', 32),
         receipt: clean(razorpayOrder.receipt || receipt, 80)
       },
+      upi_qr: upiQr,
       enrollment_target: {
         course_id: target.courseId,
         course_slug: target.courseSlug,
@@ -618,6 +661,76 @@ app.post('/api/funnel/payment/create-order', async (c) => {
     return c.json(
       {
         error: 'Failed to create payment order.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/funnel/payment/status', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const leadId = clean(c.req.query('lead_id'), 64);
+    const email = clean(c.req.query('email'), 200).toLowerCase();
+
+    if (!leadId && !email) {
+      return c.json({ error: 'lead_id or email is required.' }, 400);
+    }
+
+    const registration = await findLeadRegistrationForPayment(c.env.DEEPLEARN_DB, {
+      leadId,
+      email,
+      razorpayOrderId: ''
+    });
+    if (!registration) {
+      return c.json({ error: 'Registration not found.' }, 404);
+    }
+
+    const target = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
+      courseId: clean(registration.course_id || '', 64),
+      courseSlug: clean(registration.course_slug || '', 120),
+      cohortId: clean(registration.cohort_id || '', 64)
+    });
+    const metadata = parseJsonObjectOrDefault(registration.metadata_json, {});
+    const userId = clean(registration.user_id || '', 120);
+
+    return c.json({
+      ok: true,
+      lead_id: clean(registration.lead_id || leadId, 64),
+      payment: {
+        status: clean(registration.payment_status || 'registered', 24),
+        payment_ref: clean(registration.payment_ref || '', 120),
+        payment_provider: clean(registration.payment_provider || '', 64),
+        paid_at_ms: Number(registration.paid_at_ms || 0),
+        amount_cents: Number(metadata.amount_cents || 0),
+        currency: clean(metadata.currency || '', 8) || 'INR'
+      },
+      upi_qr: metadata.razorpay_qr_id
+        ? {
+            id: clean(metadata.razorpay_qr_id || '', 120),
+            image_url: clean(metadata.razorpay_qr_image_url || '', 600),
+            close_by: Number(metadata.razorpay_qr_close_by || 0)
+          }
+        : null,
+      enrollment: userId
+        ? {
+            user_id: userId,
+            course_id: target.courseId || clean(registration.course_id || '', 64),
+            course_slug: target.courseSlug || clean(registration.course_slug || '', 120),
+            course_title: target.courseTitle || '',
+            cohort_id: target.cohortId || clean(registration.cohort_id || '', 64)
+          }
+        : null
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to fetch payment status.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -4438,6 +4551,33 @@ async function createRazorpayOrder({ keyId, keySecret, amountCents, currency, re
   if (!response.ok) {
     const details = await response.text();
     throw new Error(`Razorpay order creation failed: ${clean(details, 220) || response.status}`);
+  }
+
+  return response.json();
+}
+
+async function createRazorpayUpiQr({ keyId, keySecret, amountCents, closeBy, name, description, notes }) {
+  const response = await fetch('https://api.razorpay.com/v1/payments/qr_codes', {
+    method: 'POST',
+    headers: {
+      Authorization: buildRazorpayAuthHeader({ keyId, keySecret }),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      type: 'upi_qr',
+      name: clean(name || 'DeepLearn Enrollment', 80),
+      usage: 'single_use',
+      fixed_amount: true,
+      payment_amount: amountCents,
+      description: clean(description || 'Course enrollment', 120),
+      close_by: Number.isFinite(Number(closeBy)) ? Number(closeBy) : Math.floor(Date.now() / 1000) + 900,
+      notes: notes || {}
+    })
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Razorpay UPI QR creation failed: ${clean(details, 220) || response.status}`);
   }
 
   return response.json();
