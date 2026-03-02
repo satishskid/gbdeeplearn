@@ -2,6 +2,13 @@ import { useState } from 'react';
 import AuthRoleGate from './AuthRoleGate';
 import { apiUrl } from '../lib/api';
 
+function actorHeaders(user, roles) {
+  return {
+    'x-user-id': user?.uid || '',
+    'x-user-roles': Array.isArray(roles) ? roles.join(',') : ''
+  };
+}
+
 export default function LearnerWorkspace() {
   const [statusForm, setStatusForm] = useState({
     courseId: '',
@@ -76,7 +83,9 @@ export default function LearnerWorkspace() {
                   setLoadingAccess(true);
                   setError('');
                   try {
-                    const response = await fetch(apiUrl(`/api/learn/access?user_id=${encodeURIComponent(user.uid)}`));
+                    const response = await fetch(apiUrl(`/api/learn/access?user_id=${encodeURIComponent(user.uid)}`), {
+                      headers: actorHeaders(user, roles)
+                    });
                     const payload = await response.json();
                     if (!response.ok) throw new Error(payload?.error || 'Failed to load learner access.');
                     const items = payload?.access || [];
@@ -180,7 +189,10 @@ export default function LearnerWorkspace() {
                   try {
                     const response = await fetch(apiUrl(`/api/learn/modules/${encodeURIComponent(statusForm.moduleId)}/progress`), {
                       method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
+                      headers: {
+                        'Content-Type': 'application/json',
+                        ...actorHeaders(user, roles)
+                      },
                       body: JSON.stringify({
                         user_id: user.uid,
                         course_id: statusForm.courseId,
@@ -235,7 +247,10 @@ export default function LearnerWorkspace() {
                         apiUrl(`/api/learn/assignments/${encodeURIComponent(assignmentForm.moduleId)}/submit`),
                         {
                           method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
+                          headers: {
+                            'Content-Type': 'application/json',
+                            ...actorHeaders(user, roles)
+                          },
                           body: JSON.stringify({
                             user_id: user.uid,
                             course_id: assignmentForm.courseId,
@@ -267,7 +282,10 @@ export default function LearnerWorkspace() {
                     try {
                       const response = await fetch(apiUrl(`/api/learn/assignments/${encodeURIComponent(submissionId)}/grade`), {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: {
+                          'Content-Type': 'application/json',
+                          ...actorHeaders(user, roles)
+                        },
                         body: JSON.stringify({})
                       });
                       const payload = await response.json();

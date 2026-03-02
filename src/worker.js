@@ -50,6 +50,11 @@ app.get('/', (c) => {
       '/api/admin/cohorts/:cohortId/enrollments',
       '/api/learn/modules/:moduleId/progress',
       '/api/learn/access',
+      '/api/lab/run',
+      '/api/lab/runs',
+      '/api/learn/capstone/submit',
+      '/api/learn/capstone/artifacts',
+      '/api/learn/capstone/:artifactId/review',
       '/api/learn/assignments/:moduleId/submit',
       '/api/learn/assignments/:submissionId/grade',
       '/api/admin/content/generate-daily',
@@ -1921,6 +1926,10 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
     const moduleId = clean(c.req.param('moduleId'), 64);
     const payload = await c.req.json();
     const userId = clean(payload?.user_id, 120);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
     const courseId = clean(payload?.course_id, 64);
     const cohortId = clean(payload?.cohort_id, 64);
     const status = clean(payload?.status, 32).toLowerCase();
@@ -2122,6 +2131,10 @@ app.get('/api/learn/access', async (c) => {
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
     const userId = clean(c.req.query('user_id'), 120);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
     if (!userId) return c.json({ error: 'user_id is required.' }, 400);
 
     const enrollments = await c.env.DEEPLEARN_DB.prepare(
@@ -2206,6 +2219,416 @@ app.get('/api/learn/access', async (c) => {
   }
 });
 
+app.post('/api/lab/run', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
+
+    const courseId = clean(payload?.course_id, 64);
+    const moduleId = clean(payload?.module_id, 64);
+    const pathKey = clean(payload?.path_key, 40).toLowerCase();
+    const toolType = clean(payload?.tool_type, 80);
+    const provider = clean(payload?.provider, 80);
+    const modelName = clean(payload?.model_name, 120);
+    const input = typeof payload?.input === 'string' ? payload.input.slice(0, 8000) : '';
+
+    if (!userId || !courseId || !moduleId || !pathKey || !toolType || !input.trim()) {
+      return c.json({ error: 'user_id, course_id, module_id, path_key, tool_type, and input are required.' }, 400);
+    }
+    if (!PATH_KEYS.has(pathKey)) {
+      return c.json({ error: 'Invalid path_key.' }, 400);
+    }
+
+    const startedAt = Date.now();
+    const inputHash = await sha256Hex(input);
+    const sampleOutput = generateLabRunOutput({ pathKey, toolType, modelName, input });
+    const latencyMs = Date.now() - startedAt;
+    const runId = crypto.randomUUID();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO lab_runs (
+         id, org_id, course_id, module_id, user_id, path_key, tool_type, provider, model_name,
+         input_hash, output_json, latency_ms, cost_microunits, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        runId,
+        '',
+        courseId,
+        moduleId,
+        userId,
+        pathKey,
+        toolType,
+        provider,
+        modelName,
+        inputHash,
+        JSON.stringify(sampleOutput),
+        latencyMs,
+        0,
+        Date.now()
+      )
+      .run();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO learning_events (
+         org_id, course_id, module_id, cohort_id, user_id, event_name, event_value, metadata_json, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind('', courseId, moduleId, clean(payload?.cohort_id, 64), userId, 'lab_run_completed', 1, JSON.stringify({ run_id: runId, tool_type: toolType, provider, model_name: modelName }), Date.now())
+      .run();
+
+    return c.json({
+      ok: true,
+      run: {
+        id: runId,
+        course_id: courseId,
+        module_id: moduleId,
+        user_id: userId,
+        path_key: pathKey,
+        tool_type: toolType,
+        provider,
+        model_name: modelName,
+        latency_ms: latencyMs,
+        output: sampleOutput
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to run lab experiment.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/lab/runs', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    const requestedUserId = clean(c.req.query('user_id'), 120);
+    const courseId = clean(c.req.query('course_id'), 64);
+    const moduleId = clean(c.req.query('module_id'), 64);
+    const pathKey = clean(c.req.query('path_key'), 40).toLowerCase();
+    const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') || 20)));
+
+    const targetUserId = requestedUserId || actor.userId;
+    const actorAccessError = assertActorCanAccessUser(actor, targetUserId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
+
+    const conditions = ['user_id = ?'];
+    const params = [targetUserId];
+    if (courseId) {
+      conditions.push('course_id = ?');
+      params.push(courseId);
+    }
+    if (moduleId) {
+      conditions.push('module_id = ?');
+      params.push(moduleId);
+    }
+    if (pathKey && PATH_KEYS.has(pathKey)) {
+      conditions.push('path_key = ?');
+      params.push(pathKey);
+    }
+    params.push(limit);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         id, course_id, module_id, user_id, path_key, tool_type, provider, model_name,
+         output_json, latency_ms, cost_microunits, created_at_ms
+       FROM lab_runs
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY created_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(...params)
+      .all();
+
+    const runs = (result.results || []).map((row) => ({
+      ...row,
+      output: parseJsonObjectOrDefault(row.output_json, {})
+    }));
+
+    return c.json({ runs });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list lab runs.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/learn/capstone/submit', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+    const userId = clean(payload?.user_id, 120);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
+
+    const courseId = clean(payload?.course_id, 64);
+    const moduleId = clean(payload?.module_id, 64);
+    const cohortId = clean(payload?.cohort_id, 64);
+    const pathKey = clean(payload?.path_key, 40).toLowerCase() || 'entrepreneurship';
+    const title = clean(payload?.title, 220);
+    const summary = typeof payload?.summary === 'string' ? payload.summary.slice(0, 4000) : '';
+    const artifactUrl = clean(payload?.artifact_url, 500);
+    const pitchDeckUrl = clean(payload?.pitch_deck_url, 500);
+    const dataRoomUrl = clean(payload?.data_room_url, 500);
+
+    if (!userId || !courseId || !moduleId || !title) {
+      return c.json({ error: 'user_id, course_id, module_id, and title are required.' }, 400);
+    }
+    if (!PATH_KEYS.has(pathKey)) {
+      return c.json({ error: 'Invalid path_key.' }, 400);
+    }
+
+    const artifactId = crypto.randomUUID();
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO capstone_artifacts (
+         id, course_id, module_id, cohort_id, user_id, path_key, title, summary, artifact_url, pitch_deck_url,
+         data_room_url, status, score, feedback_json, submitted_at_ms, reviewed_at_ms, reviewer_id, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', NULL, '{}', ?, NULL, '', ?)`
+    )
+      .bind(
+        artifactId,
+        courseId,
+        moduleId,
+        cohortId,
+        userId,
+        pathKey,
+        title,
+        summary,
+        artifactUrl,
+        pitchDeckUrl,
+        dataRoomUrl,
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO assessment_events (
+         org_id, course_id, module_id, cohort_id, user_id, event_name, score, passed, metadata_json, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind('', courseId, moduleId, cohortId, userId, 'capstone_submitted', null, 0, JSON.stringify({ artifact_id: artifactId }), nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      artifact: {
+        id: artifactId,
+        course_id: courseId,
+        module_id: moduleId,
+        cohort_id: cohortId,
+        user_id: userId,
+        path_key: pathKey,
+        title,
+        status: 'submitted'
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to submit capstone artifact.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/learn/capstone/artifacts', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    const requestedUserId = clean(c.req.query('user_id'), 120);
+    const courseId = clean(c.req.query('course_id'), 64);
+    const status = clean(c.req.query('status'), 32);
+    const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') || 30)));
+    const canReview = actor.isAdmin || hasAnyRole(actor.roles, ['teacher', 'coordinator', 'cto']);
+    const targetUserId = requestedUserId || (canReview ? '' : actor.userId);
+
+    if (targetUserId) {
+      const actorAccessError = assertActorCanAccessUser(actor, targetUserId, { allowPrivileged: true });
+      if (actorAccessError) return actorAccessError;
+    }
+
+    const conditions = [];
+    const params = [];
+    if (targetUserId) {
+      conditions.push('a.user_id = ?');
+      params.push(targetUserId);
+    }
+    if (courseId) {
+      conditions.push('a.course_id = ?');
+      params.push(courseId);
+    }
+    if (status) {
+      conditions.push('a.status = ?');
+      params.push(status);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(limit);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         a.id, a.course_id, a.module_id, a.cohort_id, a.user_id, a.path_key, a.title, a.summary, a.artifact_url,
+         a.pitch_deck_url, a.data_room_url, a.status, a.score, a.feedback_json, a.submitted_at_ms, a.reviewed_at_ms,
+         a.reviewer_id, a.updated_at_ms, c.title AS course_title
+       FROM capstone_artifacts a
+       LEFT JOIN courses c ON c.id = a.course_id
+       ${whereClause}
+       ORDER BY a.updated_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(...params)
+      .all();
+
+    const artifacts = (result.results || []).map((row) => ({
+      ...row,
+      feedback: parseJsonObjectOrDefault(row.feedback_json, {})
+    }));
+
+    return c.json({ can_review: canReview, artifacts });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list capstone artifacts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/learn/capstone/:artifactId/review', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    if (!actor.isAdmin && !hasAnyRole(actor.roles, ['teacher', 'coordinator', 'cto'])) {
+      return c.json({ error: 'Review permission denied.' }, 403);
+    }
+
+    const artifactId = clean(c.req.param('artifactId'), 64);
+    const payload = await c.req.json();
+    const scoreInput = Number(payload?.score);
+    const score = Number.isFinite(scoreInput) ? Math.max(0, Math.min(100, scoreInput)) : null;
+    const feedbackText = clean(payload?.feedback, 2000);
+    const status = clean(payload?.status, 32).toLowerCase() || 'reviewed';
+    const passed = typeof payload?.passed === 'boolean' ? payload.passed : score !== null ? score >= 70 : false;
+
+    if (!artifactId) return c.json({ error: 'artifactId is required.' }, 400);
+    if (!new Set(['reviewed', 'accepted', 'rejected', 'needs_revision']).has(status)) {
+      return c.json({ error: 'Invalid review status.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const artifact = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, course_id, module_id, cohort_id, user_id, title
+       FROM capstone_artifacts
+       WHERE id = ?
+       LIMIT 1`
+    )
+      .bind(artifactId)
+      .first();
+    if (!artifact) return c.json({ error: 'Artifact not found.' }, 404);
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE capstone_artifacts
+       SET status = ?, score = ?, feedback_json = ?, reviewed_at_ms = ?, reviewer_id = ?, updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(
+        status,
+        score,
+        JSON.stringify({ feedback: feedbackText, passed }),
+        nowMs,
+        actor.userId || 'system',
+        nowMs,
+        artifactId
+      )
+      .run();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO assessment_events (
+         org_id, course_id, module_id, cohort_id, user_id, event_name, score, passed, metadata_json, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(
+        '',
+        clean(artifact.course_id || '', 64),
+        clean(artifact.module_id || '', 64),
+        clean(artifact.cohort_id || '', 64),
+        clean(artifact.user_id || '', 120),
+        'capstone_reviewed',
+        score,
+        passed ? 1 : 0,
+        JSON.stringify({ artifact_id: artifactId, status, reviewer_id: actor.userId || 'system' }),
+        nowMs
+      )
+      .run();
+
+    return c.json({
+      ok: true,
+      review: {
+        artifact_id: artifactId,
+        status,
+        score,
+        passed,
+        reviewer_id: actor.userId || 'system'
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to review capstone artifact.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/learn/assignments/:moduleId/submit', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -2216,6 +2639,10 @@ app.post('/api/learn/assignments/:moduleId/submit', async (c) => {
     const moduleId = clean(c.req.param('moduleId'), 64);
     const payload = await c.req.json();
     const userId = clean(payload?.user_id, 120);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
     const courseId = clean(payload?.course_id, 64);
     const rubricId = clean(payload?.rubric_id, 64);
     const answerText = typeof payload?.answer_text === 'string' ? payload.answer_text.slice(0, 15000) : '';
@@ -2275,6 +2702,8 @@ app.post('/api/learn/assignments/:submissionId/grade', async (c) => {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
     const submissionId = clean(c.req.param('submissionId'), 64);
     const payload = await c.req.json();
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
     const groqKey = clean(payload?.groq_key, 240);
     if (!submissionId) return c.json({ error: 'submissionId is required.' }, 400);
 
@@ -2286,6 +2715,8 @@ app.post('/api/learn/assignments/:submissionId/grade', async (c) => {
       .bind(submissionId)
       .first();
     if (!submission) return c.json({ error: 'Submission not found.' }, 404);
+    const actorAccessError = assertActorCanAccessUser(actor, clean(submission.user_id || '', 120), { allowPrivileged: true });
+    if (actorAccessError) return actorAccessError;
 
     const rubric = submission.rubric_id
       ? await c.env.DEEPLEARN_DB.prepare(
@@ -2973,6 +3404,32 @@ async function ensureOpsSchema(db) {
       ON lab_runs(user_id, created_at_ms)`,
     `CREATE INDEX IF NOT EXISTS idx_lab_runs_path_created
       ON lab_runs(path_key, created_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS capstone_artifacts (
+      id TEXT PRIMARY KEY,
+      course_id TEXT NOT NULL,
+      module_id TEXT NOT NULL,
+      cohort_id TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL,
+      path_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      artifact_url TEXT NOT NULL DEFAULT '',
+      pitch_deck_url TEXT NOT NULL DEFAULT '',
+      data_room_url TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'submitted',
+      score REAL,
+      feedback_json TEXT NOT NULL DEFAULT '{}',
+      submitted_at_ms INTEGER NOT NULL,
+      reviewed_at_ms INTEGER,
+      reviewer_id TEXT NOT NULL DEFAULT '',
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_capstone_artifacts_user_updated
+      ON capstone_artifacts(user_id, updated_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_capstone_artifacts_course_status
+      ON capstone_artifacts(course_id, status, updated_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_capstone_artifacts_path_status
+      ON capstone_artifacts(path_key, status, updated_at_ms)`,
     `CREATE TABLE IF NOT EXISTS learning_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       org_id TEXT NOT NULL DEFAULT '',
@@ -3142,6 +3599,98 @@ async function ensureCohortBootstrapUnlock(db, cohortId, courseId, nowMs) {
 async function scalarCount(db, query) {
   const row = await db.prepare(query).first();
   return Number(row?.count || 0);
+}
+
+function normalizeRole(role) {
+  const value = clean(role, 40).toLowerCase();
+  if (!value) return '';
+  if (value === 'admin') return 'coordinator';
+  if (value === 'trainer') return 'teacher';
+  if (value === 'student') return 'learner';
+  return value;
+}
+
+function parseRoleHeader(value) {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  return value
+    .split(',')
+    .map((entry) => normalizeRole(entry))
+    .filter(Boolean);
+}
+
+function hasAnyRole(roles, allowedRoles) {
+  const roleSet = new Set((roles || []).map((role) => normalizeRole(role)).filter(Boolean));
+  return (allowedRoles || []).some((role) => roleSet.has(normalizeRole(role)));
+}
+
+async function resolveActorContext(c, { requireUser = false } = {}) {
+  const configuredAdminToken = clean(c.env.ADMIN_API_TOKEN || '', 200);
+  const requestAdminToken = clean(c.req.header('x-admin-token') || '', 200);
+  const isAdmin = Boolean(configuredAdminToken && requestAdminToken && requestAdminToken === configuredAdminToken);
+  const userId = clean(c.req.header('x-user-id') || c.req.header('x-actor-id') || c.req.header('x-firebase-uid') || '', 120);
+  const roles = new Set([
+    ...parseRoleHeader(c.req.header('x-user-roles')),
+    ...parseRoleHeader(c.req.header('x-user-role')),
+    ...parseRoleHeader(c.req.header('x-actor-roles'))
+  ]);
+
+  if (isAdmin) {
+    roles.add('coordinator');
+    roles.add('cto');
+  }
+
+  if (c.env.DEEPLEARN_DB && userId) {
+    const platformRole = await c.env.DEEPLEARN_DB.prepare('SELECT role FROM platform_users WHERE uid = ? LIMIT 1')
+      .bind(userId)
+      .first();
+    if (platformRole?.role) roles.add(normalizeRole(platformRole.role));
+
+    const courseRoles = await c.env.DEEPLEARN_DB.prepare('SELECT role FROM course_staff WHERE user_id = ?').bind(userId).all();
+    for (const row of courseRoles.results || []) {
+      if (row?.role) roles.add(normalizeRole(row.role));
+    }
+
+    const orgRoles = await c.env.DEEPLEARN_DB.prepare('SELECT role FROM organization_staff WHERE user_id = ?').bind(userId).all();
+    for (const row of orgRoles.results || []) {
+      if (row?.role) roles.add(normalizeRole(row.role));
+    }
+  }
+
+  if (userId && roles.size === 0) {
+    roles.add('learner');
+  }
+
+  if (requireUser && !isAdmin && !userId) {
+    return {
+      userId: '',
+      roles: [],
+      isAdmin,
+      error: c.json({ error: 'Missing actor identity. Pass x-user-id header or valid admin token.' }, 401)
+    };
+  }
+
+  return {
+    userId,
+    roles: Array.from(roles),
+    isAdmin,
+    error: null
+  };
+}
+
+function assertActorCanAccessUser(actor, targetUserId, { allowPrivileged = false } = {}) {
+  const userId = clean(targetUserId, 120);
+  if (!userId) {
+    return actor.error ?? new Response(JSON.stringify({ error: 'user_id is required.' }), { status: 400 });
+  }
+
+  if (actor.isAdmin) return null;
+  if (actor.userId && actor.userId === userId) return null;
+  if (allowPrivileged && hasAnyRole(actor.roles, ['teacher', 'coordinator', 'cto'])) return null;
+
+  return new Response(JSON.stringify({ error: 'Access denied for requested user.' }), {
+    status: 403,
+    headers: { 'content-type': 'application/json' }
+  });
 }
 
 function slugify(value) {
@@ -3395,6 +3944,60 @@ async function gradeAssignmentSubmission({ env, groqKey, answerText, rubricTitle
   } catch {
     return fallbackResult;
   }
+}
+
+function summarizeLabInput(input) {
+  const text = String(input || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length <= 220 ? text : `${text.slice(0, 217)}...`;
+}
+
+function generateLabRunOutput({ pathKey, toolType, modelName, input }) {
+  const inputSummary = summarizeLabInput(input);
+  const tokenEstimate = Math.max(8, Math.round(String(input || '').length / 4));
+  const shared = {
+    tool_type: clean(toolType || 'experiment', 80) || 'experiment',
+    model_name: clean(modelName || 'byok-model', 120) || 'byok-model',
+    input_summary: inputSummary,
+    token_estimate: tokenEstimate
+  };
+
+  if (pathKey === 'productivity') {
+    return {
+      ...shared,
+      output_type: 'workflow-optimization',
+      suggestions: [
+        'Convert repeated note templates into reusable prompt snippets.',
+        'Attach checklist-based guardrails before sharing patient-facing drafts.',
+        'Track response latency and quality weekly to retire low-performing prompts.'
+      ],
+      estimated_time_saved_minutes_per_case: 12
+    };
+  }
+
+  if (pathKey === 'research') {
+    return {
+      ...shared,
+      output_type: 'research-augmentation',
+      hypothesis_candidates: [
+        'Identify cohort stratification variables with highest effect on outcome variance.',
+        'Map exclusion criteria conflicts across protocol drafts before IRB submission.',
+        'Generate reproducible methods summary aligned to reporting standards.'
+      ],
+      confidence_note: 'Use as triage output; validate against source methods and statistics.'
+    };
+  }
+
+  return {
+    ...shared,
+    output_type: 'venture-planning',
+    venture_canvas: {
+      problem_statement: 'Clinical workflow bottleneck validated by frontline users.',
+      target_user: 'Specialist clinician and care coordinator team',
+      pilot_metric: 'Reduction in turnaround time and improved adherence rate',
+      next_milestone: 'Produce capstone artifact with pilot scope, risk controls, and ROI assumptions.'
+    }
+  };
 }
 
 async function runScheduledContentGeneration(env, cron) {
