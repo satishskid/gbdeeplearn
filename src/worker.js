@@ -550,7 +550,8 @@ app.post('/api/funnel/payment/create-order', async (c) => {
       });
     }
 
-    const receipt = `lead_${clean(registration.lead_id || leadId, 40) || Date.now()}`;
+    const receiptSource = clean(registration.lead_id || leadId, 64) || String(Date.now());
+    const receipt = `lead_${receiptSource}`.slice(0, 40);
     const razorpayOrder = await createRazorpayOrder({
       keyId,
       keySecret,
