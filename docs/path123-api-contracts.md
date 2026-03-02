@@ -15,6 +15,8 @@ Scope: Shared platform APIs for Productivity (Path 1), Research (Path 2), and En
 - `POST /api/chat/tutor`
 - `POST /api/track`
 - `POST /api/lead/submit`
+- `POST /api/funnel/register`
+- `POST /api/funnel/payment/success`
 - `GET /api/analytics/funnel`
 - `GET|POST /api/admin/courses`
 - `POST /api/admin/courses/:courseId/publish`
@@ -61,6 +63,7 @@ Scope: Shared platform APIs for Productivity (Path 1), Research (Path 2), and En
 
 ### 3.4 Learner Progress and Assessments
 
+- `GET /api/learn/access?user_id=`
 - `POST /api/learn/modules/:moduleId/progress`
   - Input: `{ course_id, cohort_id, status, score, artifact_url, notes }`
 - `GET /api/admin/courses/:courseId/rubrics`

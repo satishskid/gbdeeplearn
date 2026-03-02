@@ -24,6 +24,7 @@ const PATH_KEYS = new Set(['productivity', 'research', 'entrepreneurship']);
 const COHORT_MODES = new Set(['instructor-led', 'self-paced']);
 const COHORT_STATUSES = new Set(['draft', 'open', 'live', 'completed', 'archived']);
 const MODULE_PROGRESS_STATUSES = new Set(['locked', 'unlocked', 'in_progress', 'submitted', 'completed', 'passed', 'failed']);
+const PAYMENT_STATUSES = new Set(['registered', 'paid', 'failed', 'refunded']);
 
 app.get('/', (c) => {
   return c.json({
@@ -33,6 +34,8 @@ app.get('/', (c) => {
       '/api/chat/tutor',
       '/api/track',
       '/api/lead/submit',
+      '/api/funnel/register',
+      '/api/funnel/payment/success',
       '/api/analytics/funnel',
       '/api/content/posts',
       '/api/admin/overview',
@@ -44,6 +47,7 @@ app.get('/', (c) => {
       '/api/admin/cohorts/:cohortId/enroll',
       '/api/admin/cohorts/:cohortId/enrollments',
       '/api/learn/modules/:moduleId/progress',
+      '/api/learn/access',
       '/api/learn/assignments/:moduleId/submit',
       '/api/learn/assignments/:submissionId/grade',
       '/api/admin/content/generate-daily',
@@ -176,6 +180,9 @@ app.post('/api/lead/submit', async (c) => {
     const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
     const source = clean(payload?.source, 64) || 'landing';
     const sessionId = clean(payload?.session_id, 64) || crypto.randomUUID();
+    const courseIdInput = clean(payload?.course_id, 64);
+    const courseSlugInput = slugify(clean(payload?.course_slug, 120));
+    const cohortIdInput = clean(payload?.cohort_id, 64);
     const turnstileToken = clean(payload?.turnstile_token, 4096);
     const turnstileRequired = (c.env.TURNSTILE_REQUIRED || 'true').toLowerCase() !== 'false';
 
@@ -210,6 +217,27 @@ app.post('/api/lead/submit', async (c) => {
     const leadId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const emailHash = await sha256Hex(email);
+    let target = {
+      courseId: courseIdInput,
+      courseSlug: courseSlugInput,
+      courseTitle: '',
+      cohortId: cohortIdInput
+    };
+
+    if (c.env.DEEPLEARN_DB && (courseIdInput || courseSlugInput || cohortIdInput)) {
+      await ensureOpsSchema(c.env.DEEPLEARN_DB);
+      const resolved = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
+        courseId: courseIdInput,
+        courseSlug: courseSlugInput,
+        cohortId: cohortIdInput
+      });
+      target = {
+        courseId: resolved.courseId,
+        courseSlug: resolved.courseSlug,
+        courseTitle: resolved.courseTitle,
+        cohortId: resolved.cohortId
+      };
+    }
 
     const lead = {
       lead_id: leadId,
@@ -220,6 +248,9 @@ app.post('/api/lead/submit', async (c) => {
       webinar_id: webinarId,
       source,
       session_id: sessionId,
+      course_id: target.courseId || '',
+      course_slug: target.courseSlug || '',
+      cohort_id: target.cohortId || '',
       user_agent: c.req.header('user-agent') || '',
       referrer: c.req.header('referer') || '',
       country: c.req.raw.cf?.country || 'XX'
@@ -241,11 +272,399 @@ app.post('/api/lead/submit', async (c) => {
       emailHash
     });
 
-    return c.json({ ok: true, lead_id: leadId });
+    if (c.env.DEEPLEARN_DB) {
+      await ensureOpsSchema(c.env.DEEPLEARN_DB);
+      const nowMs = Date.now();
+      const metadata = {
+        route: '/api/lead/submit',
+        user_agent: c.req.header('user-agent') || '',
+        referrer: c.req.header('referer') || ''
+      };
+      await c.env.DEEPLEARN_DB.prepare(
+        `INSERT INTO lead_registrations (
+           lead_id, full_name, email, phone, webinar_id, source, session_id,
+           course_id, course_slug, cohort_id, user_id, payment_status, payment_ref,
+           payment_provider, paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'registered', '', '', NULL, ?, ?, ?)
+         ON CONFLICT(lead_id) DO UPDATE SET
+           full_name = excluded.full_name,
+           email = excluded.email,
+           phone = excluded.phone,
+           webinar_id = excluded.webinar_id,
+           source = excluded.source,
+           session_id = excluded.session_id,
+           course_id = excluded.course_id,
+           course_slug = excluded.course_slug,
+           cohort_id = excluded.cohort_id,
+           updated_at_ms = excluded.updated_at_ms`
+      )
+        .bind(
+          leadId,
+          fullName,
+          email,
+          phone,
+          webinarId,
+          source,
+          sessionId,
+          target.courseId || '',
+          target.courseSlug || '',
+          target.cohortId || '',
+          JSON.stringify(metadata),
+          nowMs,
+          nowMs
+        )
+        .run();
+    }
+
+    return c.json({
+      ok: true,
+      lead_id: leadId,
+      registration: {
+        course_id: target.courseId || '',
+        course_slug: target.courseSlug || '',
+        course_title: target.courseTitle || '',
+        cohort_id: target.cohortId || '',
+        payment_status: 'registered'
+      }
+    });
   } catch (error) {
     return c.json(
       {
         error: 'Failed to submit lead.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/funnel/register', async (c) => {
+  try {
+    const payload = await c.req.json();
+    const fullName = clean(payload?.full_name, 120);
+    const email = clean(payload?.email, 200).toLowerCase();
+    const phone = clean(payload?.phone, 24);
+    const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
+    const source = clean(payload?.source, 64) || 'landing';
+    const sessionId = clean(payload?.session_id, 64) || crypto.randomUUID();
+    const courseIdInput = clean(payload?.course_id, 64);
+    const courseSlugInput = slugify(clean(payload?.course_slug, 120));
+    const cohortIdInput = clean(payload?.cohort_id, 64);
+    const turnstileToken = clean(payload?.turnstile_token, 4096);
+    const turnstileRequired = (c.env.TURNSTILE_REQUIRED || 'true').toLowerCase() !== 'false';
+
+    if (!fullName || !email || !phone) {
+      return c.json({ error: 'full_name, email, and phone are required.' }, 400);
+    }
+    if (!isValidEmail(email)) {
+      return c.json({ error: 'Invalid email format.' }, 400);
+    }
+    if (!c.env.DEEPLEARN_LEADS) {
+      return c.json({ error: 'Lead storage is not configured.' }, 500);
+    }
+    if (!c.env.DEEPLEARN_DB) {
+      return c.json({ error: 'D1 is not configured.' }, 500);
+    }
+
+    if (turnstileRequired) {
+      if (!turnstileToken) {
+        return c.json({ error: 'Turnstile token is required.' }, 400);
+      }
+      const verification = await verifyTurnstile({
+        secret: c.env.TURNSTILE_SECRET_KEY,
+        token: turnstileToken,
+        remoteIp: c.req.header('CF-Connecting-IP') || ''
+      });
+      if (!verification.success) {
+        return c.json({ error: 'Turnstile verification failed.', details: verification.errorCodes }, 403);
+      }
+    }
+
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const target = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
+      courseId: courseIdInput,
+      courseSlug: courseSlugInput,
+      cohortId: cohortIdInput
+    });
+
+    const leadId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const emailHash = await sha256Hex(email);
+    const lead = {
+      lead_id: leadId,
+      created_at: createdAt,
+      full_name: fullName,
+      email,
+      phone,
+      webinar_id: webinarId,
+      source,
+      session_id: sessionId,
+      course_id: target.courseId || '',
+      course_slug: target.courseSlug || '',
+      cohort_id: target.cohortId || '',
+      user_agent: c.req.header('user-agent') || '',
+      referrer: c.req.header('referer') || '',
+      country: c.req.raw.cf?.country || 'XX'
+    };
+
+    const objectKey = `leads/${webinarId}/${createdAt.slice(0, 10)}/${leadId}.json`;
+    await c.env.DEEPLEARN_LEADS.put(objectKey, JSON.stringify(lead), {
+      httpMetadata: { contentType: 'application/json' }
+    });
+
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO lead_registrations (
+         lead_id, full_name, email, phone, webinar_id, source, session_id,
+         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref,
+         payment_provider, paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'registered', '', '', NULL, ?, ?, ?)`
+    )
+      .bind(
+        leadId,
+        fullName,
+        email,
+        phone,
+        webinarId,
+        source,
+        sessionId,
+        target.courseId || '',
+        target.courseSlug || '',
+        target.cohortId || '',
+        JSON.stringify({ route: '/api/funnel/register' }),
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    await writeGrowthEvent(c.env, c.req.raw.cf, {
+      eventName: 'webinar_registration_submitted',
+      webinarId,
+      source,
+      leadId,
+      sessionId,
+      path: '/api/funnel/register',
+      value: 1,
+      emailHash
+    });
+
+    return c.json({
+      ok: true,
+      lead_id: leadId,
+      registration: {
+        course_id: target.courseId || '',
+        course_slug: target.courseSlug || '',
+        course_title: target.courseTitle || '',
+        cohort_id: target.cohortId || '',
+        payment_status: 'registered'
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to register funnel lead.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/funnel/payment/success', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+
+    const configuredToken = clean(c.env.PAYMENT_WEBHOOK_TOKEN || '', 240);
+    const providedToken = clean(c.req.header('x-payment-token') || payload?.webhook_token, 240);
+    if (configuredToken && configuredToken !== providedToken) {
+      return c.json({ error: 'Unauthorized payment callback.' }, 401);
+    }
+
+    const leadIdInput = clean(payload?.lead_id, 64);
+    const emailInput = clean(payload?.email, 200).toLowerCase();
+    const fullNameInput = clean(payload?.full_name, 120);
+    const source = clean(payload?.source, 64) || 'payment';
+    const paymentRef = clean(payload?.payment_ref, 120) || `manual_${Date.now()}`;
+    const paymentProvider = clean(payload?.payment_provider, 64) || 'manual';
+    const amountCents = Number.isFinite(Number(payload?.amount_cents)) ? Number(payload.amount_cents) : 0;
+    const currency = clean(payload?.currency, 8).toUpperCase() || 'USD';
+    const paymentStatus = clean(payload?.payment_status, 24).toLowerCase() || 'paid';
+
+    if (!PAYMENT_STATUSES.has(paymentStatus)) {
+      return c.json({ error: 'Invalid payment_status.' }, 400);
+    }
+
+    if (!leadIdInput && !emailInput) {
+      return c.json({ error: 'lead_id or email is required.' }, 400);
+    }
+
+    let registration = null;
+    if (leadIdInput) {
+      registration = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT
+           lead_id, full_name, email, phone, webinar_id, source, session_id, course_id, course_slug, cohort_id, user_id
+         FROM lead_registrations
+         WHERE lead_id = ?
+         LIMIT 1`
+      )
+        .bind(leadIdInput)
+        .first();
+    }
+
+    if (!registration && emailInput) {
+      registration = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT
+           lead_id, full_name, email, phone, webinar_id, source, session_id, course_id, course_slug, cohort_id, user_id
+         FROM lead_registrations
+         WHERE email = ?
+         ORDER BY updated_at_ms DESC
+         LIMIT 1`
+      )
+        .bind(emailInput)
+        .first();
+    }
+
+    const webinarId = clean(payload?.webinar_id, 64) || clean(registration?.webinar_id, 64) || 'deep-rag-live-webinar';
+    const sessionId = clean(payload?.session_id, 64) || clean(registration?.session_id, 64) || crypto.randomUUID();
+    const fullName = fullNameInput || clean(registration?.full_name, 120);
+    const email = emailInput || clean(registration?.email, 200).toLowerCase();
+    const phone = clean(payload?.phone, 24) || clean(registration?.phone, 24);
+
+    const target = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
+      courseId: clean(payload?.course_id, 64) || clean(registration?.course_id, 64),
+      courseSlug: slugify(clean(payload?.course_slug, 120) || clean(registration?.course_slug, 120)),
+      cohortId: clean(payload?.cohort_id, 64) || clean(registration?.cohort_id, 64)
+    });
+
+    if (!target.courseId) {
+      return c.json({ error: 'Unable to resolve course for payment activation.' }, 400);
+    }
+
+    const identityHash = await sha256Hex(email || `${leadIdInput || registration?.lead_id || ''}_${paymentRef}`);
+    const userId = clean(payload?.user_id, 120) || clean(registration?.user_id, 120) || `learner_${identityHash.slice(0, 12)}`;
+    const displayName = fullName || email || userId;
+    const nowMs = Date.now();
+
+    if (paymentStatus === 'paid') {
+      await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role: 'learner' });
+      await upsertCourseEnrollment(c.env.DEEPLEARN_DB, {
+        courseId: target.courseId,
+        userId,
+        status: 'active',
+        progressPct: 0,
+        certificateUrl: '',
+        nowMs
+      });
+
+      if (target.cohortId) {
+        await upsertCohortEnrollment(c.env.DEEPLEARN_DB, {
+          cohortId: target.cohortId,
+          courseId: target.courseId,
+          userId,
+          status: 'enrolled',
+          nowMs
+        });
+        await ensureCohortBootstrapUnlock(c.env.DEEPLEARN_DB, target.cohortId, target.courseId, nowMs);
+      }
+    }
+
+    const effectiveLeadId = leadIdInput || clean(registration?.lead_id, 64) || crypto.randomUUID();
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO lead_registrations (
+         lead_id, full_name, email, phone, webinar_id, source, session_id,
+         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref, payment_provider,
+         paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(lead_id) DO UPDATE SET
+         full_name = excluded.full_name,
+         email = excluded.email,
+         phone = excluded.phone,
+         webinar_id = excluded.webinar_id,
+         source = excluded.source,
+         session_id = excluded.session_id,
+         course_id = excluded.course_id,
+         course_slug = excluded.course_slug,
+         cohort_id = excluded.cohort_id,
+         user_id = excluded.user_id,
+         payment_status = excluded.payment_status,
+         payment_ref = excluded.payment_ref,
+         payment_provider = excluded.payment_provider,
+         paid_at_ms = excluded.paid_at_ms,
+         metadata_json = excluded.metadata_json,
+         updated_at_ms = excluded.updated_at_ms`
+    )
+      .bind(
+        effectiveLeadId,
+        fullName,
+        email,
+        phone,
+        webinarId,
+        source || clean(registration?.source, 64) || 'payment',
+        sessionId,
+        target.courseId,
+        target.courseSlug,
+        target.cohortId,
+        userId,
+        paymentStatus,
+        paymentRef,
+        paymentProvider,
+        paymentStatus === 'paid' ? nowMs : null,
+        JSON.stringify({
+          amount_cents: amountCents,
+          currency,
+          route: '/api/funnel/payment/success'
+        }),
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    if (paymentStatus === 'paid') {
+      await writeGrowthEvent(c.env, c.req.raw.cf, {
+        eventName: 'payment_completed',
+        webinarId,
+        source,
+        leadId: effectiveLeadId,
+        sessionId,
+        path: '/api/funnel/payment/success',
+        value: amountCents > 0 ? amountCents / 100 : 1,
+        emailHash: email ? await sha256Hex(email) : ''
+      });
+    }
+
+    return c.json({
+      ok: true,
+      lead_id: effectiveLeadId,
+      payment: {
+        status: paymentStatus,
+        payment_ref: paymentRef,
+        payment_provider: paymentProvider,
+        amount_cents: amountCents,
+        currency
+      },
+      enrollment: {
+        user_id: userId,
+        course_id: target.courseId,
+        course_slug: target.courseSlug,
+        course_title: target.courseTitle,
+        cohort_id: target.cohortId
+      },
+      next_steps: {
+        learner_hub: '/learn',
+        access_endpoint: '/api/learn/access?user_id=<firebase_uid>',
+        assignment_submit_endpoint: '/api/learn/assignments/:moduleId/submit',
+        certificate_rule: 'Certificate issues automatically when course progress reaches 100%.'
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to activate learner after payment.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -1418,6 +1837,98 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
   }
 });
 
+app.get('/api/learn/access', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const userId = clean(c.req.query('user_id'), 120);
+    if (!userId) return c.json({ error: 'user_id is required.' }, 400);
+
+    const enrollments = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         e.course_id, e.status, e.progress_pct, e.completed_at_ms, e.certificate_url, e.updated_at_ms,
+         c.slug, c.title, c.status AS course_status
+       FROM course_enrollments e
+       LEFT JOIN courses c ON c.id = e.course_id
+       WHERE e.user_id = ?
+       ORDER BY e.updated_at_ms DESC`
+    )
+      .bind(userId)
+      .all();
+
+    const items = [];
+    for (const enrollment of enrollments.results || []) {
+      const cohortRow = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT cohort_id, status, progress_pct, completion_state, certificate_url
+         FROM cohort_enrollments
+         WHERE user_id = ? AND course_id = ?
+         ORDER BY updated_at_ms DESC
+         LIMIT 1`
+      )
+        .bind(userId, clean(enrollment.course_id || '', 64))
+        .first();
+
+      const cohortId = clean(cohortRow?.cohort_id || '', 64);
+      const modules = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT
+           m.id, m.module_key, m.title, m.sort_order, m.is_published,
+           CASE
+             WHEN ? = '' THEN 1
+             WHEN EXISTS (
+               SELECT 1 FROM cohort_module_unlocks u
+               WHERE u.cohort_id = ? AND u.module_id = m.id
+             ) THEN 1
+             ELSE 0
+           END AS is_unlocked
+         FROM course_modules m
+         WHERE m.course_id = ?
+         ORDER BY m.sort_order ASC, m.updated_at_ms DESC`
+      )
+        .bind(cohortId, cohortId, clean(enrollment.course_id || '', 64))
+        .all();
+
+      items.push({
+        course_id: enrollment.course_id,
+        course_slug: clean(enrollment.slug || '', 120),
+        course_title: clean(enrollment.title || '', 180),
+        course_status: clean(enrollment.course_status || '', 32),
+        enrollment_status: clean(enrollment.status || '', 32),
+        progress_pct: Number(enrollment.progress_pct || 0),
+        completed_at_ms: Number(enrollment.completed_at_ms || 0),
+        certificate_url: clean(enrollment.certificate_url || '', 400),
+        cohort: {
+          cohort_id: cohortId,
+          status: clean(cohortRow?.status || '', 32),
+          completion_state: clean(cohortRow?.completion_state || '', 40),
+          progress_pct: Number(cohortRow?.progress_pct || 0),
+          certificate_url: clean(cohortRow?.certificate_url || '', 400)
+        },
+        modules: (modules.results || []).map((module) => ({
+          id: module.id,
+          module_key: module.module_key,
+          title: module.title,
+          sort_order: module.sort_order,
+          is_published: Number(module.is_published || 0) === 1,
+          is_unlocked: Number(module.is_unlocked || 0) === 1
+        }))
+      });
+    }
+
+    return c.json({ user_id: userId, access: items });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load learner access.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/learn/assignments/:moduleId/submit', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -1927,6 +2438,30 @@ async function ensureOpsSchema(db) {
       ON lead_events(event_name, created_at_ms)`,
     `CREATE INDEX IF NOT EXISTS idx_lead_events_bot_created
       ON lead_events(is_likely_bot, created_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS lead_registrations (
+      lead_id TEXT PRIMARY KEY,
+      full_name TEXT NOT NULL DEFAULT '',
+      email TEXT NOT NULL DEFAULT '',
+      phone TEXT NOT NULL DEFAULT '',
+      webinar_id TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT '',
+      session_id TEXT NOT NULL DEFAULT '',
+      course_id TEXT NOT NULL DEFAULT '',
+      course_slug TEXT NOT NULL DEFAULT '',
+      cohort_id TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL DEFAULT '',
+      payment_status TEXT NOT NULL DEFAULT 'registered',
+      payment_ref TEXT NOT NULL DEFAULT '',
+      payment_provider TEXT NOT NULL DEFAULT '',
+      paid_at_ms INTEGER,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_lead_registrations_email_updated
+      ON lead_registrations(email, updated_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_lead_registrations_course_status
+      ON lead_registrations(course_id, payment_status, updated_at_ms)`,
     `CREATE TABLE IF NOT EXISTS platform_users (
       uid TEXT PRIMARY KEY,
       email TEXT,
@@ -2213,6 +2748,117 @@ async function upsertPlatformUser(db, { userId, email, displayName, role }) {
        updated_at_ms = excluded.updated_at_ms`
   )
     .bind(userId, email || '', displayName || '', role || 'learner', nowMs, nowMs)
+    .run();
+}
+
+async function resolveLearningTargetByCourse(db, { courseId, courseSlug, cohortId }) {
+  let resolvedCourseId = clean(courseId, 64);
+  let resolvedCourseSlug = slugify(clean(courseSlug, 120));
+  let resolvedCourseTitle = '';
+  let resolvedCohortId = clean(cohortId, 64);
+
+  if (!resolvedCourseId && resolvedCourseSlug) {
+    const row = await db.prepare('SELECT id, slug, title FROM courses WHERE slug = ? LIMIT 1').bind(resolvedCourseSlug).first();
+    resolvedCourseId = clean(row?.id || '', 64);
+    resolvedCourseSlug = clean(row?.slug || resolvedCourseSlug, 120);
+    resolvedCourseTitle = clean(row?.title || '', 180);
+  }
+
+  if (resolvedCourseId) {
+    const row = await db.prepare('SELECT id, slug, title FROM courses WHERE id = ? LIMIT 1').bind(resolvedCourseId).first();
+    if (row) {
+      resolvedCourseSlug = clean(row.slug || resolvedCourseSlug, 120);
+      resolvedCourseTitle = clean(row.title || '', 180);
+    }
+  }
+
+  if (resolvedCohortId) {
+    const row = await db.prepare('SELECT id, course_id FROM cohorts WHERE id = ? LIMIT 1').bind(resolvedCohortId).first();
+    const cohortCourseId = clean(row?.course_id || '', 64);
+    if (!row || (resolvedCourseId && cohortCourseId !== resolvedCourseId)) {
+      resolvedCohortId = '';
+    } else if (!resolvedCourseId && cohortCourseId) {
+      resolvedCourseId = cohortCourseId;
+      const courseRow = await db.prepare('SELECT slug, title FROM courses WHERE id = ? LIMIT 1').bind(resolvedCourseId).first();
+      resolvedCourseSlug = clean(courseRow?.slug || resolvedCourseSlug, 120);
+      resolvedCourseTitle = clean(courseRow?.title || '', 180);
+    }
+  }
+
+  if (!resolvedCohortId && resolvedCourseId) {
+    const preferred = await db.prepare(
+      `SELECT id
+       FROM cohorts
+       WHERE course_id = ?
+       ORDER BY
+         CASE status WHEN 'live' THEN 0 WHEN 'open' THEN 1 WHEN 'draft' THEN 2 ELSE 3 END,
+         updated_at_ms DESC
+       LIMIT 1`
+    )
+      .bind(resolvedCourseId)
+      .first();
+    resolvedCohortId = clean(preferred?.id || '', 64);
+  }
+
+  return {
+    courseId: resolvedCourseId,
+    courseSlug: resolvedCourseSlug,
+    courseTitle: resolvedCourseTitle,
+    cohortId: resolvedCohortId
+  };
+}
+
+async function upsertCourseEnrollment(db, { courseId, userId, status, progressPct, certificateUrl, nowMs }) {
+  await db.prepare(
+    `INSERT INTO course_enrollments (
+       course_id, user_id, status, progress_pct, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+     ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)
+     ON CONFLICT(course_id, user_id) DO UPDATE SET
+       status = excluded.status,
+       progress_pct = excluded.progress_pct,
+       certificate_url = excluded.certificate_url,
+       updated_at_ms = excluded.updated_at_ms`
+  )
+    .bind(courseId, userId, status || 'active', Number(progressPct || 0), certificateUrl || '', nowMs, nowMs)
+    .run();
+}
+
+async function upsertCohortEnrollment(db, { cohortId, courseId, userId, status, nowMs }) {
+  await db.prepare(
+    `INSERT INTO cohort_enrollments (
+       cohort_id, course_id, user_id, status, progress_pct, completion_state, completed_at_ms, certificate_url, created_at_ms, updated_at_ms
+     ) VALUES (?, ?, ?, ?, 0, 'in_progress', NULL, '', ?, ?)
+     ON CONFLICT(cohort_id, user_id) DO UPDATE SET
+       status = excluded.status,
+       updated_at_ms = excluded.updated_at_ms`
+  )
+    .bind(cohortId, courseId, userId, status || 'enrolled', nowMs, nowMs)
+    .run();
+}
+
+async function ensureCohortBootstrapUnlock(db, cohortId, courseId, nowMs) {
+  if (!cohortId || !courseId) return;
+  const unlockCountRow = await db.prepare('SELECT COUNT(*) AS count FROM cohort_module_unlocks WHERE cohort_id = ?').bind(cohortId).first();
+  const unlockCount = Number(unlockCountRow?.count || 0);
+  if (unlockCount > 0) return;
+
+  const firstModule = await db.prepare(
+    `SELECT id
+     FROM course_modules
+     WHERE course_id = ?
+     ORDER BY is_published DESC, sort_order ASC, updated_at_ms DESC
+     LIMIT 1`
+  )
+    .bind(courseId)
+    .first();
+  const moduleId = clean(firstModule?.id || '', 64);
+  if (!moduleId) return;
+
+  await db.prepare(
+    `INSERT OR IGNORE INTO cohort_module_unlocks (cohort_id, module_id, created_at_ms)
+     VALUES (?, ?, ?)`
+  )
+    .bind(cohortId, moduleId, nowMs)
     .run();
 }
 

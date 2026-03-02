@@ -2,9 +2,24 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { apiUrl } from '../lib/api';
 
 const TRACK_ENDPOINT = apiUrl('/api/track');
-const LEAD_ENDPOINT = apiUrl('/api/lead/submit');
+const REGISTER_ENDPOINT = apiUrl('/api/funnel/register');
+const PAYMENT_SUCCESS_ENDPOINT = apiUrl('/api/funnel/payment/success');
 const DEFAULT_WEBINAR_ID = 'deep-rag-live-webinar';
 const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
+const COURSE_OPTIONS = [
+  {
+    slug: 'in-silico-investigator-research',
+    label: 'Path 2: AI Research Accelerator'
+  },
+  {
+    slug: 'ai-productivity-clinical-practice',
+    label: 'Path 1: Clinical Productivity'
+  },
+  {
+    slug: 'doctor-ai-venture-builder',
+    label: 'Path 3: Venture Builder'
+  }
+];
 
 const WEBINAR_EVENTS = {
   view: 'webinar_landing_view',
@@ -65,8 +80,11 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [leadId, setLeadId] = useState('');
+  const [selectedCourseSlug, setSelectedCourseSlug] = useState(COURSE_OPTIONS[0].slug);
   const [status, setStatus] = useState('idle');
   const [message, setMessage] = useState('');
+  const [activation, setActivation] = useState(null);
+  const [isActivating, setIsActivating] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState('');
   const sessionId = useMemo(() => getSessionId(), []);
 
@@ -147,6 +165,7 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
     event.preventDefault();
     setStatus('loading');
     setMessage('');
+    setActivation(null);
 
     await postEvent(WEBINAR_EVENTS.registerStart);
 
@@ -157,13 +176,14 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
     }
 
     try {
-      const response = await fetch(LEAD_ENDPOINT, {
+      const response = await fetch(REGISTER_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           full_name: fullName,
           email,
           phone,
+          course_slug: selectedCourseSlug,
           webinar_id: DEFAULT_WEBINAR_ID,
           source: 'landing',
           session_id: sessionId,
@@ -178,7 +198,8 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
       }
 
       setStatus('success');
-      setMessage('Seat reserved. You can proceed to payment and confirmation.');
+      const courseTitle = data?.registration?.course_title ? ` for ${data.registration.course_title}` : '';
+      setMessage(`Seat reserved${courseTitle}. Complete payment to activate access.`);
       setLeadId(data.lead_id || '');
       await postEvent(WEBINAR_EVENTS.registerSubmit, { lead_id: data.lead_id });
       await postEvent(WEBINAR_EVENTS.paymentOpen, { lead_id: data.lead_id });
@@ -187,6 +208,49 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'Registration failed.');
       resetTurnstile();
+    }
+  };
+
+  const onActivateAccess = async () => {
+    if (!leadId) {
+      setMessage('Register first to generate a lead ID.');
+      setStatus('error');
+      return;
+    }
+
+    setIsActivating(true);
+    setMessage('');
+    try {
+      const response = await fetch(PAYMENT_SUCCESS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lead_id: leadId,
+          course_slug: selectedCourseSlug,
+          email,
+          full_name: fullName,
+          payment_provider: 'demo',
+          payment_ref: `demo_${Date.now()}`,
+          amount_cents: 100,
+          currency: 'USD',
+          source: 'landing-demo',
+          payment_status: 'paid'
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || 'Payment activation failed.');
+      }
+
+      setActivation(data?.enrollment || null);
+      setStatus('success');
+      setMessage('Payment confirmed. Learner access is now active.');
+      await postEvent(WEBINAR_EVENTS.paymentComplete, { lead_id: leadId });
+    } catch (error) {
+      setStatus('error');
+      setMessage(error instanceof Error ? error.message : 'Payment activation failed.');
+    } finally {
+      setIsActivating(false);
     }
   };
 
@@ -216,6 +280,18 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
       </div>
 
       <form className="grid gap-3 md:grid-cols-3" onSubmit={onRegister}>
+        <select
+          className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2 md:col-span-3"
+          value={selectedCourseSlug}
+          onChange={(e) => setSelectedCourseSlug(e.target.value)}
+        >
+          {COURSE_OPTIONS.map((option) => (
+            <option key={option.slug} value={option.slug}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+
         <input
           className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="text"
@@ -264,13 +340,29 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           {status === 'success' && leadId && (
             <button
               className="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 transition hover:bg-emerald-100"
-              onClick={() => void postEvent(WEBINAR_EVENTS.paymentComplete, { lead_id: leadId })}
+              onClick={() => void onActivateAccess()}
               type="button"
+              disabled={isActivating}
             >
-              Mark Payment Complete
+              {isActivating ? 'Activating...' : 'Complete Payment + Activate Access'}
             </button>
           )}
+
+          {activation?.user_id ? (
+            <a
+              className="rounded-xl border border-sky-300 bg-sky-50 px-3 py-2 text-sm font-semibold text-sky-800 transition hover:bg-sky-100"
+              href="/learn"
+            >
+              Open Learner Hub
+            </a>
+          ) : null}
         </div>
+
+        {activation?.user_id ? (
+          <p className="md:col-span-3 text-xs text-slate-500">
+            Activated user: {activation.user_id} · Course: {activation.course_title || activation.course_slug || activation.course_id}
+          </p>
+        ) : null}
       </form>
     </section>
   );
