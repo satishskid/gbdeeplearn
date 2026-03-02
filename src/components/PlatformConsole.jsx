@@ -187,8 +187,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     return headers;
   }, [adminToken]);
 
-  const actorHeaders = useMemo(() => {
-    const headers = { 'Content-Type': 'application/json' };
+  const buildActorHeaders = async () => {
+    const headers = {};
     if (currentUser?.uid) {
       headers['x-user-id'] = currentUser.uid;
     }
@@ -199,8 +199,32 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     if (adminToken.trim()) {
       headers['x-admin-token'] = adminToken.trim();
     }
+
+    if (currentUser?.getIdToken) {
+      try {
+        const idToken = await currentUser.getIdToken();
+        if (idToken) {
+          headers.Authorization = `Bearer ${idToken}`;
+          headers['x-firebase-id-token'] = idToken;
+        }
+      } catch {
+        // Let API enforce auth and return explicit error if token fetch fails.
+      }
+    }
+
     return headers;
-  }, [currentUser?.uid, userRoles, adminToken]);
+  };
+
+  const actorFetch = async (input, init = {}) => {
+    const identityHeaders = await buildActorHeaders();
+    return fetch(input, {
+      ...init,
+      headers: {
+        ...identityHeaders,
+        ...(init.headers || {})
+      }
+    });
+  };
 
   const loadModulesRaw = async (courseId, headers = adminHeaders) => {
     if (!courseId) {
@@ -722,9 +746,9 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       throw new Error('target user, course, module, and input are required.');
     }
 
-    const response = await fetch(apiUrl('/api/lab/run'), {
+    const response = await actorFetch(apiUrl('/api/lab/run'), {
       method: 'POST',
-      headers: actorHeaders,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         user_id: targetUserId,
         course_id: labOpsForm.courseId,
@@ -762,9 +786,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       if (labOpsForm.moduleId) params.set('module_id', labOpsForm.moduleId);
       if (labOpsForm.pathKey) params.set('path_key', labOpsForm.pathKey);
 
-      const response = await fetch(apiUrl(`/api/lab/runs?${params.toString()}`), {
-        headers: actorHeaders
-      });
+      const response = await actorFetch(apiUrl(`/api/lab/runs?${params.toString()}`));
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Lab runs load failed.');
       setLabRuns(payload?.runs || []);
@@ -784,9 +806,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       if (capstoneFilter.courseId.trim()) params.set('course_id', capstoneFilter.courseId.trim());
       if (capstoneFilter.status.trim()) params.set('status', capstoneFilter.status.trim());
 
-      const response = await fetch(apiUrl(`/api/learn/capstone/artifacts?${params.toString()}`), {
-        headers: actorHeaders
-      });
+      const response = await actorFetch(apiUrl(`/api/learn/capstone/artifacts?${params.toString()}`));
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Capstone list failed.');
       setCapstoneArtifacts(payload?.artifacts || []);
@@ -811,9 +831,9 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     if (capstoneReviewForm.passed === 'true') body.passed = true;
     if (capstoneReviewForm.passed === 'false') body.passed = false;
 
-    const response = await fetch(apiUrl(`/api/learn/capstone/${encodeURIComponent(artifactId)}/review`), {
+    const response = await actorFetch(apiUrl(`/api/learn/capstone/${encodeURIComponent(artifactId)}/review`), {
       method: 'POST',
-      headers: actorHeaders,
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
     const payload = await response.json();

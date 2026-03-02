@@ -35,6 +35,9 @@ app.get('/', (c) => {
       '/api/track',
       '/api/lead/submit',
       '/api/funnel/register',
+      '/api/funnel/payment/create-order',
+      '/api/funnel/payment/verify',
+      '/api/funnel/payment/razorpay/webhook',
       '/api/funnel/payment/success',
       '/api/analytics/funnel',
       '/api/admin/analytics/summary',
@@ -478,7 +481,7 @@ app.post('/api/funnel/register', async (c) => {
   }
 });
 
-app.post('/api/funnel/payment/success', async (c) => {
+app.post('/api/funnel/payment/create-order', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
   }
@@ -486,189 +489,345 @@ app.post('/api/funnel/payment/success', async (c) => {
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
     const payload = await c.req.json();
+    const leadId = clean(payload?.lead_id, 64);
+    const email = clean(payload?.email, 200).toLowerCase();
 
-    const configuredToken = clean(c.env.PAYMENT_WEBHOOK_TOKEN || '', 240);
-    const providedToken = clean(c.req.header('x-payment-token') || payload?.webhook_token, 240);
-    if (configuredToken && configuredToken !== providedToken) {
-      return c.json({ error: 'Unauthorized payment callback.' }, 401);
-    }
-
-    const leadIdInput = clean(payload?.lead_id, 64);
-    const emailInput = clean(payload?.email, 200).toLowerCase();
-    const fullNameInput = clean(payload?.full_name, 120);
-    const source = clean(payload?.source, 64) || 'payment';
-    const paymentRef = clean(payload?.payment_ref, 120) || `manual_${Date.now()}`;
-    const paymentProvider = clean(payload?.payment_provider, 64) || 'manual';
-    const amountCents = Number.isFinite(Number(payload?.amount_cents)) ? Number(payload.amount_cents) : 0;
-    const currency = clean(payload?.currency, 8).toUpperCase() || 'USD';
-    const paymentStatus = clean(payload?.payment_status, 24).toLowerCase() || 'paid';
-
-    if (!PAYMENT_STATUSES.has(paymentStatus)) {
-      return c.json({ error: 'Invalid payment_status.' }, 400);
-    }
-
-    if (!leadIdInput && !emailInput) {
+    if (!leadId && !email) {
       return c.json({ error: 'lead_id or email is required.' }, 400);
     }
 
-    let registration = null;
-    if (leadIdInput) {
-      registration = await c.env.DEEPLEARN_DB.prepare(
-        `SELECT
-           lead_id, full_name, email, phone, webinar_id, source, session_id, course_id, course_slug, cohort_id, user_id
-         FROM lead_registrations
-         WHERE lead_id = ?
-         LIMIT 1`
-      )
-        .bind(leadIdInput)
-        .first();
+    const registration = await findLeadRegistrationForPayment(c.env.DEEPLEARN_DB, {
+      leadId,
+      email,
+      razorpayOrderId: ''
+    });
+    if (!registration) {
+      return c.json({ error: 'Registration not found for payment order creation.' }, 404);
     }
-
-    if (!registration && emailInput) {
-      registration = await c.env.DEEPLEARN_DB.prepare(
-        `SELECT
-           lead_id, full_name, email, phone, webinar_id, source, session_id, course_id, course_slug, cohort_id, user_id
-         FROM lead_registrations
-         WHERE email = ?
-         ORDER BY updated_at_ms DESC
-         LIMIT 1`
-      )
-        .bind(emailInput)
-        .first();
-    }
-
-    const webinarId = clean(payload?.webinar_id, 64) || clean(registration?.webinar_id, 64) || 'deep-rag-live-webinar';
-    const sessionId = clean(payload?.session_id, 64) || clean(registration?.session_id, 64) || crypto.randomUUID();
-    const fullName = fullNameInput || clean(registration?.full_name, 120);
-    const email = emailInput || clean(registration?.email, 200).toLowerCase();
-    const phone = clean(payload?.phone, 24) || clean(registration?.phone, 24);
 
     const target = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
-      courseId: clean(payload?.course_id, 64) || clean(registration?.course_id, 64),
-      courseSlug: slugify(clean(payload?.course_slug, 120) || clean(registration?.course_slug, 120)),
-      cohortId: clean(payload?.cohort_id, 64) || clean(registration?.cohort_id, 64)
+      courseId: clean(payload?.course_id, 64) || clean(registration.course_id || '', 64),
+      courseSlug: slugify(clean(payload?.course_slug, 120) || clean(registration.course_slug || '', 120)),
+      cohortId: clean(payload?.cohort_id, 64) || clean(registration.cohort_id || '', 64)
     });
 
     if (!target.courseId) {
-      return c.json({ error: 'Unable to resolve course for payment activation.' }, 400);
+      return c.json({ error: 'Unable to resolve course for order creation.' }, 400);
     }
 
-    const identityHash = await sha256Hex(email || `${leadIdInput || registration?.lead_id || ''}_${paymentRef}`);
-    const userId = clean(payload?.user_id, 120) || clean(registration?.user_id, 120) || `learner_${identityHash.slice(0, 12)}`;
-    const displayName = fullName || email || userId;
+    const explicitAmount = Number(payload?.amount_cents);
+    const amountCents = Number.isFinite(explicitAmount) && explicitAmount > 0
+      ? Math.round(explicitAmount)
+      : await resolveEnrollmentAmountCents(c.env.DEEPLEARN_DB, {
+          courseId: target.courseId,
+          cohortId: target.cohortId
+        });
+    if (amountCents <= 0) {
+      return c.json({ error: 'Unable to resolve payable amount.' }, 400);
+    }
+
+    const currency = clean(payload?.currency, 8).toUpperCase() || clean(c.env.RAZORPAY_CURRENCY || '', 8).toUpperCase() || 'INR';
+    const keyId = clean(c.env.RAZORPAY_KEY_ID || '', 120);
+    const keySecret = clean(c.env.RAZORPAY_KEY_SECRET || '', 240);
+    const allowDemoPayments = isDemoPaymentsAllowed(c.env);
+
+    if (!keyId || !keySecret) {
+      if (!allowDemoPayments) {
+        return c.json({ error: 'Razorpay is not configured.' }, 503);
+      }
+
+      return c.json({
+        ok: true,
+        mode: 'demo',
+        lead_id: clean(registration.lead_id || leadId, 64),
+        order: {
+          id: `demo_order_${Date.now()}`,
+          amount_cents: amountCents,
+          currency,
+          status: 'created'
+        },
+        message: 'Razorpay credentials are missing. Demo payment mode is active.'
+      });
+    }
+
+    const receipt = `lead_${clean(registration.lead_id || leadId, 40) || Date.now()}`;
+    const razorpayOrder = await createRazorpayOrder({
+      keyId,
+      keySecret,
+      amountCents,
+      currency,
+      receipt,
+      notes: {
+        lead_id: clean(registration.lead_id || leadId, 64),
+        course_id: target.courseId,
+        course_slug: target.courseSlug,
+        cohort_id: target.cohortId,
+        email: clean(registration.email || email, 200),
+        user_id: clean(registration.user_id || '', 120)
+      }
+    });
+
+    const existingMetadata = parseJsonObjectOrDefault(registration.metadata_json, {});
+    const metadata = {
+      ...existingMetadata,
+      razorpay_order_id: clean(razorpayOrder.id || '', 120),
+      amount_cents: amountCents,
+      currency,
+      route: '/api/funnel/payment/create-order'
+    };
     const nowMs = Date.now();
 
-    if (paymentStatus === 'paid') {
-      await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role: 'learner' });
-      await upsertCourseEnrollment(c.env.DEEPLEARN_DB, {
-        courseId: target.courseId,
-        userId,
-        status: 'active',
-        progressPct: 0,
-        certificateUrl: '',
-        nowMs
-      });
-
-      if (target.cohortId) {
-        await upsertCohortEnrollment(c.env.DEEPLEARN_DB, {
-          cohortId: target.cohortId,
-          courseId: target.courseId,
-          userId,
-          status: 'enrolled',
-          nowMs
-        });
-        await ensureCohortBootstrapUnlock(c.env.DEEPLEARN_DB, target.cohortId, target.courseId, nowMs);
-      }
-    }
-
-    const effectiveLeadId = leadIdInput || clean(registration?.lead_id, 64) || crypto.randomUUID();
     await c.env.DEEPLEARN_DB.prepare(
-      `INSERT INTO lead_registrations (
-         lead_id, full_name, email, phone, webinar_id, source, session_id,
-         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref, payment_provider,
-         paid_at_ms, metadata_json, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(lead_id) DO UPDATE SET
-         full_name = excluded.full_name,
-         email = excluded.email,
-         phone = excluded.phone,
-         webinar_id = excluded.webinar_id,
-         source = excluded.source,
-         session_id = excluded.session_id,
-         course_id = excluded.course_id,
-         course_slug = excluded.course_slug,
-         cohort_id = excluded.cohort_id,
-         user_id = excluded.user_id,
-         payment_status = excluded.payment_status,
-         payment_ref = excluded.payment_ref,
-         payment_provider = excluded.payment_provider,
-         paid_at_ms = excluded.paid_at_ms,
-         metadata_json = excluded.metadata_json,
-         updated_at_ms = excluded.updated_at_ms`
+      `UPDATE lead_registrations
+       SET course_id = ?, course_slug = ?, cohort_id = ?, payment_provider = 'razorpay',
+           payment_ref = ?, metadata_json = ?, updated_at_ms = ?
+       WHERE lead_id = ?`
     )
       .bind(
-        effectiveLeadId,
-        fullName,
-        email,
-        phone,
-        webinarId,
-        source || clean(registration?.source, 64) || 'payment',
-        sessionId,
         target.courseId,
         target.courseSlug,
         target.cohortId,
-        userId,
-        paymentStatus,
-        paymentRef,
-        paymentProvider,
-        paymentStatus === 'paid' ? nowMs : null,
-        JSON.stringify({
-          amount_cents: amountCents,
-          currency,
-          route: '/api/funnel/payment/success'
-        }),
+        clean(razorpayOrder.id || '', 120),
+        JSON.stringify(metadata),
         nowMs,
-        nowMs
+        clean(registration.lead_id || leadId, 64)
       )
       .run();
 
-    if (paymentStatus === 'paid') {
-      await writeGrowthEvent(c.env, c.req.raw.cf, {
-        eventName: 'payment_completed',
-        webinarId,
-        source,
-        leadId: effectiveLeadId,
-        sessionId,
-        path: '/api/funnel/payment/success',
-        value: amountCents > 0 ? amountCents / 100 : 1,
-        emailHash: email ? await sha256Hex(email) : ''
-      });
-    }
-
     return c.json({
       ok: true,
-      lead_id: effectiveLeadId,
-      payment: {
-        status: paymentStatus,
-        payment_ref: paymentRef,
-        payment_provider: paymentProvider,
-        amount_cents: amountCents,
-        currency
+      mode: 'razorpay',
+      lead_id: clean(registration.lead_id || leadId, 64),
+      key_id: keyId,
+      order: {
+        id: clean(razorpayOrder.id || '', 120),
+        amount_cents: Number(razorpayOrder.amount || amountCents),
+        currency: clean(razorpayOrder.currency || currency, 8),
+        status: clean(razorpayOrder.status || 'created', 32),
+        receipt: clean(razorpayOrder.receipt || receipt, 80)
       },
-      enrollment: {
-        user_id: userId,
+      enrollment_target: {
         course_id: target.courseId,
         course_slug: target.courseSlug,
         course_title: target.courseTitle,
         cohort_id: target.cohortId
-      },
-      next_steps: {
-        learner_hub: '/learn',
-        access_endpoint: '/api/learn/access?user_id=<firebase_uid>',
-        assignment_submit_endpoint: '/api/learn/assignments/:moduleId/submit',
-        certificate_rule: 'Certificate issues automatically when course progress reaches 100%.'
       }
     });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create payment order.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/funnel/payment/verify', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json();
+    const orderId = clean(payload?.razorpay_order_id || payload?.order_id, 120);
+    const paymentId = clean(payload?.razorpay_payment_id || payload?.payment_id, 120);
+    const signature = clean(payload?.razorpay_signature || payload?.signature, 160);
+    const leadId = clean(payload?.lead_id, 64);
+    const email = clean(payload?.email, 200).toLowerCase();
+
+    if (!orderId || !paymentId || !signature) {
+      return c.json({ error: 'razorpay_order_id, razorpay_payment_id, and razorpay_signature are required.' }, 400);
+    }
+
+    const keyId = clean(c.env.RAZORPAY_KEY_ID || '', 120);
+    const keySecret = clean(c.env.RAZORPAY_KEY_SECRET || '', 240);
+    if (!keyId || !keySecret) {
+      return c.json({ error: 'Razorpay is not configured.' }, 503);
+    }
+
+    const expectedSignature = await computeRazorpayCheckoutSignature({
+      keySecret,
+      orderId,
+      paymentId
+    });
+    if (!safeStringEqual(expectedSignature, signature)) {
+      return c.json({ error: 'Invalid Razorpay signature.' }, 401);
+    }
+
+    const paymentEntity = await fetchRazorpayPaymentEntity({
+      keyId,
+      keySecret,
+      paymentId
+    });
+    if (clean(paymentEntity?.order_id || '', 120) !== orderId) {
+      return c.json({ error: 'Payment does not belong to provided order.' }, 400);
+    }
+
+    const statusMap = {
+      captured: 'paid',
+      authorized: 'paid',
+      failed: 'failed',
+      refunded: 'refunded'
+    };
+    const paymentStatus = statusMap[String(paymentEntity?.status || '').toLowerCase()] || 'registered';
+
+    const result = await activatePaymentRegistration(c, {
+      lead_id: leadId || clean(paymentEntity?.notes?.lead_id || '', 64),
+      email: email || clean(paymentEntity?.email || paymentEntity?.notes?.email || '', 200).toLowerCase(),
+      full_name: clean(payload?.full_name, 120),
+      phone: clean(payload?.phone || paymentEntity?.contact || '', 24),
+      source: 'razorpay-verify',
+      payment_ref: paymentId,
+      payment_provider: 'razorpay',
+      amount_cents: Number(paymentEntity?.amount || 0),
+      currency: clean(paymentEntity?.currency || '', 8).toUpperCase() || 'INR',
+      payment_status: paymentStatus,
+      course_id: clean(payload?.course_id, 64),
+      course_slug: clean(payload?.course_slug, 120),
+      cohort_id: clean(payload?.cohort_id, 64),
+      metadata: {
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId,
+        verify_mode: 'checkout_signature'
+      }
+    }, {
+      sourcePath: '/api/funnel/payment/verify'
+    });
+
+    return c.json({
+      ...result,
+      verify: {
+        order_id: orderId,
+        payment_id: paymentId,
+        signature_verified: true
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to verify Razorpay payment.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/funnel/payment/razorpay/webhook', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    const webhookSecret = clean(c.env.RAZORPAY_WEBHOOK_SECRET || '', 240);
+    if (!webhookSecret) {
+      return c.json({ error: 'Razorpay webhook secret is not configured.' }, 503);
+    }
+
+    const rawBody = await c.req.text();
+    const signature = clean(c.req.header('x-razorpay-signature') || '', 200);
+    if (!signature) {
+      return c.json({ error: 'Missing Razorpay signature.' }, 401);
+    }
+
+    const expected = await hmacSha256Hex(webhookSecret, rawBody);
+    if (!safeStringEqual(expected, signature)) {
+      return c.json({ error: 'Invalid webhook signature.' }, 401);
+    }
+
+    const payload = parseJsonObject(rawBody);
+    const event = clean(payload?.event, 80).toLowerCase();
+    const paymentEntity = payload?.payload?.payment?.entity || null;
+    const orderEntity = payload?.payload?.order?.entity || null;
+
+    const statusByEvent = {
+      'payment.captured': 'paid',
+      'payment.failed': 'failed',
+      'refund.processed': 'refunded',
+      'refund.created': 'refunded',
+      'order.paid': 'paid'
+    };
+    const mappedStatus = statusByEvent[event] || '';
+    if (!mappedStatus) {
+      return c.json({ ok: true, ignored: true, reason: 'event_not_handled', event });
+    }
+
+    const leadId = clean(paymentEntity?.notes?.lead_id || orderEntity?.notes?.lead_id || '', 64);
+    const email = clean(paymentEntity?.email || paymentEntity?.notes?.email || orderEntity?.notes?.email || '', 200).toLowerCase();
+    if (!leadId && !email) {
+      return c.json({ ok: true, ignored: true, reason: 'missing_lead_reference', event });
+    }
+
+    const paymentId = clean(paymentEntity?.id || orderEntity?.id || '', 120);
+    const orderId = clean(paymentEntity?.order_id || orderEntity?.id || '', 120);
+    const amountCents = Number(paymentEntity?.amount || orderEntity?.amount_paid || orderEntity?.amount || 0);
+    const currency = clean(paymentEntity?.currency || orderEntity?.currency || '', 8).toUpperCase() || 'INR';
+
+    const result = await activatePaymentRegistration(c, {
+      lead_id: leadId,
+      email,
+      full_name: clean(paymentEntity?.notes?.full_name || '', 120),
+      phone: clean(paymentEntity?.contact || paymentEntity?.notes?.phone || '', 24),
+      source: `razorpay-webhook:${event}`,
+      payment_ref: paymentId || orderId || `rzp_${Date.now()}`,
+      payment_provider: 'razorpay',
+      amount_cents: amountCents,
+      currency,
+      payment_status: mappedStatus,
+      course_id: clean(paymentEntity?.notes?.course_id || orderEntity?.notes?.course_id || '', 64),
+      course_slug: clean(paymentEntity?.notes?.course_slug || orderEntity?.notes?.course_slug || '', 120),
+      cohort_id: clean(paymentEntity?.notes?.cohort_id || orderEntity?.notes?.cohort_id || '', 64),
+      metadata: {
+        webhook_event: event,
+        razorpay_order_id: orderId,
+        razorpay_payment_id: paymentId
+      }
+    }, {
+      sourcePath: '/api/funnel/payment/razorpay/webhook'
+    });
+
+    return c.json({
+      ok: true,
+      event,
+      lead_id: result.lead_id,
+      payment: result.payment,
+      enrollment: result.enrollment
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to process Razorpay webhook.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/funnel/payment/success', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json();
+    const configuredToken = clean(c.env.PAYMENT_WEBHOOK_TOKEN || '', 240);
+    const providedToken = clean(c.req.header('x-payment-token') || payload?.webhook_token, 240);
+    const allowDemoPayments = isDemoPaymentsAllowed(c.env);
+
+    if (configuredToken && configuredToken !== providedToken) {
+      return c.json({ error: 'Unauthorized payment callback.' }, 401);
+    }
+    if (!configuredToken && !allowDemoPayments) {
+      return c.json({ error: 'Manual payment callback is disabled in production mode.' }, 403);
+    }
+
+    const result = await activatePaymentRegistration(c, payload, {
+      sourcePath: '/api/funnel/payment/success'
+    });
+    return c.json(result);
   } catch (error) {
     return c.json(
       {
@@ -3814,21 +3973,84 @@ function parseRoleHeader(value) {
     .filter(Boolean);
 }
 
+function normalizeRoleList(value) {
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeRole(entry)).filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map((entry) => normalizeRole(entry))
+      .filter(Boolean);
+  }
+
+  return [];
+}
+
+function parseBearerToken(authorizationHeader) {
+  const value = String(authorizationHeader || '').trim();
+  if (!value.toLowerCase().startsWith('bearer ')) return '';
+  return value.slice(7).trim();
+}
+
 function hasAnyRole(roles, allowedRoles) {
   const roleSet = new Set((roles || []).map((role) => normalizeRole(role)).filter(Boolean));
   return (allowedRoles || []).some((role) => roleSet.has(normalizeRole(role)));
 }
 
 async function resolveActorContext(c, { requireUser = false } = {}) {
+  const enforceFirebaseAuth = (c.env.ENFORCE_FIREBASE_AUTH || 'true').toLowerCase() !== 'false';
+  const allowUnverifiedRoleHeaders = (c.env.ALLOW_UNVERIFIED_ROLE_HEADERS || 'false').toLowerCase() === 'true';
   const configuredAdminToken = clean(c.env.ADMIN_API_TOKEN || '', 200);
   const requestAdminToken = clean(c.req.header('x-admin-token') || '', 200);
   const isAdmin = Boolean(configuredAdminToken && requestAdminToken && requestAdminToken === configuredAdminToken);
-  const userId = clean(c.req.header('x-user-id') || c.req.header('x-actor-id') || c.req.header('x-firebase-uid') || '', 120);
-  const roles = new Set([
-    ...parseRoleHeader(c.req.header('x-user-roles')),
-    ...parseRoleHeader(c.req.header('x-user-role')),
-    ...parseRoleHeader(c.req.header('x-actor-roles'))
-  ]);
+  const headerUserId = clean(c.req.header('x-user-id') || c.req.header('x-actor-id') || c.req.header('x-firebase-uid') || '', 120);
+  const tokenFromHeader = clean(
+    parseBearerToken(c.req.header('authorization') || c.req.header('Authorization') || '') ||
+      c.req.header('x-firebase-id-token') ||
+      '',
+    4096
+  );
+  const tokenVerification = tokenFromHeader
+    ? await verifyFirebaseIdentityToken(c.env, tokenFromHeader)
+    : { ok: false, userId: '', roles: [], email: '', error: '' };
+
+  if (tokenFromHeader && !tokenVerification.ok && !isAdmin && enforceFirebaseAuth) {
+    return {
+      userId: '',
+      roles: [],
+      isAdmin,
+      verified: false,
+      error: c.json({ error: 'Invalid Firebase session token.' }, 401)
+    };
+  }
+
+  if (tokenVerification.ok && headerUserId && tokenVerification.userId !== headerUserId) {
+    return {
+      userId: '',
+      roles: [],
+      isAdmin,
+      verified: false,
+      error: c.json({ error: 'Actor user mismatch for verified token.' }, 401)
+    };
+  }
+
+  const userId = tokenVerification.userId || headerUserId;
+  const roles = new Set();
+  for (const role of tokenVerification.roles || []) {
+    roles.add(normalizeRole(role));
+  }
+
+  if (!tokenVerification.ok && allowUnverifiedRoleHeaders) {
+    for (const role of [
+      ...parseRoleHeader(c.req.header('x-user-roles')),
+      ...parseRoleHeader(c.req.header('x-user-role')),
+      ...parseRoleHeader(c.req.header('x-actor-roles'))
+    ]) {
+      roles.add(role);
+    }
+  }
 
   if (isAdmin) {
     roles.add('coordinator');
@@ -3861,7 +4083,18 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
       userId: '',
       roles: [],
       isAdmin,
+      verified: false,
       error: c.json({ error: 'Missing actor identity. Pass x-user-id header or valid admin token.' }, 401)
+    };
+  }
+
+  if (requireUser && !isAdmin && enforceFirebaseAuth && !tokenVerification.ok) {
+    return {
+      userId: '',
+      roles: [],
+      isAdmin,
+      verified: false,
+      error: c.json({ error: 'Firebase auth token is required.' }, 401)
     };
   }
 
@@ -3869,8 +4102,56 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
     userId,
     roles: Array.from(roles),
     isAdmin,
+    verified: tokenVerification.ok,
     error: null
   };
+}
+
+async function verifyFirebaseIdentityToken(env, idToken) {
+  const apiKey =
+    clean(env.FIREBASE_WEB_API_KEY || '', 240) ||
+    clean(env.PUBLIC_FIREBASE_API_KEY || '', 240) ||
+    'AIzaSyCoyn0qBxi3LrVivIWveX_bN79XAHXglQ8';
+
+  if (!apiKey) {
+    return { ok: false, userId: '', roles: [], email: '', error: 'missing_firebase_api_key' };
+  }
+
+  try {
+    const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idToken })
+    });
+
+    if (!response.ok) {
+      return { ok: false, userId: '', roles: [], email: '', error: `lookup_failed_${response.status}` };
+    }
+
+    const payload = await response.json();
+    const user = Array.isArray(payload?.users) ? payload.users[0] : null;
+    const userId = clean(user?.localId || '', 120);
+    if (!userId) {
+      return { ok: false, userId: '', roles: [], email: '', error: 'missing_local_id' };
+    }
+
+    const customClaims = parseJsonObjectOrDefault(user?.customAttributes || '{}', {});
+    const roles = new Set();
+    roles.add(normalizeRole(customClaims?.role));
+    for (const role of normalizeRoleList(customClaims?.roles)) {
+      roles.add(role);
+    }
+
+    return {
+      ok: true,
+      userId,
+      roles: Array.from(roles).filter(Boolean),
+      email: clean(user?.email || '', 200),
+      error: ''
+    };
+  } catch {
+    return { ok: false, userId: '', roles: [], email: '', error: 'lookup_exception' };
+  }
 }
 
 function assertActorCanAccessUser(actor, targetUserId, { allowPrivileged = false } = {}) {
@@ -4049,6 +4330,335 @@ async function verifyTurnstile({ secret, token, remoteIp }) {
   return {
     success: Boolean(result?.success),
     errorCodes: result?.['error-codes'] || []
+  };
+}
+
+function isDemoPaymentsAllowed(env) {
+  return (env.ALLOW_DEMO_PAYMENTS || 'true').toLowerCase() !== 'false';
+}
+
+async function findLeadRegistrationForPayment(db, { leadId, email, razorpayOrderId }) {
+  const cleanLeadId = clean(leadId || '', 64);
+  const cleanEmail = clean((email || '').toLowerCase(), 200);
+  const cleanOrderId = clean(razorpayOrderId || '', 120);
+
+  if (cleanLeadId) {
+    const row = await db.prepare(
+      `SELECT
+         lead_id, full_name, email, phone, webinar_id, source, session_id,
+         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref, payment_provider,
+         paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+       FROM lead_registrations
+       WHERE lead_id = ?
+       LIMIT 1`
+    )
+      .bind(cleanLeadId)
+      .first();
+    if (row) return row;
+  }
+
+  if (cleanEmail) {
+    const row = await db.prepare(
+      `SELECT
+         lead_id, full_name, email, phone, webinar_id, source, session_id,
+         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref, payment_provider,
+         paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+       FROM lead_registrations
+       WHERE email = ?
+       ORDER BY updated_at_ms DESC
+       LIMIT 1`
+    )
+      .bind(cleanEmail)
+      .first();
+    if (row) return row;
+  }
+
+  if (cleanOrderId) {
+    const row = await db.prepare(
+      `SELECT
+         lead_id, full_name, email, phone, webinar_id, source, session_id,
+         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref, payment_provider,
+         paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+       FROM lead_registrations
+       WHERE payment_ref = ?
+          OR json_extract(metadata_json, '$.razorpay_order_id') = ?
+       ORDER BY updated_at_ms DESC
+       LIMIT 1`
+    )
+      .bind(cleanOrderId, cleanOrderId)
+      .first();
+    if (row) return row;
+  }
+
+  return null;
+}
+
+async function resolveEnrollmentAmountCents(db, { courseId, cohortId }) {
+  const cleanCohortId = clean(cohortId || '', 64);
+  if (cleanCohortId) {
+    const cohortRow = await db.prepare('SELECT fee_cents FROM cohorts WHERE id = ? LIMIT 1').bind(cleanCohortId).first();
+    const cohortFee = Number(cohortRow?.fee_cents || 0);
+    if (Number.isFinite(cohortFee) && cohortFee > 0) {
+      return Math.round(cohortFee);
+    }
+  }
+
+  const cleanCourseId = clean(courseId || '', 64);
+  if (cleanCourseId) {
+    const courseRow = await db.prepare('SELECT price_cents FROM courses WHERE id = ? LIMIT 1').bind(cleanCourseId).first();
+    const price = Number(courseRow?.price_cents || 0);
+    if (Number.isFinite(price) && price > 0) {
+      return Math.round(price);
+    }
+  }
+
+  return 0;
+}
+
+function buildRazorpayAuthHeader({ keyId, keySecret }) {
+  return `Basic ${btoa(`${keyId}:${keySecret}`)}`;
+}
+
+async function createRazorpayOrder({ keyId, keySecret, amountCents, currency, receipt, notes }) {
+  const response = await fetch('https://api.razorpay.com/v1/orders', {
+    method: 'POST',
+    headers: {
+      Authorization: buildRazorpayAuthHeader({ keyId, keySecret }),
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      amount: amountCents,
+      currency,
+      receipt,
+      notes
+    })
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Razorpay order creation failed: ${clean(details, 220) || response.status}`);
+  }
+
+  return response.json();
+}
+
+async function fetchRazorpayPaymentEntity({ keyId, keySecret, paymentId }) {
+  const response = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+    headers: {
+      Authorization: buildRazorpayAuthHeader({ keyId, keySecret })
+    }
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Unable to fetch Razorpay payment entity: ${clean(details, 220) || response.status}`);
+  }
+
+  return response.json();
+}
+
+async function hmacSha256Hex(secret, message) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
+  return [...new Uint8Array(signature)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function safeStringEqual(left, right) {
+  const a = String(left || '');
+  const b = String(right || '');
+  if (a.length !== b.length) return false;
+  let mismatch = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    mismatch |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return mismatch === 0;
+}
+
+async function computeRazorpayCheckoutSignature({ keySecret, orderId, paymentId }) {
+  return hmacSha256Hex(keySecret, `${orderId}|${paymentId}`);
+}
+
+async function activatePaymentRegistration(c, payload, { sourcePath }) {
+  await ensureOpsSchema(c.env.DEEPLEARN_DB);
+
+  const leadIdInput = clean(payload?.lead_id, 64);
+  const emailInput = clean(payload?.email, 200).toLowerCase();
+  const fullNameInput = clean(payload?.full_name, 120);
+  const source = clean(payload?.source, 64) || 'payment';
+  const paymentRef = clean(payload?.payment_ref, 120) || `manual_${Date.now()}`;
+  const paymentProvider = clean(payload?.payment_provider, 64) || 'manual';
+  const amountCents = Number.isFinite(Number(payload?.amount_cents)) ? Number(payload.amount_cents) : 0;
+  const currency = clean(payload?.currency, 8).toUpperCase() || 'USD';
+  const paymentStatus = clean(payload?.payment_status, 24).toLowerCase() || 'paid';
+  const metadataPatch =
+    payload?.metadata && typeof payload.metadata === 'object' && !Array.isArray(payload.metadata) ? payload.metadata : {};
+  const razorpayOrderId = clean(payload?.razorpay_order_id || payload?.order_id || metadataPatch?.razorpay_order_id, 120);
+
+  if (!PAYMENT_STATUSES.has(paymentStatus)) {
+    throw new Error('Invalid payment_status.');
+  }
+  if (!leadIdInput && !emailInput && !razorpayOrderId) {
+    throw new Error('lead_id or email is required.');
+  }
+
+  const registration = await findLeadRegistrationForPayment(c.env.DEEPLEARN_DB, {
+    leadId: leadIdInput,
+    email: emailInput,
+    razorpayOrderId
+  });
+
+  const webinarId = clean(payload?.webinar_id, 64) || clean(registration?.webinar_id || '', 64) || 'deep-rag-live-webinar';
+  const sessionId = clean(payload?.session_id, 64) || clean(registration?.session_id || '', 64) || crypto.randomUUID();
+  const fullName = fullNameInput || clean(registration?.full_name || '', 120);
+  const email = emailInput || clean(registration?.email || '', 200).toLowerCase();
+  const phone = clean(payload?.phone, 24) || clean(registration?.phone || '', 24);
+
+  const target = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
+    courseId: clean(payload?.course_id, 64) || clean(registration?.course_id || '', 64),
+    courseSlug: slugify(clean(payload?.course_slug, 120) || clean(registration?.course_slug || '', 120)),
+    cohortId: clean(payload?.cohort_id, 64) || clean(registration?.cohort_id || '', 64)
+  });
+
+  if (!target.courseId) {
+    throw new Error('Unable to resolve course for payment activation.');
+  }
+
+  const identityHash = await sha256Hex(email || `${leadIdInput || registration?.lead_id || ''}_${paymentRef}`);
+  const userId = clean(payload?.user_id, 120) || clean(registration?.user_id || '', 120) || `learner_${identityHash.slice(0, 12)}`;
+  const displayName = fullName || email || userId;
+  const nowMs = Date.now();
+
+  if (paymentStatus === 'paid') {
+    await upsertPlatformUser(c.env.DEEPLEARN_DB, { userId, email, displayName, role: 'learner' });
+    await upsertCourseEnrollment(c.env.DEEPLEARN_DB, {
+      courseId: target.courseId,
+      userId,
+      status: 'active',
+      progressPct: 0,
+      certificateUrl: '',
+      nowMs
+    });
+
+    if (target.cohortId) {
+      await upsertCohortEnrollment(c.env.DEEPLEARN_DB, {
+        cohortId: target.cohortId,
+        courseId: target.courseId,
+        userId,
+        status: 'enrolled',
+        nowMs
+      });
+      await ensureCohortBootstrapUnlock(c.env.DEEPLEARN_DB, target.cohortId, target.courseId, nowMs);
+    }
+  }
+
+  const effectiveLeadId = leadIdInput || clean(registration?.lead_id || '', 64) || crypto.randomUUID();
+  const existingMetadata = parseJsonObjectOrDefault(registration?.metadata_json, {});
+  const metadata = {
+    ...existingMetadata,
+    ...metadataPatch,
+    amount_cents: amountCents,
+    currency,
+    route: sourcePath || '/api/funnel/payment/success'
+  };
+  if (razorpayOrderId) {
+    metadata.razorpay_order_id = razorpayOrderId;
+  }
+
+  await c.env.DEEPLEARN_DB.prepare(
+    `INSERT INTO lead_registrations (
+       lead_id, full_name, email, phone, webinar_id, source, session_id,
+       course_id, course_slug, cohort_id, user_id, payment_status, payment_ref, payment_provider,
+       paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(lead_id) DO UPDATE SET
+       full_name = excluded.full_name,
+       email = excluded.email,
+       phone = excluded.phone,
+       webinar_id = excluded.webinar_id,
+       source = excluded.source,
+       session_id = excluded.session_id,
+       course_id = excluded.course_id,
+       course_slug = excluded.course_slug,
+       cohort_id = excluded.cohort_id,
+       user_id = excluded.user_id,
+       payment_status = CASE
+         WHEN lead_registrations.payment_status = 'paid' AND excluded.payment_status <> 'paid'
+           THEN lead_registrations.payment_status
+         ELSE excluded.payment_status
+       END,
+       payment_ref = excluded.payment_ref,
+       payment_provider = excluded.payment_provider,
+       paid_at_ms = CASE
+         WHEN excluded.payment_status = 'paid' THEN excluded.paid_at_ms
+         ELSE lead_registrations.paid_at_ms
+       END,
+       metadata_json = excluded.metadata_json,
+       updated_at_ms = excluded.updated_at_ms`
+  )
+    .bind(
+      effectiveLeadId,
+      fullName,
+      email,
+      phone,
+      webinarId,
+      source || clean(registration?.source || '', 64) || 'payment',
+      sessionId,
+      target.courseId,
+      target.courseSlug,
+      target.cohortId,
+      userId,
+      paymentStatus,
+      paymentRef,
+      paymentProvider,
+      paymentStatus === 'paid' ? nowMs : null,
+      JSON.stringify(metadata),
+      Number(registration?.created_at_ms || nowMs),
+      nowMs
+    )
+    .run();
+
+  if (paymentStatus === 'paid') {
+    await writeGrowthEvent(c.env, c.req.raw.cf, {
+      eventName: 'payment_completed',
+      webinarId,
+      source,
+      leadId: effectiveLeadId,
+      sessionId,
+      path: sourcePath || '/api/funnel/payment/success',
+      value: amountCents > 0 ? amountCents / 100 : 1,
+      emailHash: email ? await sha256Hex(email) : ''
+    });
+  }
+
+  return {
+    ok: true,
+    lead_id: effectiveLeadId,
+    payment: {
+      status: paymentStatus,
+      payment_ref: paymentRef,
+      payment_provider: paymentProvider,
+      amount_cents: amountCents,
+      currency
+    },
+    enrollment: {
+      user_id: userId,
+      course_id: target.courseId,
+      course_slug: target.courseSlug,
+      course_title: target.courseTitle,
+      cohort_id: target.cohortId
+    },
+    next_steps: {
+      learner_hub: '/learn',
+      access_endpoint: '/api/learn/access?user_id=<firebase_uid>',
+      assignment_submit_endpoint: '/api/learn/assignments/:moduleId/submit',
+      certificate_rule: 'Certificate issues automatically when course progress reaches 100%.'
+    }
   };
 }
 

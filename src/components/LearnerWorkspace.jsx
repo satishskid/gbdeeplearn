@@ -2,11 +2,36 @@ import { useState } from 'react';
 import AuthRoleGate from './AuthRoleGate';
 import { apiUrl } from '../lib/api';
 
-function actorHeaders(user, roles) {
-  return {
+async function actorHeaders(user, roles) {
+  const headers = {
     'x-user-id': user?.uid || '',
     'x-user-roles': Array.isArray(roles) ? roles.join(',') : ''
   };
+
+  if (user?.getIdToken) {
+    try {
+      const idToken = await user.getIdToken();
+      if (idToken) {
+        headers.Authorization = `Bearer ${idToken}`;
+        headers['x-firebase-id-token'] = idToken;
+      }
+    } catch {
+      // Allow caller to fail with server auth error if token fetch fails.
+    }
+  }
+
+  return headers;
+}
+
+async function actorFetch(user, roles, input, init = {}) {
+  const identityHeaders = await actorHeaders(user, roles);
+  return fetch(input, {
+    ...init,
+    headers: {
+      ...identityHeaders,
+      ...(init.headers || {})
+    }
+  });
 }
 
 function hasAnyRole(roles, allowedRoles) {
@@ -84,7 +109,6 @@ export default function LearnerWorkspace() {
       unauthorizedMessage="This page requires learner enrollment or teaching/coordinator privileges."
     >
       {({ user, roles, onSignOut }) => {
-        const headers = actorHeaders(user, roles);
         const canReviewCapstones = hasAnyRole(roles, ['teacher', 'coordinator', 'cto']);
         const targetLearnerId = (labForm.userId || capstoneForm.userId || '').trim() || user.uid;
 
@@ -102,7 +126,7 @@ export default function LearnerWorkspace() {
               params.set('user_id', user.uid);
             }
 
-            const response = await fetch(apiUrl(`/api/learn/capstone/artifacts?${params.toString()}`), { headers });
+            const response = await actorFetch(user, roles, apiUrl(`/api/learn/capstone/artifacts?${params.toString()}`));
             const payload = await response.json();
             if (!response.ok) throw new Error(payload?.error || 'Failed to load capstones.');
             setCapstoneArtifacts(payload?.artifacts || []);
@@ -162,9 +186,7 @@ export default function LearnerWorkspace() {
                     setLoadingAccess(true);
                     setError('');
                     try {
-                      const response = await fetch(apiUrl(`/api/learn/access?user_id=${encodeURIComponent(user.uid)}`), {
-                        headers
-                      });
+                      const response = await actorFetch(user, roles, apiUrl(`/api/learn/access?user_id=${encodeURIComponent(user.uid)}`));
                       const payload = await response.json();
                       if (!response.ok) throw new Error(payload?.error || 'Failed to load learner access.');
                       const items = payload?.access || [];
@@ -279,11 +301,14 @@ export default function LearnerWorkspace() {
                     setError('');
                     setNotice('');
                     try {
-                      const response = await fetch(apiUrl(`/api/learn/modules/${encodeURIComponent(statusForm.moduleId)}/progress`), {
+                      const response = await actorFetch(
+                        user,
+                        roles,
+                        apiUrl(`/api/learn/modules/${encodeURIComponent(statusForm.moduleId)}/progress`),
+                        {
                         method: 'POST',
                         headers: {
-                          'Content-Type': 'application/json',
-                          ...headers
+                          'Content-Type': 'application/json'
                         },
                         body: JSON.stringify({
                           user_id: user.uid,
@@ -292,7 +317,8 @@ export default function LearnerWorkspace() {
                           status: statusForm.status,
                           score: statusForm.score
                         })
-                      });
+                        }
+                      );
                       const payload = await response.json();
                       if (!response.ok) throw new Error(payload?.error || 'Failed to update progress.');
                       setNotice(`Progress updated: ${payload?.progress?.status || 'ok'}`);
@@ -335,13 +361,14 @@ export default function LearnerWorkspace() {
                       setError('');
                       setNotice('');
                       try {
-                        const response = await fetch(
+                        const response = await actorFetch(
+                          user,
+                          roles,
                           apiUrl(`/api/learn/assignments/${encodeURIComponent(assignmentForm.moduleId)}/submit`),
                           {
                             method: 'POST',
                             headers: {
-                              'Content-Type': 'application/json',
-                              ...headers
+                              'Content-Type': 'application/json'
                             },
                             body: JSON.stringify({
                               user_id: user.uid,
@@ -372,14 +399,18 @@ export default function LearnerWorkspace() {
                       setError('');
                       setNotice('');
                       try {
-                        const response = await fetch(apiUrl(`/api/learn/assignments/${encodeURIComponent(submissionId)}/grade`), {
+                        const response = await actorFetch(
+                          user,
+                          roles,
+                          apiUrl(`/api/learn/assignments/${encodeURIComponent(submissionId)}/grade`),
+                          {
                           method: 'POST',
                           headers: {
-                            'Content-Type': 'application/json',
-                            ...headers
+                            'Content-Type': 'application/json'
                           },
                           body: JSON.stringify({})
-                        });
+                          }
+                        );
                         const payload = await response.json();
                         if (!response.ok) throw new Error(payload?.error || 'Failed to grade assignment.');
                         setNotice(
@@ -464,11 +495,10 @@ export default function LearnerWorkspace() {
                       setError('');
                       setNotice('');
                       try {
-                        const response = await fetch(apiUrl('/api/lab/run'), {
+                        const response = await actorFetch(user, roles, apiUrl('/api/lab/run'), {
                           method: 'POST',
                           headers: {
-                            'Content-Type': 'application/json',
-                            ...headers
+                            'Content-Type': 'application/json'
                           },
                           body: JSON.stringify({
                             user_id: targetLearnerId,
@@ -506,7 +536,7 @@ export default function LearnerWorkspace() {
                         if (labForm.courseId.trim()) params.set('course_id', labForm.courseId.trim());
                         if (labForm.moduleId.trim()) params.set('module_id', labForm.moduleId.trim());
                         if (labForm.pathKey.trim()) params.set('path_key', labForm.pathKey.trim());
-                        const response = await fetch(apiUrl(`/api/lab/runs?${params.toString()}`), { headers });
+                        const response = await actorFetch(user, roles, apiUrl(`/api/lab/runs?${params.toString()}`));
                         const payload = await response.json();
                         if (!response.ok) throw new Error(payload?.error || 'Failed to load lab runs.');
                         setLabRuns(payload?.runs || []);
@@ -615,11 +645,10 @@ export default function LearnerWorkspace() {
                       setError('');
                       setNotice('');
                       try {
-                        const response = await fetch(apiUrl('/api/learn/capstone/submit'), {
+                        const response = await actorFetch(user, roles, apiUrl('/api/learn/capstone/submit'), {
                           method: 'POST',
                           headers: {
-                            'Content-Type': 'application/json',
-                            ...headers
+                            'Content-Type': 'application/json'
                           },
                           body: JSON.stringify({
                             user_id: targetLearnerId,
@@ -816,13 +845,14 @@ export default function LearnerWorkspace() {
                           if (reviewForm.passed === 'true') body.passed = true;
                           if (reviewForm.passed === 'false') body.passed = false;
 
-                          const response = await fetch(
+                          const response = await actorFetch(
+                            user,
+                            roles,
                             apiUrl(`/api/learn/capstone/${encodeURIComponent(reviewForm.artifactId.trim())}/review`),
                             {
                               method: 'POST',
                               headers: {
-                                'Content-Type': 'application/json',
-                                ...headers
+                                'Content-Type': 'application/json'
                               },
                               body: JSON.stringify(body)
                             }

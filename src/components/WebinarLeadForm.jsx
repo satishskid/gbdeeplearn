@@ -3,6 +3,8 @@ import { apiUrl } from '../lib/api';
 
 const TRACK_ENDPOINT = apiUrl('/api/track');
 const REGISTER_ENDPOINT = apiUrl('/api/funnel/register');
+const PAYMENT_ORDER_ENDPOINT = apiUrl('/api/funnel/payment/create-order');
+const PAYMENT_VERIFY_ENDPOINT = apiUrl('/api/funnel/payment/verify');
 const PAYMENT_SUCCESS_ENDPOINT = apiUrl('/api/funnel/payment/success');
 const DEFAULT_WEBINAR_ID = 'deep-rag-live-webinar';
 const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
@@ -71,6 +73,34 @@ function ensureTurnstileScript() {
     script.dataset.turnstile = 'true';
     script.onload = () => resolve();
     script.onerror = () => reject(new Error('Turnstile script failed to load.'));
+    document.head.appendChild(script);
+  });
+}
+
+function ensureRazorpayScript() {
+  if (typeof window === 'undefined') {
+    return Promise.resolve();
+  }
+
+  if (window.Razorpay) {
+    return Promise.resolve();
+  }
+
+  const existing = document.querySelector('script[data-razorpay="true"]');
+  if (existing) {
+    return new Promise((resolve) => {
+      existing.addEventListener('load', () => resolve(), { once: true });
+    });
+  }
+
+  return new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js';
+    script.async = true;
+    script.defer = true;
+    script.dataset.razorpay = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Razorpay script failed to load.'));
     document.head.appendChild(script);
   });
 }
@@ -221,7 +251,7 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
     setIsActivating(true);
     setMessage('');
     try {
-      const response = await fetch(PAYMENT_SUCCESS_ENDPOINT, {
+      const orderResponse = await fetch(PAYMENT_ORDER_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -229,20 +259,90 @@ export default function WebinarLeadForm({ siteKey = TURNSTILE_TEST_SITE_KEY }) {
           course_slug: selectedCourseSlug,
           email,
           full_name: fullName,
-          payment_provider: 'demo',
-          payment_ref: `demo_${Date.now()}`,
-          amount_cents: 100,
-          currency: 'USD',
-          source: 'landing-demo',
-          payment_status: 'paid'
+          source: 'landing'
         })
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data?.error || 'Payment activation failed.');
+      const orderData = await orderResponse.json();
+      if (!orderResponse.ok) {
+        throw new Error(orderData?.error || 'Unable to create payment order.');
       }
 
-      setActivation(data?.enrollment || null);
+      if (orderData?.mode === 'demo') {
+        const demoResponse = await fetch(PAYMENT_SUCCESS_ENDPOINT, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            lead_id: leadId,
+            course_slug: selectedCourseSlug,
+            email,
+            full_name: fullName,
+            payment_provider: 'demo',
+            payment_ref: `demo_${Date.now()}`,
+            amount_cents: Number(orderData?.order?.amount_cents || 100),
+            currency: orderData?.order?.currency || 'INR',
+            source: 'landing-demo',
+            payment_status: 'paid'
+          })
+        });
+        const demoData = await demoResponse.json();
+        if (!demoResponse.ok) {
+          throw new Error(demoData?.error || 'Demo payment activation failed.');
+        }
+        setActivation(demoData?.enrollment || null);
+        setStatus('success');
+        setMessage('Demo payment confirmed. Learner access is active.');
+        await postEvent(WEBINAR_EVENTS.paymentComplete, { lead_id: leadId });
+        return;
+      }
+
+      await ensureRazorpayScript();
+      if (!window.Razorpay) {
+        throw new Error('Razorpay checkout is unavailable. Please refresh and try again.');
+      }
+
+      const checkoutPayload = await new Promise((resolve, reject) => {
+        const razorpay = new window.Razorpay({
+          key: orderData?.key_id,
+          order_id: orderData?.order?.id,
+          amount: orderData?.order?.amount_cents,
+          currency: orderData?.order?.currency || 'INR',
+          name: 'GreyBrain Academy',
+          description: orderData?.enrollment_target?.course_title || 'Course Enrollment',
+          prefill: {
+            name: fullName,
+            email,
+            contact: phone
+          },
+          notes: {
+            lead_id: leadId,
+            course_slug: selectedCourseSlug
+          },
+          handler: (response) => resolve(response),
+          modal: {
+            ondismiss: () => reject(new Error('Payment was cancelled.'))
+          }
+        });
+        razorpay.open();
+      });
+
+      const verifyResponse = await fetch(PAYMENT_VERIFY_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lead_id: leadId,
+          email,
+          course_slug: selectedCourseSlug,
+          razorpay_order_id: checkoutPayload?.razorpay_order_id,
+          razorpay_payment_id: checkoutPayload?.razorpay_payment_id,
+          razorpay_signature: checkoutPayload?.razorpay_signature
+        })
+      });
+      const verifyData = await verifyResponse.json();
+      if (!verifyResponse.ok) {
+        throw new Error(verifyData?.error || 'Payment verification failed.');
+      }
+
+      setActivation(verifyData?.enrollment || null);
       setStatus('success');
       setMessage('Payment confirmed. Learner access is now active.');
       await postEvent(WEBINAR_EVENTS.paymentComplete, { lead_id: leadId });
