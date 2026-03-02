@@ -37,11 +37,21 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [loading, setLoading] = useState(false);
   const [loadingLabRuns, setLoadingLabRuns] = useState(false);
   const [loadingCapstones, setLoadingCapstones] = useState(false);
+  const [loadingLabTrends, setLoadingLabTrends] = useState(false);
+  const [loadingCapstoneTrends, setLoadingCapstoneTrends] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [coordinatorView, setCoordinatorView] = useState('operations');
   const [labRuns, setLabRuns] = useState([]);
   const [capstoneArtifacts, setCapstoneArtifacts] = useState([]);
+  const [labTrendSeries, setLabTrendSeries] = useState([]);
+  const [capstoneTrendSeries, setCapstoneTrendSeries] = useState({
+    submitted: [],
+    reviewed: [],
+    accepted: []
+  });
+  const [labTrendDays, setLabTrendDays] = useState('30');
+  const [capstoneTrendDays, setCapstoneTrendDays] = useState('30');
 
   const [courseForm, setCourseForm] = useState({
     title: '',
@@ -633,6 +643,52 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     });
   };
 
+  const loadLabTrends = async () => {
+    setLoadingLabTrends(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('days', String(Math.max(1, Math.min(90, Number(labTrendDays || 30)))));
+      if (labOpsForm.courseId.trim()) params.set('course_id', labOpsForm.courseId.trim());
+      if (labOpsForm.pathKey.trim()) params.set('path_key', labOpsForm.pathKey.trim());
+      if (labOpsForm.targetUserId.trim()) params.set('user_id', labOpsForm.targetUserId.trim());
+
+      const response = await fetch(apiUrl(`/api/admin/analytics/learning-trends?${params.toString()}`), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Lab trend load failed.');
+      setLabTrendSeries(payload?.lab_runs || []);
+      return `Lab trends loaded (${payload?.days || labTrendDays}d).`;
+    } finally {
+      setLoadingLabTrends(false);
+    }
+  };
+
+  const loadCapstoneTrends = async () => {
+    setLoadingCapstoneTrends(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('days', String(Math.max(1, Math.min(90, Number(capstoneTrendDays || 30)))));
+      if (capstoneFilter.courseId.trim()) params.set('course_id', capstoneFilter.courseId.trim());
+      if (capstoneFilter.userId.trim()) params.set('user_id', capstoneFilter.userId.trim());
+      if (capstoneFilter.status.trim()) params.set('status', capstoneFilter.status.trim());
+
+      const response = await fetch(apiUrl(`/api/admin/analytics/learning-trends?${params.toString()}`), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Capstone trend load failed.');
+      setCapstoneTrendSeries({
+        submitted: payload?.capstones_submitted || [],
+        reviewed: payload?.capstones_reviewed || [],
+        accepted: payload?.capstones_accepted || []
+      });
+      return `Capstone trends loaded (${payload?.days || capstoneTrendDays}d).`;
+    } finally {
+      setLoadingCapstoneTrends(false);
+    }
+  };
+
   const generateDailyBrief = async () => {
     const response = await fetch(apiUrl('/api/admin/content/generate-daily'), {
       method: 'POST',
@@ -712,6 +768,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Lab runs load failed.');
       setLabRuns(payload?.runs || []);
+      await loadLabTrends();
       return 'Lab runs loaded.';
     } finally {
       setLoadingLabRuns(false);
@@ -733,6 +790,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Capstone list failed.');
       setCapstoneArtifacts(payload?.artifacts || []);
+      await loadCapstoneTrends();
       return 'Capstone artifacts loaded.';
     } finally {
       setLoadingCapstones(false);
@@ -822,6 +880,37 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       acceptanceRatePct
     };
   }, [capstoneArtifacts]);
+
+  const labTrendMetrics = useMemo(() => {
+    const runPoints = labTrendSeries.map((point) => Number(point.count || 0));
+    const latencyPoints = labTrendSeries.map((point) => Number(point.avg_latency_ms || 0));
+    const learnerPoints = labTrendSeries.map((point) => Number(point.unique_learners || 0));
+    return {
+      runPoints,
+      latencyPoints,
+      learnerPoints,
+      totalRuns: runPoints.reduce((sum, value) => sum + value, 0),
+      totalLearnerTouches: learnerPoints.reduce((sum, value) => sum + value, 0)
+    };
+  }, [labTrendSeries]);
+
+  const capstoneTrendMetrics = useMemo(() => {
+    const submittedPoints = (capstoneTrendSeries.submitted || []).map((point) => Number(point.count || 0));
+    const reviewedPoints = (capstoneTrendSeries.reviewed || []).map((point) => Number(point.count || 0));
+    const acceptedPoints = (capstoneTrendSeries.accepted || []).map((point) => Number(point.count || 0));
+    const submittedTotal = submittedPoints.reduce((sum, value) => sum + value, 0);
+    const reviewedTotal = reviewedPoints.reduce((sum, value) => sum + value, 0);
+    const acceptedTotal = acceptedPoints.reduce((sum, value) => sum + value, 0);
+    return {
+      submittedPoints,
+      reviewedPoints,
+      acceptedPoints,
+      submittedTotal,
+      reviewedTotal,
+      acceptedTotal,
+      acceptanceRatePct: submittedTotal > 0 ? Number(((acceptedTotal / submittedTotal) * 100).toFixed(1)) : 0
+    };
+  }, [capstoneTrendSeries]);
 
   return (
     <section className="rounded-[1.75rem] border border-slate-900/10 bg-white/80 p-5 shadow-xl backdrop-blur-sm md:p-8">
@@ -1549,6 +1638,41 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             <p className="mb-3 text-xs text-slate-500">
               Scope uses current user/course/module filters. Path mix order: productivity / research / entrepreneurship.
             </p>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={labTrendDays}
+                onChange={(e) => setLabTrendDays(e.target.value)}
+              >
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+              </select>
+              <button
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(loadLabTrends)}
+                type="button"
+                disabled={loadingLabTrends}
+              >
+                {loadingLabTrends ? 'Loading trends...' : 'Refresh Trends'}
+              </button>
+            </div>
+            <div className="mb-4 grid gap-2 sm:grid-cols-3">
+              <TrendSparklineCard
+                label={`Runs/day (${labTrendDays}d)`}
+                value={labTrendMetrics.totalRuns}
+                points={labTrendMetrics.runPoints}
+              />
+              <TrendSparklineCard
+                label={`Learner touches (${labTrendDays}d)`}
+                value={labTrendMetrics.totalLearnerTouches}
+                points={labTrendMetrics.learnerPoints}
+              />
+              <TrendSparklineCard
+                label={`Avg latency trend (${labTrendDays}d)`}
+                value={`${labTrendMetrics.latencyPoints.at(-1) || 0} ms`}
+                points={labTrendMetrics.latencyPoints}
+              />
+            </div>
             <div className="grid gap-2 sm:grid-cols-2">
               <input
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
@@ -1663,6 +1787,41 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               <Metric label="Avg Score" value={capstoneMetrics.avgScore} />
             </div>
             <p className="mb-3 text-xs text-slate-500">Metrics are scoped to the active user/course/status filters in this board.</p>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={capstoneTrendDays}
+                onChange={(e) => setCapstoneTrendDays(e.target.value)}
+              >
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+              </select>
+              <button
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(loadCapstoneTrends)}
+                type="button"
+                disabled={loadingCapstoneTrends}
+              >
+                {loadingCapstoneTrends ? 'Loading trends...' : 'Refresh Trends'}
+              </button>
+            </div>
+            <div className="mb-4 grid gap-2 sm:grid-cols-3">
+              <TrendSparklineCard
+                label={`Submitted/day (${capstoneTrendDays}d)`}
+                value={capstoneTrendMetrics.submittedTotal}
+                points={capstoneTrendMetrics.submittedPoints}
+              />
+              <TrendSparklineCard
+                label={`Reviewed/day (${capstoneTrendDays}d)`}
+                value={capstoneTrendMetrics.reviewedTotal}
+                points={capstoneTrendMetrics.reviewedPoints}
+              />
+              <TrendSparklineCard
+                label={`Accepted/day (${capstoneTrendDays}d)`}
+                value={`${capstoneTrendMetrics.acceptedTotal} (${capstoneTrendMetrics.acceptanceRatePct}%)`}
+                points={capstoneTrendMetrics.acceptedPoints}
+              />
+            </div>
             <div className="grid gap-2 sm:grid-cols-3">
               <input
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
@@ -1987,6 +2146,43 @@ function Metric({ label, value }) {
       <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
       <p className="mt-1 text-2xl font-extrabold text-slate-900">{value}</p>
     </article>
+  );
+}
+
+function TrendSparklineCard({ label, value, points }) {
+  const numericPoints = (points || []).map((point) => Number(point || 0)).filter((point) => Number.isFinite(point));
+  return (
+    <article className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-500">{label}</p>
+      <p className="mt-1 text-lg font-extrabold text-slate-900">{value}</p>
+      <div className="mt-2 h-12 rounded-lg bg-white px-1 py-1">
+        <Sparkline points={numericPoints} />
+      </div>
+    </article>
+  );
+}
+
+function Sparkline({ points = [] }) {
+  if (!points.length) {
+    return <div className="flex h-full items-center text-[11px] text-slate-400">No trend data</div>;
+  }
+
+  const max = Math.max(...points);
+  const min = Math.min(...points);
+  const range = max - min || 1;
+  const denominator = points.length > 1 ? points.length - 1 : 1;
+  const polyline = points
+    .map((value, index) => {
+      const x = (index / denominator) * 100;
+      const y = 100 - ((value - min) / range) * 100;
+      return `${x},${y}`;
+    })
+    .join(' ');
+
+  return (
+    <svg className="h-full w-full text-cyan-600" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      <polyline fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" points={polyline} />
+    </svg>
   );
 }
 

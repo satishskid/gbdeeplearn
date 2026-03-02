@@ -39,6 +39,7 @@ app.get('/', (c) => {
       '/api/analytics/funnel',
       '/api/admin/analytics/summary',
       '/api/admin/analytics/paths',
+      '/api/admin/analytics/learning-trends',
       '/api/content/posts',
       '/api/admin/overview',
       '/api/admin/organizations',
@@ -991,6 +992,201 @@ app.get('/api/admin/analytics/paths', async (c) => {
     return c.json(
       {
         error: 'Failed to load path analytics.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/analytics/learning-trends', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+
+    const days = Math.max(1, Math.min(90, Number(c.req.query('days') || 30)));
+    const nowMs = Date.now();
+    const sinceMs = nowMs - days * 24 * 60 * 60 * 1000;
+    const courseId = clean(c.req.query('course_id'), 64);
+    const pathKey = clean(c.req.query('path_key'), 40).toLowerCase();
+    const userId = clean(c.req.query('user_id'), 120);
+    const capstoneStatus = clean(c.req.query('capstone_status') || c.req.query('status'), 32).toLowerCase();
+
+    const labConditions = ['created_at_ms >= ?'];
+    const labParams = [sinceMs];
+    if (courseId) {
+      labConditions.push('course_id = ?');
+      labParams.push(courseId);
+    }
+    if (pathKey && PATH_KEYS.has(pathKey)) {
+      labConditions.push('path_key = ?');
+      labParams.push(pathKey);
+    }
+    if (userId) {
+      labConditions.push('user_id = ?');
+      labParams.push(userId);
+    }
+
+    const labRows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         strftime('%Y-%m-%d', created_at_ms / 1000, 'unixepoch') AS day,
+         COUNT(*) AS count,
+         ROUND(AVG(latency_ms), 2) AS avg_latency_ms,
+         COUNT(DISTINCT user_id) AS unique_learners
+       FROM lab_runs
+       WHERE ${labConditions.join(' AND ')}
+       GROUP BY day
+       ORDER BY day ASC`
+    )
+      .bind(...labParams)
+      .all();
+
+    const capstoneConditions = ['submitted_at_ms >= ?'];
+    const capstoneParams = [sinceMs];
+    if (courseId) {
+      capstoneConditions.push('course_id = ?');
+      capstoneParams.push(courseId);
+    }
+    if (pathKey && PATH_KEYS.has(pathKey)) {
+      capstoneConditions.push('path_key = ?');
+      capstoneParams.push(pathKey);
+    }
+    if (userId) {
+      capstoneConditions.push('user_id = ?');
+      capstoneParams.push(userId);
+    }
+    if (capstoneStatus) {
+      capstoneConditions.push('status = ?');
+      capstoneParams.push(capstoneStatus);
+    }
+
+    const capstoneSubmittedRows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         strftime('%Y-%m-%d', submitted_at_ms / 1000, 'unixepoch') AS day,
+         COUNT(*) AS count
+       FROM capstone_artifacts
+       WHERE ${capstoneConditions.join(' AND ')}
+       GROUP BY day
+       ORDER BY day ASC`
+    )
+      .bind(...capstoneParams)
+      .all();
+
+    const reviewedConditions = ['reviewed_at_ms IS NOT NULL', 'reviewed_at_ms >= ?'];
+    const reviewedParams = [sinceMs];
+    if (courseId) {
+      reviewedConditions.push('course_id = ?');
+      reviewedParams.push(courseId);
+    }
+    if (pathKey && PATH_KEYS.has(pathKey)) {
+      reviewedConditions.push('path_key = ?');
+      reviewedParams.push(pathKey);
+    }
+    if (userId) {
+      reviewedConditions.push('user_id = ?');
+      reviewedParams.push(userId);
+    }
+    if (capstoneStatus) {
+      reviewedConditions.push('status = ?');
+      reviewedParams.push(capstoneStatus);
+    }
+
+    const capstoneReviewedRows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         strftime('%Y-%m-%d', reviewed_at_ms / 1000, 'unixepoch') AS day,
+         COUNT(*) AS count
+       FROM capstone_artifacts
+       WHERE ${reviewedConditions.join(' AND ')}
+       GROUP BY day
+       ORDER BY day ASC`
+    )
+      .bind(...reviewedParams)
+      .all();
+
+    const acceptedConditions = ['reviewed_at_ms IS NOT NULL', 'reviewed_at_ms >= ?'];
+    const acceptedParams = [sinceMs];
+    if (courseId) {
+      acceptedConditions.push('course_id = ?');
+      acceptedParams.push(courseId);
+    }
+    if (pathKey && PATH_KEYS.has(pathKey)) {
+      acceptedConditions.push('path_key = ?');
+      acceptedParams.push(pathKey);
+    }
+    if (userId) {
+      acceptedConditions.push('user_id = ?');
+      acceptedParams.push(userId);
+    }
+    acceptedConditions.push("(status = 'accepted' OR json_extract(feedback_json, '$.passed') = 1)");
+
+    const capstoneAcceptedRows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         strftime('%Y-%m-%d', reviewed_at_ms / 1000, 'unixepoch') AS day,
+         COUNT(*) AS count
+       FROM capstone_artifacts
+       WHERE ${acceptedConditions.join(' AND ')}
+       GROUP BY day
+       ORDER BY day ASC`
+    )
+      .bind(...acceptedParams)
+      .all();
+
+    const dayKeys = buildUtcDayKeys(days, nowMs);
+    const labMap = new Map((labRows.results || []).map((row) => [clean(row.day || '', 10), row]));
+    const submittedMap = new Map((capstoneSubmittedRows.results || []).map((row) => [clean(row.day || '', 10), row]));
+    const reviewedMap = new Map((capstoneReviewedRows.results || []).map((row) => [clean(row.day || '', 10), row]));
+    const acceptedMap = new Map((capstoneAcceptedRows.results || []).map((row) => [clean(row.day || '', 10), row]));
+
+    const lab_runs = dayKeys.map((day) => {
+      const row = labMap.get(day);
+      return {
+        day,
+        count: Number(row?.count || 0),
+        avg_latency_ms: Number(row?.avg_latency_ms || 0),
+        unique_learners: Number(row?.unique_learners || 0)
+      };
+    });
+
+    const capstones_submitted = dayKeys.map((day) => ({
+      day,
+      count: Number(submittedMap.get(day)?.count || 0)
+    }));
+
+    const capstones_reviewed = dayKeys.map((day) => ({
+      day,
+      count: Number(reviewedMap.get(day)?.count || 0)
+    }));
+
+    const capstones_accepted = dayKeys.map((day) => ({
+      day,
+      count: Number(acceptedMap.get(day)?.count || 0)
+    }));
+
+    return c.json({
+      days,
+      filters: {
+        course_id: courseId,
+        path_key: pathKey,
+        user_id: userId,
+        capstone_status: capstoneStatus
+      },
+      start_day: dayKeys[0] || '',
+      end_day: dayKeys[dayKeys.length - 1] || '',
+      lab_runs,
+      capstones_submitted,
+      capstones_reviewed,
+      capstones_accepted
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load learning trend analytics.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -4454,6 +4650,16 @@ function parseJsonObjectOrDefault(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function buildUtcDayKeys(days, nowMs) {
+  const values = [];
+  const start = nowMs - (days - 1) * 24 * 60 * 60 * 1000;
+  for (let offset = 0; offset < days; offset += 1) {
+    const dayMs = start + offset * 24 * 60 * 60 * 1000;
+    values.push(new Date(dayMs).toISOString().slice(0, 10));
+  }
+  return values;
 }
 
 function isoDateInTimezone(ms, timeZone) {
