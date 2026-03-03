@@ -23,6 +23,7 @@ PUBLIC_FIREBASE_APP_ID=
 PUBLIC_FIREBASE_MEASUREMENT_ID=
 PUBLIC_TURNSTILE_SITE_KEY=
 PUBLIC_COORDINATOR_EMAILS=
+PUBLIC_COUNSELOR_EMAILS=
 PUBLIC_TEACHER_EMAILS=
 PUBLIC_CTO_EMAILS=
 ```
@@ -114,6 +115,37 @@ Notes:
 npm run cf:deploy:all
 ```
 
+## Strict Release Gate (No Drift)
+
+Single command to enforce end-to-end production gates:
+
+```bash
+ADMIN_API_TOKEN=... \
+DEEPLEARN_API_BASE_URL=https://deeplearn-worker.satish-9f4.workers.dev \
+DEEPLEARN_PAGES_BASE_URL=https://edu.greybrain.ai \
+npm run release:orchestrate
+```
+
+Outputs:
+- `reports/release-gate-latest.json`
+- `reports/release-gate-<timestamp>.json`
+
+Reference contract:
+- [docs/release-orchestration-contract.md](/Users/spr/gbdeeplearn/docs/release-orchestration-contract.md)
+
+GitHub Actions:
+- Build gate: `.github/workflows/build.yml` (PR + `main`)
+- Release gate: `.github/workflows/release-gate.yml` (`main` + manual)
+
+Required GitHub secret:
+- `ADMIN_API_TOKEN`
+
+Recommended GitHub repository variables:
+- `DEEPLEARN_API_BASE_URL` (default in script: `https://deeplearn-worker.satish-9f4.workers.dev`)
+- `DEEPLEARN_PAGES_BASE_URL` (default in script: `https://edu.greybrain.ai`)
+- `EXPECTED_COORDINATOR_EMAILS` (default: `satish@skids.health,drpratichi@skids.health`)
+- `DISALLOWED_EMAIL_MARKERS` (default: `qa.coordinator.`)
+
 ### Useful CLI commands
 
 ```bash
@@ -176,7 +208,13 @@ If using `compat`, set model with provider prefix in `GROQ_MODEL` (for example `
 ### Webinar events captured (`POST /api/track`)
 
 - `webinar_landing_view`
+- `cta_variant_assigned`
+- `audience_path_selected`
+- `webinar_scroll_25`
+- `webinar_scroll_50`
+- `webinar_scroll_75`
 - `webinar_cta_click`
+- `webinar_sticky_cta_click`
 - `webinar_schedule_click`
 - `webinar_registration_started`
 - `webinar_registration_submitted`
@@ -235,12 +273,21 @@ The Worker now includes a built-in daily editorial pipeline for `Greybrain.AI Da
 - Generate draft (manual): `POST /api/admin/content/generate-daily`
   - Body: `{ "groq_key": "optional_byok_key", "force": false }`
   - Uses `groq_key` first, then falls back to Worker secret `GROQ_API_KEY`.
-- Review list (admin): `GET /api/admin/content/posts?limit=20&status=all`
+- Review list (reviewers): `GET /api/admin/content/posts?limit=20&status=all`
 - Approve/Publish/Reject: `POST /api/admin/content/posts/:postId/status` with `{ "status": "approved|published|rejected" }`
+- Force auto-publish sweep now: `POST /api/admin/content/auto-publish-expired`
 - Public feed (published only): `GET /api/content/posts?limit=4`
+
+Review policy (configurable in [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml) `[vars]`):
+- `CONTENT_REVIEW_WINDOW_MINUTES` (`180` default): time gap before fallback publish.
+- `CONTENT_REVIEW_AUTO_PUBLISH` (`true`): publish expired drafts automatically.
+- `CONTENT_APPROVED_AUTO_PUBLISH` (`true`): setting status=`approved` directly publishes.
+- `CONTENT_REVIEWER_ROLES` (`coordinator,counselor,cto`): role-based approvers.
+- `CONTENT_REVIEWER_EMAILS` (`satish@skids.health`): allowlist approvers by Firebase email.
 
 Cron is configured in [wrangler.toml](/Users/spr/gbdeeplearn/wrangler.toml):
 - `30 3 * * *` (daily at 03:30 UTC, 09:00 IST)
+- `0 * * * *` (hourly auto-publish sweep)
 
 ### Required secret for auto generation
 
