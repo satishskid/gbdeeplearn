@@ -5,3 +5,5 @@ dist
 .wrangler
 .env
 .env.*
+.playwright-cli
+reports

@@ -43,6 +43,17 @@ async function run() {
       critical: false,
       headers: { 'x-admin-token': ADMIN_TOKEN }
     });
+    if (process.env.RUN_SESSION_SMOKE === '1') {
+      await checkAdminSessionCrud();
+    } else {
+      checks.push({
+        name: 'admin_session_crud_smoke',
+        ok: true,
+        critical: false,
+        status: 0,
+        details: 'skipped (set RUN_SESSION_SMOKE=1 to enable)'
+      });
+    }
   }
 
   await checkJson('counselor_chat', `${WORKER_BASE}/api/chat/counselor`, {
@@ -134,6 +145,114 @@ async function checkHead(name, url, options = {}) {
       details: error instanceof Error ? error.message : 'request_failed'
     });
   }
+}
+
+async function checkAdminSessionCrud() {
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-admin-token': ADMIN_TOKEN
+  };
+  let sessionId = '';
+  let cohortId = '';
+
+  try {
+    const cohorts = await requestJson(`${WORKER_BASE}/api/admin/cohorts?limit=20`, {
+      method: 'GET',
+      headers: { 'x-admin-token': ADMIN_TOKEN }
+    });
+    const list = Array.isArray(cohorts?.cohorts) ? cohorts.cohorts : [];
+    const cohort = list.find((item) => item.pathway === 'path2') || list[0];
+    cohortId = cohort?.id || '';
+    if (!cohortId) throw new Error('No cohort found for smoke test');
+
+    const startMs = Date.now() + 2 * 24 * 60 * 60 * 1000;
+    const endMs = startMs + 45 * 60 * 1000;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const createTitle = `Session CRUD Smoke ${stamp}`;
+    const updateTitle = `${createTitle} Updated`;
+
+    const created = await requestJson(`${WORKER_BASE}/api/admin/cohorts/${cohortId}/sessions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        title: createTitle,
+        description: 'Automated production smoke validation.',
+        starts_at_ms: startMs,
+        ends_at_ms: endMs,
+        status: 'scheduled',
+        meeting_url: 'https://meet.example.com/smoke'
+      })
+    });
+    sessionId = created?.session?.id || '';
+    if (!sessionId) throw new Error('Created session id missing');
+
+    const updated = await requestJson(`${WORKER_BASE}/api/admin/sessions/${sessionId}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        title: updateTitle,
+        description: 'Updated by smoke check.',
+        status: 'live'
+      })
+    });
+
+    const deleted = await requestJson(`${WORKER_BASE}/api/admin/sessions/${sessionId}/delete`, {
+      method: 'POST',
+      headers: { 'x-admin-token': ADMIN_TOKEN }
+    });
+
+    checks.push({
+      name: 'admin_session_crud_smoke',
+      ok: Boolean(updated?.session?.title === updateTitle && deleted?.deleted === true),
+      critical: false,
+      status: 200,
+      details: `cohort=${cohortId}, session=${sessionId}, updated_title=${updated?.session?.title || ''}, deleted=${deleted?.deleted === true}`
+    });
+  } catch (error) {
+    checks.push({
+      name: 'admin_session_crud_smoke',
+      ok: false,
+      critical: false,
+      status: 0,
+      details: error instanceof Error ? error.message : 'session_smoke_failed'
+    });
+    if (sessionId) {
+      try {
+        await requestJson(`${WORKER_BASE}/api/admin/sessions/${sessionId}/delete`, {
+          method: 'POST',
+          headers: { 'x-admin-token': ADMIN_TOKEN }
+        });
+      } catch {
+        // Ignore cleanup failures.
+      }
+    }
+  }
+}
+
+async function requestJson(url, options = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    try {
+      const response = await fetch(url, options);
+      const text = await response.text();
+      let payload = {};
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { raw: text };
+      }
+      if (!response.ok) {
+        throw new Error(payload?.error || payload?.raw || `${response.status} request failed`);
+      }
+      return payload;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 8) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('request failed');
 }
 
 function summarizePayload(payload) {
