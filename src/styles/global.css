@@ -835,69 +835,96 @@ h6 {
 
 .teal-paths-tabs {
   display: flex;
-  gap: 1rem;
-  margin-bottom: 3rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  padding-bottom: 1.5rem;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  padding-left: 1.5rem;
 }
 
-.teal-tabs-btn {
+.teal-tab-btn {
+  display: flex;
+  align-items: center;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  padding: 0.35rem;
+  color: white;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  min-width: 150px;
+  position: relative;
+  z-index: 20;
+}
+
+.teal-tab-inner {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  background: transparent;
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  border-radius: 999px;
-  padding: 0.5rem 1.25rem 0.5rem 0.5rem;
-  color: white;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  min-width: 140px;
+  width: 100%;
 }
 
-.teal-tabs-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
+.teal-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.6);
 }
 
-.teal-tabs-btn.active {
+.teal-tab-btn.active {
   background: white;
   color: #1a5b54;
   border-color: white;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+  transform: translateY(4px);
+  /* Pushes down into the panel like the mockup */
 }
 
-.teal-tabs-icon {
+.teal-tab-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2rem;
-  height: 2rem;
+  width: 2.5rem;
+  height: 2.5rem;
   border-radius: 50%;
-  border: 1px solid currentColor;
-  opacity: 0.8;
+  border: 1px solid currentcolor;
+  background: transparent;
+  color: inherit;
+  opacity: 0.9;
 }
 
-.teal-tabs-btn.active .teal-tabs-icon {
+.teal-tab-btn.active .teal-tab-icon {
   background: #f1f5f9;
   border-color: #cbd5e1;
+  color: #0f172a;
 }
 
-.teal-tabs-text {
+.teal-tab-text {
   display: flex;
   flex-direction: column;
   text-align: left;
+  padding-right: 1rem;
 }
 
-.teal-tabs-label {
+.teal-tab-label {
   font-family: 'IBM Plex Mono', monospace;
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  opacity: 0.8;
+  letter-spacing: 0.12em;
+  opacity: 0.7;
+  text-transform: uppercase;
+  margin-bottom: 0.1rem;
 }
 
-.teal-tabs-title {
-  font-size: 0.95rem;
-  font-weight: 700;
+.teal-tab-title {
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.teal-glass-panel {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 2rem;
+  padding: 3.5rem 2.5rem;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(16px);
 }
 
 .teal-paths-panel {
