@@ -1,8 +1,9 @@
 import { getCourseCatalog } from '../lib/academyData';
+import { fetchPublishedBriefs } from '../lib/briefs.js';
 import { TRACKS } from '../lib/tracks';
 
 export async function GET() {
-  const siteOrigin = 'https://gbdeeplearn.pages.dev';
+  const siteOrigin = 'https://edu.greybrain.ai';
   const now = new Date().toISOString();
 
   const staticPaths = [
@@ -22,7 +23,11 @@ export async function GET() {
     .map((slug) => `/courses/${slug}`);
 
   const trackPaths = TRACKS.map((track) => `/tracks/${track.slug}`);
-  const urls = [...new Set([...staticPaths, ...coursePaths, ...trackPaths])];
+  const briefPaths = (await fetchPublishedBriefs(120).catch(() => []))
+    .map((post) => String(post?.slug || '').trim())
+    .filter(Boolean)
+    .map((slug) => `/briefs/${slug}`);
+  const urls = [...new Set([...staticPaths, ...coursePaths, ...trackPaths, '/briefs', ...briefPaths])];
 
   const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">

@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 
-const SITE_ORIGIN = 'https://gbdeeplearn.pages.dev';
+const SITE_ORIGIN = 'https://edu.greybrain.ai';
 
 const studioFlow = [
   {
@@ -32,6 +32,13 @@ const capstoneDeliverables = [
   'Pilot metrics dashboard and adoption model',
   'Risk register and governance response plan',
   'Investment memo + pitch narrative'
+];
+
+const readinessChecks = [
+  'Capstone artifacts are versioned and reviewable through role-based workflows.',
+  'Lab runs support entrepreneurship path output modes for venture planning.',
+  'Cohort sessions and attendance are captured for mentor-led delivery.',
+  'Completion and certificates are tied to assessment and capstone status.'
 ];
 ---
 
@@ -79,6 +86,15 @@ const capstoneDeliverables = [
     <div class="mt-4 grid gap-3 md:grid-cols-2">
       {capstoneDeliverables.map((item) => (
         <article class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">{item}</article>
+      ))}
+    </div>
+  </section>
+
+  <section class="mt-8 rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
+    <h2 class="text-2xl font-extrabold text-slate-900">Operational Readiness For Path 3</h2>
+    <div class="mt-4 grid gap-3 md:grid-cols-2">
+      {readinessChecks.map((item) => (
+        <article class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-700">{item}</article>
       ))}
     </div>
   </section>

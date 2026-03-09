@@ -2,6 +2,29 @@
 
 Hybrid, offline-first LMS scaffold built with Astro + React + Tailwind and Cloudflare Worker APIs.
 
+## Vision, Progress, and Current State (Knowledge Transfer)
+
+Core direction:
+- **The AI Academy for Doctors Who Want to Practice, Publish, and Build**
+
+Current platform state:
+1. Public academy at `edu.greybrain.ai` is redesigned and operational with a path-led homepage, briefs, courses, enrollment, and counselor flow.
+2. Internal ops stack is live for content editing, CRM, cohorts, analytics, and learner operations.
+3. Learning model is live as `starter refresher -> path recommendation -> deeper cohort`.
+
+Working product tracks:
+1. **Practice** (`Path 1`): clinical productivity and communication.
+2. **Publish** (`Path 2`): research acceleration and academic output.
+3. **Build** (`Path 3`): healthcare entrepreneurship and pilot-to-venture workflows.
+
+Detailed handover for the next developer:
+- [docs/developer-handover-2026-03-09.md](/Users/spr/gbdeeplearn/docs/developer-handover-2026-03-09.md)
+
+Design + execution context:
+- [docs/greybrain-public-v2-system-spec.md](/Users/spr/gbdeeplearn/docs/greybrain-public-v2-system-spec.md)
+- [docs/greybrain-public-v2-orchestration-contract.md](/Users/spr/gbdeeplearn/docs/greybrain-public-v2-orchestration-contract.md)
+- [docs/ai-refresher-blueprint.md](/Users/spr/gbdeeplearn/docs/ai-refresher-blueprint.md)
+
 ## Quick start
 
 ```bash
@@ -115,6 +138,46 @@ Notes:
 npm run cf:deploy:all
 ```
 
+### 7) Publish latest brief and redeploy Pages (CLI-first)
+
+This is the simplest path for your current Direct Upload setup.
+
+Publish the latest draft brief, rebuild the site, and deploy Pages:
+
+```bash
+ADMIN_API_TOKEN=... npm run content:publish-and-deploy
+```
+
+Publish a specific post:
+
+```bash
+ADMIN_API_TOKEN=... npm run content:publish-and-deploy -- --post-id=<content_post_id>
+```
+
+Or by slug:
+
+```bash
+ADMIN_API_TOKEN=... npm run content:publish-and-deploy -- --slug=daily-20260307
+```
+
+Dry run:
+
+```bash
+ADMIN_API_TOKEN=... npm run content:publish-and-deploy -- --dry-run
+```
+
+Rebuild and deploy Pages only, without changing content status:
+
+```bash
+npm run content:deploy-pages
+```
+
+Seed evergreen workflow/wiki/model-watch entries:
+
+```bash
+ADMIN_API_TOKEN=... npm run content:seed-evergreen
+```
+
 ## Strict Release Gate (No Drift)
 
 Single command to enforce end-to-end production gates:
@@ -136,15 +199,20 @@ Reference contract:
 GitHub Actions:
 - Build gate: `.github/workflows/build.yml` (PR + `main`)
 - Release gate: `.github/workflows/release-gate.yml` (`main` + manual)
+- Pages direct upload: `.github/workflows/pages-direct-upload.yml` (manual + repository dispatch)
 
 Required GitHub secret:
 - `ADMIN_API_TOKEN`
+- `CLOUDFLARE_API_TOKEN`
+- `CLOUDFLARE_ACCOUNT_ID`
 
 Recommended GitHub repository variables:
 - `DEEPLEARN_API_BASE_URL` (default in script: `https://deeplearn-worker.satish-9f4.workers.dev`)
 - `DEEPLEARN_PAGES_BASE_URL` (default in script: `https://edu.greybrain.ai`)
 - `EXPECTED_COORDINATOR_EMAILS` (default: `satish@skids.health,drpratichi@skids.health`)
 - `DISALLOWED_EMAIL_MARKERS` (default: `qa.coordinator.`)
+- `PUBLIC_DEEPLEARN_API_ORIGIN` (recommended: `https://deeplearn-worker.satish-9f4.workers.dev`)
+- all `PUBLIC_FIREBASE_*`, `PUBLIC_TURNSTILE_SITE_KEY`, role email allowlists, and messaging URLs used by the Astro build
 
 ### Useful CLI commands
 
@@ -161,12 +229,28 @@ npm run cf:secret:put -- LEAD_WEBHOOK_AUTH_TOKEN
 npm run cf:secret:put -- LEAD_WEBHOOK_SECRET
 npm run cf:secret:put -- ALERT_WEBHOOK_AUTH_TOKEN
 npm run cf:secret:put -- ALERT_WEBHOOK_SECRET
+npm run cf:secret:put -- ALERT_TELEGRAM_BOT_TOKEN
+npm run cf:secret:put -- ALERT_TELEGRAM_CHAT_ID
+npm run cf:secret:put -- ALERT_TELEGRAM_TOPIC_ID
+npm run cf:secret:put -- ALERT_EMAIL_TO
+npm run cf:secret:put -- ALERT_EMAIL_FROM
+npm run cf:secret:put -- ALERT_EMAIL_FROM_NAME
+npm run cf:secret:put -- ALERT_EMAIL_SUBJECT_PREFIX
 npm run readiness:check
 ```
 
 Optional Worker vars (set in `wrangler.toml` `[vars]`):
 - `LEAD_WEBHOOK_URL`: Optional external integration endpoint for lead + payment mirrors (internal CRM works without this).
 - `ALERT_WEBHOOK_URL`: incident channel endpoint (Slack/Discord/custom) for ops alerts.
+- `ALERT_TELEGRAM_BOT_TOKEN`, `ALERT_TELEGRAM_CHAT_ID`, `ALERT_TELEGRAM_TOPIC_ID`:
+  send real-time ops alerts to Telegram (topic id is optional for forum groups).
+- `ALERT_EMAIL_TO` (CSV), `ALERT_EMAIL_FROM`, `ALERT_EMAIL_FROM_NAME`, `ALERT_EMAIL_SUBJECT_PREFIX`:
+  send ops alerts directly to target emails from the Worker via MailChannels.
+
+Tutor content indexing automation:
+- Published module create/update now auto-triggers course-content vector ingestion.
+- Course status change to `published` or `live` also auto-triggers ingestion.
+- Manual fallback endpoint remains: `POST /api/admin/knowledge/ingest-course-content`.
 
 ## Platform routes
 

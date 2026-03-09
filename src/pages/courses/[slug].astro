@@ -1,6 +1,8 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
+import RefresherInteractiveExperience from '../../components/RefresherInteractiveExperience.jsx';
 import { getCourseDetails, getCourseSummaries } from '../../lib/academyData';
+import { TRACKS } from '../../lib/tracks';
 
 export async function getStaticPaths() {
   const courses = await getCourseSummaries();
@@ -12,9 +14,47 @@ export async function getStaticPaths() {
 
 const { courseSlug } = Astro.props;
 const course = await getCourseDetails(courseSlug);
+const SITE_ORIGIN = 'https://edu.greybrain.ai';
 
 const pageTitle = `${course.name} | GreyBrain Course`;
 const pageDescription = course.shortDescription || 'GreyBrain healthcare AI course';
+
+const pathBySlug = new Map();
+for (const track of TRACKS) {
+  const pathKey =
+    track.slug === 'ai-research-accelerator'
+      ? 'research'
+      : track.slug === 'doctor-ai-entrepreneurship'
+        ? 'entrepreneurship'
+        : 'productivity';
+  for (const slug of track.courseSlugs) {
+    if (!pathBySlug.has(slug)) pathBySlug.set(slug, pathKey);
+  }
+}
+
+const PATH_META = {
+  productivity: {
+    label: 'Practice',
+    badge: 'bg-emerald-50 text-emerald-800',
+    border: 'border-emerald-300',
+    surface: 'from-emerald-50 to-white'
+  },
+  research: {
+    label: 'Publish',
+    badge: 'bg-sky-50 text-sky-800',
+    border: 'border-sky-300',
+    surface: 'from-sky-50 to-white'
+  },
+  entrepreneurship: {
+    label: 'Build',
+    badge: 'bg-amber-50 text-amber-800',
+    border: 'border-amber-300',
+    surface: 'from-amber-50 to-white'
+  }
+};
+
+const pathKey = course.trackHint || pathBySlug.get(course.slug) || 'productivity';
+const pathTheme = PATH_META[pathKey] || PATH_META.productivity;
 
 const courseSchema = {
   '@context': 'https://schema.org',
@@ -25,107 +65,150 @@ const courseSchema = {
     '@type': 'Organization',
     name: 'GreyBrain Academy'
   },
-  url: `https://gbdeeplearn.pages.dev/courses/${course.slug}`
+  url: `${SITE_ORIGIN}/courses/${course.slug}`
 };
+
+const syllabusItems = (course.lessons.length > 0
+  ? course.lessons
+  : ['Module 1: Foundations', 'Module 2: Applied workflow', 'Module 3: Implementation sprint']).slice(0, 6);
+const outcomes = (course.goals.length > 0
+  ? course.goals
+  : [
+      'Understand practical AI use-cases relevant to healthcare workflows.',
+      'Implement no-code or low-code AI approaches in day-to-day operations.',
+      'Build confidence to deploy AI with clinical and ethical guardrails.'
+    ]).slice(0, 4);
 ---
 
-<BaseLayout title={pageTitle} description={pageDescription} canonical={`https://gbdeeplearn.pages.dev/courses/${course.slug}`}>
+<BaseLayout title={pageTitle} description={pageDescription} canonical={`${SITE_ORIGIN}/courses/${course.slug}`}>
   <script type="application/ld+json" set:html={JSON.stringify(courseSchema)} />
 
-  <section class="mb-8 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
-    <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
-      Standardized Course Page
-    </p>
-    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">{course.name}</h1>
-    <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">{course.shortDescription}</p>
-    <div class="mt-4 flex flex-wrap gap-2 text-xs">
-      <span class="rounded-full bg-white/10 px-3 py-1">Slug: {course.slug}</span>
-      <span class="rounded-full bg-white/10 px-3 py-1">{course.lessonCount > 0 ? `${course.lessonCount} lessons` : 'Curriculum available'}</span>
-      {course.rating > 0 ? <span class="rounded-full bg-white/10 px-3 py-1">{course.rating}/10 rating</span> : null}
+  <section class="public-hero public-hero--course reveal-up mb-8">
+    <div class="public-hero-copy">
+      <div class="public-hero-topline">
+        <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${pathTheme.badge}`}>{pathTheme.label}</span>
+        {course.badgeLabel ? <span class="public-proof-badge">{course.badgeLabel}</span> : null}
+      </div>
+      <h1 class="public-hero-title public-hero-title--catalog">{course.name}</h1>
+      <p class="public-hero-body">{course.shortDescription}</p>
+      <div class="public-chip-row">
+        <span class="public-chip public-chip--light">{course.lessonCount > 0 ? `${course.lessonCount} lessons` : 'Structured curriculum'}</span>
+        {course.deliveryLabel ? <span class="public-chip public-chip--light">{course.deliveryLabel}</span> : null}
+        <span class="public-chip public-chip--light">{course.accessModel === 'registration' ? 'Unlock after registration' : 'Cohort + AI tutor'}</span>
+      </div>
+      <div class="mt-6 flex flex-wrap gap-2">
+        <a
+          href={course.ctaUrl || course.academyUrl}
+          target={course.ctaTarget === '_blank' ? '_blank' : undefined}
+          rel={course.ctaTarget === '_blank' ? 'noreferrer' : undefined}
+          class="public-inline-action"
+        >
+          {course.ctaLabel || 'Enroll'}
+        </a>
+        <a href="/courses" class="public-inline-action public-inline-action--ghost">Back to catalog</a>
+      </div>
     </div>
-    <div class="mt-5 flex flex-wrap gap-2">
-      <a
-        href={course.academyUrl}
-        target="_blank"
-        rel="noreferrer"
-        class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
-      >
-        Enroll On Academy
-      </a>
-      <a
-        href="/courses"
-        class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
-      >
-        Back To Catalog
-      </a>
-    </div>
+
+    <aside class="public-hero-panel public-hero-panel--compact">
+      <div class="public-panel-stack">
+        <article class="public-panel-card public-panel-card--soft">
+          <p class="public-panel-label">What changes after this course</p>
+          <p class="public-panel-value">You leave with a clearer workflow, not just a better conceptual understanding.</p>
+        </article>
+        <article class="public-panel-card public-panel-card--soft">
+          <p class="public-panel-label">Support model</p>
+          <p class="public-panel-value">AI tutor guidance, mentor checkpoints, and structured assignments.</p>
+        </article>
+      </div>
+    </aside>
   </section>
 
-  <section class="mb-8 grid gap-4 md:grid-cols-3">
-    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
-      <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">Outcomes</p>
-      <h2 class="mt-2 text-xl font-bold text-slate-900">What You Will Achieve</h2>
-      <ul class="mt-3 space-y-2 text-sm text-slate-700">
-        {(course.goals.length > 0
-          ? course.goals
-          : [
-              'Understand practical AI use-cases relevant to healthcare workflows.',
-              'Implement no-code or low-code AI approaches in day-to-day operations.',
-              'Build confidence to deploy AI with clinical and ethical guardrails.'
-            ]
-        ).slice(0, 4).map((goal) => <li class="rounded-xl bg-slate-50 px-3 py-2">{goal}</li>)}
-      </ul>
-    </article>
-
-    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
-      <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">Syllabus Signals</p>
-      <h2 class="mt-2 text-xl font-bold text-slate-900">Sample Lessons</h2>
-      <ul class="mt-3 space-y-2 text-sm text-slate-700">
-        {(course.lessons.length > 0
-          ? course.lessons
-          : ['Module 1: Foundations', 'Module 2: Applied workflow', 'Module 3: Implementation sprint']
-        ).slice(0, 6).map((lesson, index) => <li class="rounded-xl bg-slate-50 px-3 py-2">{index + 1}. {lesson}</li>)}
-      </ul>
-    </article>
-
-    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
-      <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">Instructors</p>
-      <h2 class="mt-2 text-xl font-bold text-slate-900">Learning Support</h2>
-      <ul class="mt-3 space-y-2 text-sm text-slate-700">
-        {(course.instructors.length > 0
-          ? course.instructors
-          : ['GreyBrain Faculty Team']
-        ).slice(0, 6).map((instructor) => <li class="rounded-xl bg-slate-50 px-3 py-2">{instructor}</li>)}
-      </ul>
-      <a
-        href={course.academyUrl}
-        target="_blank"
-        rel="noreferrer"
-        class="mt-4 inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-      >
-        View Full Curriculum
-      </a>
-    </article>
-  </section>
-
-  <section class="rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
-    <p class="text-xs font-semibold uppercase tracking-[0.13em] text-slate-500">About This Course</p>
-    <p class="mt-3 text-sm leading-relaxed text-slate-700">
-      {course.longDescription}
-    </p>
-
-    {course.faqs.length > 0 ? (
-      <div class="mt-5">
-        <h3 class="text-lg font-bold text-slate-900">FAQs</h3>
-        <div class="mt-3 space-y-2">
-          {course.faqs.slice(0, 6).map((faq) => (
-            <article class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
-              <p class="text-sm font-semibold text-slate-900">{faq.question}</p>
-              {faq.answer ? <p class="mt-1 text-sm text-slate-700">{faq.answer}</p> : null}
-            </article>
+  <section class="public-section reveal-up reveal-delay-1 mb-8">
+    <div class="public-course-detail-grid">
+      <article class={`public-course-detail-card bg-gradient-to-b ${pathTheme.surface}`}>
+        <p class="public-section-kicker">Transformation</p>
+        <h2 class="public-section-title">What you will be able to do</h2>
+        <div class="public-detail-list mt-4">
+          {outcomes.map((goal) => (
+            <div class="public-detail-item">{goal}</div>
           ))}
         </div>
+      </article>
+
+      <article class="public-course-detail-card">
+        <p class="public-section-kicker">Syllabus</p>
+        <h2 class="public-section-title">What the course covers</h2>
+        <div class="public-detail-list mt-4">
+          {syllabusItems.map((lesson, index) => (
+            <div class="public-detail-item"><span class="font-semibold text-slate-900">{index + 1}.</span> {lesson}</div>
+          ))}
+        </div>
+      </article>
+
+      <article class="public-course-detail-card">
+        <p class="public-section-kicker">Faculty and support</p>
+        <h2 class="public-section-title">How the learning is supported</h2>
+        <div class="public-detail-list mt-4">
+          {(course.instructors.length > 0 ? course.instructors : ['GreyBrain Faculty Team']).map((instructor) => (
+            <div class="public-detail-item">{instructor}</div>
+          ))}
+          <div class="public-detail-item">Assignments and mentor review</div>
+          <div class="public-detail-item">AI tutor support inside the learning flow</div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="public-section reveal-up reveal-delay-2 mb-8">
+    <div class="public-section-head public-section-head--split">
+      <div>
+        <p class="public-section-kicker">Course narrative</p>
+        <h2 class="public-section-title">Why this course exists</h2>
+      </div>
+      <p class="public-section-copy">{course.longDescription}</p>
+    </div>
+
+    {course.faqs.length > 0 ? (
+      <div class="public-faq-grid mt-6">
+        {course.faqs.slice(0, 6).map((faq) => (
+          <article class="public-faq-card">
+            <h3>{faq.question}</h3>
+            {faq.answer ? <p>{faq.answer}</p> : null}
+          </article>
+        ))}
       </div>
     ) : null}
   </section>
+
+  {course.accessModel === 'registration' ? <RefresherInteractiveExperience client:load /> : null}
+
+  {course.accessModel === 'registration' ? (
+    <section class="public-section reveal-up reveal-delay-3">
+      <div class="public-section-head public-section-head--split">
+        <div>
+          <p class="public-section-kicker">Starter orientation</p>
+          <h2 class="public-section-title">A conversion-grade AI refresher before the full cohorts.</h2>
+        </div>
+        <p class="public-section-copy">
+          This starter experience is designed for individual doctors and medical colleges that need a structured, low-friction orientation before choosing a deeper pathway.
+        </p>
+      </div>
+      <div class="public-refresher-grid mt-6">
+        {[
+          { title: 'Prompt to answer', copy: 'See how instruction quality changes output quality in a real physician task.' },
+          { title: 'Why context matters', copy: 'Compare generic answers with grounded answers based on protocol or syllabus context.' },
+          { title: 'How models work', copy: 'Understand token prediction and temperature without getting trapped in engineering jargon.' },
+          { title: 'Why review matters', copy: 'Learn why fluent outputs still need clinician judgment and safety review.' },
+          { title: 'What good outputs look like', copy: 'Compare outputs for practice, publication, and venture building in one screen.' },
+          { title: 'Choose your GreyBrain path', copy: 'Finish with a clear next-step recommendation into the right full cohort.' }
+        ].map((chapter, index) => (
+          <article class="public-refresher-step">
+            <p class="public-step-label">Chapter {index + 1}</p>
+            <h3>{chapter.title}</h3>
+            <p>{chapter.copy}</p>
+          </article>
+        ))}
+      </div>
+    </section>
+  ) : null}
 </BaseLayout>

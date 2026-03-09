@@ -1,28 +1,365 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import ChatInterface from '../components/ChatInterface.jsx';
 import CounselorChat from '../components/CounselorChat.jsx';
 import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
-import ClinicalFeedPanel from '../components/ClinicalFeedPanel.jsx';
-import { getClinicalFeedPosts, getCourseCatalog } from '../lib/academyData';
+import HomeEngagementBar from '../components/HomeEngagementBar.jsx';
+import AudienceCtaSwitcher from '../components/AudienceCtaSwitcher.jsx';
+import { formatDisplayDate, getClinicalFeedPosts, getCourseCatalog, getHuggingFaceModelSpotlights } from '../lib/academyData';
+import { fetchPublishedBriefs, getContentTypeMeta } from '../lib/briefs.js';
 import { TRACKS } from '../lib/tracks';
 
-const SITE_ORIGIN = 'https://gbdeeplearn.pages.dev';
-const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '1x00000000000000000000AA';
-const blogPosts = await getClinicalFeedPosts(4);
+const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const OG_IMAGE = `${SITE_ORIGIN}/images/seo/greybrain-hero-og.svg`;
+const blogPosts = await getClinicalFeedPosts(9);
+const modelSpotlights = await getHuggingFaceModelSpotlights(5);
+const publishedBriefs = await fetchPublishedBriefs(12).catch(() => []);
 const allCourses = await getCourseCatalog();
 const featuredCourses = allCourses.slice(0, 6);
+const refresherCourse = allCourses.find((course) => course.slug === 'ai-refresher-for-doctors') || null;
 
-const urgencyLabels = ['Admissions Open', 'Filling Fast', 'Waitlist Closing Soon'];
+const PATH_THEME = {
+  productivity: {
+    label: 'Practice',
+    border: 'border-emerald-300',
+    badge: 'bg-emerald-50 text-emerald-800',
+    stripe: 'bg-emerald-500'
+  },
+  research: {
+    label: 'Publish',
+    border: 'border-sky-300',
+    badge: 'bg-sky-50 text-sky-800',
+    stripe: 'bg-sky-500'
+  },
+  entrepreneurship: {
+    label: 'Build',
+    border: 'border-amber-300',
+    badge: 'bg-amber-50 text-amber-800',
+    stripe: 'bg-amber-500'
+  }
+};
 
-const structuredData = {
+const PATH_ILLUSTRATIONS = {
+  productivity: '/images/home/practice-path.svg',
+  research: '/images/home/research-path.svg',
+  entrepreneurship: '/images/home/build-path.svg'
+};
+
+function trimSummary(text = '', max = 140) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  if (normalized.length <= max) return normalized;
+  return `${normalized.slice(0, max - 1).trimEnd()}…`;
+}
+
+function resolvePathFromText(raw = '', index = 0) {
+  const text = String(raw).toLowerCase();
+  if (/(research|paper|journal|trial|evidence|study|manuscript|review)/.test(text)) return 'research';
+  if (/(startup|venture|founder|business|market|entrepreneur|pilot|mvp)/.test(text)) return 'entrepreneurship';
+  if (/(clinical|workflow|documentation|patient|opd|practice|communication)/.test(text)) return 'productivity';
+  return ['productivity', 'research', 'entrepreneurship'][index % 3];
+}
+
+const publishedFeedCards = publishedBriefs.map((post, index) => {
+  const resolvedPathKey = PATH_THEME[post?.path] ? post.path : resolvePathFromText(`${post?.title || ''} ${post?.summary || ''}`, index);
+  const typeMeta = getContentTypeMeta(post?.content_type);
+  const publishedLabel = formatDisplayDate(post?.date || '') || 'Latest update';
+  return {
+    ...post,
+    summary: trimSummary(post?.summary || '', 156),
+    pathKey: resolvedPathKey,
+    pathTheme: PATH_THEME[resolvedPathKey],
+    sourceLabel: typeMeta.label,
+    publishedLabel,
+    link: `/briefs/${post.slug}`
+  };
+});
+
+const fallbackFeedCards = (() => {
+  const merged = [];
+  let blogIndex = 0;
+  let modelIndex = 0;
+  while (merged.length < 12 && (blogIndex < blogPosts.length || modelIndex < modelSpotlights.length)) {
+    if (blogIndex < blogPosts.length) merged.push(blogPosts[blogIndex++]);
+    if (modelIndex < modelSpotlights.length) merged.push(modelSpotlights[modelIndex++]);
+  }
+  return merged.map((post, index) => {
+    const pathHint = String(post?.pathHint || '').toLowerCase();
+    const resolvedPathKey = PATH_THEME[pathHint] ? pathHint : resolvePathFromText(`${post?.title || ''} ${post?.summary || ''}`, index);
+    const publishedLabel =
+      formatDisplayDate(post?.date || '') ||
+      (String(post?.source || '').toLowerCase() === 'huggingface' ? 'Trending now' : 'Latest update');
+    return {
+      ...post,
+      summary: trimSummary(post?.summary || '', 156),
+      pathKey: resolvedPathKey,
+      pathTheme: PATH_THEME[resolvedPathKey],
+      sourceLabel: post?.sourceLabel || 'Clinical AI',
+      publishedLabel,
+      link: post?.link || 'https://greybrain.ai/clinical-ai'
+    };
+  });
+})();
+
+const showcaseFallbacks = {
+  workflow: [
+    {
+      title: 'Paper to family brief',
+      summary: 'Turn one study into a plain-language family explanation, key facts, and a patient-safe infographic outline.',
+      link: '/briefs/workflow-paper-to-family-brief',
+      pathKey: 'research'
+    },
+    {
+      title: 'Clinic note to patient instructions',
+      summary: 'Convert clinical notes into patient-facing next steps without losing caution, clarity, or workflow boundaries.',
+      link: '/briefs/workflow-clinic-note-to-patient-instructions',
+      pathKey: 'productivity'
+    },
+    {
+      title: 'Clinical problem to MVP brief',
+      summary: 'Translate a real hospital pain point into a sharper MVP concept, user boundary, and first pilot metric.',
+      link: '/briefs/workflow-clinical-problem-to-mvp-brief',
+      pathKey: 'entrepreneurship'
+    }
+  ],
+  wiki: [
+    {
+      title: 'What is RAG for doctors?',
+      summary: 'A plain-language explanation of retrieval, context grounding, and why tutor quality changes once sources are attached.',
+      link: '/briefs/wiki-what-is-rag-for-doctors',
+      pathKey: 'research'
+    },
+    {
+      title: 'What is a model card?',
+      summary: 'How to read a model’s strengths, limitations, data lineage, and safety assumptions before trusting it in healthcare.',
+      link: '/briefs/wiki-what-is-a-model-card',
+      pathKey: 'productivity'
+    },
+    {
+      title: 'What are pilot metrics?',
+      summary: 'The minimum signals clinician-founders need before calling an AI workflow useful, safe, or commercially viable.',
+      link: '/briefs/wiki-what-are-pilot-metrics',
+      pathKey: 'entrepreneurship'
+    }
+  ],
+  model_watch: [
+    {
+      title: 'Clinical multimodal models',
+      summary: 'Which model classes matter when the job includes images, notes, forms, and cross-document clinical reasoning.',
+      link: '/briefs/model-watch-clinical-multimodal-models',
+      pathKey: 'productivity'
+    },
+    {
+      title: 'Long-context research models',
+      summary: 'Models worth testing when the task is protocol comparison, literature synthesis, or reviewer-response support.',
+      link: '/briefs/model-watch-long-context-research-models',
+      pathKey: 'research'
+    },
+    {
+      title: 'Healthcare operations agents',
+      summary: 'A practical watchlist for agent systems that might reduce coordination load without becoming unsafe black boxes.',
+      link: '/briefs/model-watch-healthcare-operations-agents',
+      pathKey: 'entrepreneurship'
+    }
+  ]
+};
+
+const feedCards = publishedFeedCards.length > 0 ? publishedFeedCards : fallbackFeedCards;
+const leadInsight = feedCards[0] || null;
+const leadInsightVisual = leadInsight ? PATH_ILLUSTRATIONS[leadInsight.pathKey] || PATH_ILLUSTRATIONS.productivity : PATH_ILLUSTRATIONS.productivity;
+const sideInsights = feedCards.slice(1, 4);
+const workflowHighlights = (feedCards.filter((post) => post.content_type === 'workflow').slice(0, 3).length > 0
+  ? feedCards.filter((post) => post.content_type === 'workflow').slice(0, 3)
+  : showcaseFallbacks.workflow.map((item) => ({ ...item, pathTheme: PATH_THEME[item.pathKey] })));
+const wikiHighlights = (feedCards.filter((post) => post.content_type === 'wiki').slice(0, 3).length > 0
+  ? feedCards.filter((post) => post.content_type === 'wiki').slice(0, 3)
+  : showcaseFallbacks.wiki.map((item) => ({ ...item, pathTheme: PATH_THEME[item.pathKey] })));
+const modelWatchHighlights = (feedCards.filter((post) => post.content_type === 'model_watch').slice(0, 3).length > 0
+  ? feedCards.filter((post) => post.content_type === 'model_watch').slice(0, 3)
+  : showcaseFallbacks.model_watch.map((item) => ({ ...item, pathTheme: PATH_THEME[item.pathKey] })));
+const intelligenceCanvasCards = [
+  {
+    label: 'Featured brief',
+    title: leadInsight?.title || 'Daily AI signal',
+    pathTheme: leadInsight?.pathTheme || PATH_THEME.productivity
+  },
+  {
+    label: 'Workflow',
+    title: workflowHighlights[0]?.title || 'Reusable doctor workflow',
+    pathTheme: workflowHighlights[0]?.pathTheme || PATH_THEME.productivity
+  },
+  {
+    label: 'Wiki',
+    title: wikiHighlights[0]?.title || 'Concept explainer',
+    pathTheme: wikiHighlights[0]?.pathTheme || PATH_THEME.research
+  },
+  {
+    label: 'Model watch',
+    title: modelWatchHighlights[0]?.title || 'Model note',
+    pathTheme: modelWatchHighlights[0]?.pathTheme || PATH_THEME.entrepreneurship
+  }
+];
+const insightPathFilters = [
+  { value: 'all', label: 'All Paths' },
+  { value: 'productivity', label: 'Practice' },
+  { value: 'research', label: 'Publish' },
+  { value: 'entrepreneurship', label: 'Build' }
+];
+
+const heroTrustPoints = [
+  { label: 'Audience', value: 'Doctors, residents, and faculty' },
+  { label: 'Format', value: 'Cohorts + AI tutor + mentor review' },
+  { label: 'Start', value: 'Interactive refresher before deeper cohorts' },
+  { label: 'Recognition', value: 'IIHMRB-linked certificate pathway' }
+];
+
+const productLogicStages = [
+  {
+    label: 'Prompt',
+    title: 'Frame the doctor task clearly',
+    copy: 'Start with a note, paper, or healthcare problem that already matters.'
+  },
+  {
+    label: 'Context',
+    title: 'Attach the right source material',
+    copy: 'Guidelines, protocols, syllabus context, and examples change answer quality.'
+  },
+  {
+    label: 'Tutor',
+    title: 'Use AI to explain and structure',
+    copy: 'GreyBrain helps turn raw material into something usable, not just fluent.'
+  },
+  {
+    label: 'Review',
+    title: 'Apply clinical or mentor judgment',
+    copy: 'Drafts improve through critique, review, and assignment feedback.'
+  },
+  {
+    label: 'Output',
+    title: 'Leave with a real artifact',
+    copy: 'Patient instructions, evidence synthesis, slides, pilot briefs, and more.'
+  }
+];
+
+const pathBoards = [
+  {
+    key: 'productivity',
+    label: 'Practice',
+    href: '/tracks/clinical-ai-practitioner',
+    title: 'Reduce note, summary, and patient-communication load.',
+    copy: 'For doctors who want immediate leverage in OPD, ward, and discharge workflows.',
+    bullets: ['Notes -> patient instructions', 'Discharge -> family update', 'Guideline -> clinic checklist']
+  },
+  {
+    key: 'research',
+    label: 'Publish',
+    href: '/tracks/ai-research-accelerator',
+    title: 'Accelerate literature, evidence, and manuscript execution.',
+    copy: 'For residents and faculty who want stronger research execution without losing rigor.',
+    bullets: ['Paper -> synthesis', 'Reviewer comments -> response matrix', 'Protocol -> slide deck']
+  },
+  {
+    key: 'entrepreneurship',
+    label: 'Build',
+    href: '/tracks/doctor-ai-entrepreneurship',
+    title: 'Move from healthcare insight to pilot and venture brief.',
+    copy: 'For clinicians validating ideas, clarifying users, and making concepts testable.',
+    bullets: ['Pain point -> MVP brief', 'Workflow -> pilot KPI sheet', 'Capstone -> founder story']
+  }
+];
+const featuredPathBoard = pathBoards[0];
+const secondaryPathBoards = pathBoards.slice(1);
+
+const academySignals = [
+  {
+    label: 'Starter flow',
+    value: 'Refresher before cohort',
+    copy: 'Understand the mechanics first, then choose the deeper path.',
+    chips: ['20-30 min', 'Interactive']
+  },
+  {
+    label: 'Support layer',
+    value: 'AI tutor + mentor review',
+    copy: 'Use AI for drafts, then sharpen work with review and critique.',
+    chips: ['Drafting', 'Critique']
+  },
+  {
+    label: 'Outcome model',
+    value: 'Practice / Publish / Build',
+    copy: 'One foundation, three visible routes for doctor outcomes.',
+    chips: ['Clinical', 'Research', 'Venture']
+  }
+];
+
+const coursePathBySlug = new Map();
+for (const track of TRACKS) {
+  const pathKey =
+    track.slug === 'ai-research-accelerator'
+      ? 'research'
+      : track.slug === 'doctor-ai-entrepreneurship'
+        ? 'entrepreneurship'
+        : 'productivity';
+  for (const slug of track.courseSlugs) {
+    if (!coursePathBySlug.has(slug)) coursePathBySlug.set(slug, pathKey);
+  }
+}
+
+const courseCards = featuredCourses.map((course, index) => {
+  const inferredPath = course.trackHint || coursePathBySlug.get(course.slug) || resolvePathFromText(`${course.name} ${course.shortDescription || ''}`, index);
+  return {
+    ...course,
+    shortDescription: trimSummary(course.shortDescription || '', 134),
+    pathKey: inferredPath,
+    pathTheme: PATH_THEME[inferredPath],
+    stateLabel: course.accessModel === 'registration' ? 'Starter' : 'Cohort open',
+    deliveryLabel: course.accessModel === 'registration' ? 'Unlock after registration' : 'Cohort + AI tutor'
+  };
+});
+
+const courseBySlug = new Map(allCourses.map((course) => [course.slug, course]));
+
+const starterCourseCard = refresherCourse
+  ? {
+      ...refresherCourse,
+      shortDescription: trimSummary(refresherCourse.shortDescription || '', 164),
+      pathKey: 'productivity',
+      pathTheme: PATH_THEME.productivity,
+      stateLabel: 'Starter',
+      deliveryLabel: 'Unlock after registration'
+    }
+  : null;
+
+const cohortOfferBlueprints = [
+  { pathKey: 'productivity', slug: 'gen-ai-doctors-express' },
+  { pathKey: 'research', slug: 'ai-for-research-papers' },
+  { pathKey: 'entrepreneurship', slug: 'super-agents' }
+];
+
+const cohortOfferCards = cohortOfferBlueprints
+  .map(({ pathKey, slug }) => {
+    const course = courseBySlug.get(slug);
+    if (!course) return null;
+    return {
+      ...course,
+      shortDescription: trimSummary(course.shortDescription || '', 134),
+      pathKey,
+      pathTheme: PATH_THEME[pathKey],
+      stateLabel: 'Cohort open',
+      deliveryLabel: 'Cohort + AI tutor'
+    };
+  })
+  .filter(Boolean);
+
+const featuredCohortOffer = cohortOfferCards[0] || null;
+const secondaryCohortOffers = cohortOfferCards.slice(1, 3);
+
+const organizationStructuredData = {
   '@context': 'https://schema.org',
   '@type': 'EducationalOrganization',
   name: 'GreyBrain Academy',
   url: `${SITE_ORIGIN}/`,
   sameAs: ['https://greybrain.ai/academy', 'https://greybrain.ai/clinical-ai'],
   description:
-    'No-code AI learning for doctors and healthcare professionals through cohort training and practical implementation.',
+    'No-code AI learning for doctors across clinical productivity, research acceleration, and healthcare entrepreneurship.',
   hasOfferCatalog: {
     '@type': 'OfferCatalog',
     name: 'GreyBrain Healthcare AI Courses',
@@ -37,164 +374,633 @@ const structuredData = {
     }))
   }
 };
+
+const websiteStructuredData = {
+  '@context': 'https://schema.org',
+  '@type': 'WebSite',
+  name: 'GreyBrain Academy',
+  url: `${SITE_ORIGIN}/`,
+  description:
+    'AI courses for doctors across clinical productivity, research acceleration, and healthcare entrepreneurship.',
+  inLanguage: 'en'
+};
+
+const credentialStructuredData = {
+  '@context': 'https://schema.org',
+  '@type': 'EducationalOccupationalCredential',
+  name: 'GreyBrain Academy Program Certification (IIHMRB)',
+  recognizedBy: {
+    '@type': 'Organization',
+    name: 'IIHMR Bangalore (IIHMRB)'
+  },
+  url: `${SITE_ORIGIN}/certifications/iihmrb-generative-ai-for-doctors-certificate.pdf`,
+  description:
+    'GreyBrain Academy cohorts include certification recognition from IIHMR Bangalore for eligible program completion.'
+};
 ---
 
 <BaseLayout
-  title="GreyBrain Academy | No-Code AI Courses for Doctors"
-  description="Learn AI for healthcare practice, research, and entrepreneurship. Explore cohort-based courses, practical tracks, and guided AI tutoring."
+  title="GreyBrain Academy | AI courses for doctors who want to practice, publish, and build"
+  description="GreyBrain Academy helps doctors use AI for clinical productivity, research acceleration, and healthcare entrepreneurship through cohort-based learning and AI tutor support."
   canonical={`${SITE_ORIGIN}/`}
+  ogImage={OG_IMAGE}
+  ogImageAlt="GreyBrain Academy - AI-enabled learning for doctors"
 >
-  <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
+  <script type="application/ld+json" set:html={JSON.stringify(organizationStructuredData)} />
+  <script type="application/ld+json" set:html={JSON.stringify(websiteStructuredData)} />
+  <script type="application/ld+json" set:html={JSON.stringify(credentialStructuredData)} />
 
-  <section class="relative mb-8 overflow-hidden rounded-[2rem] bg-slate-950 px-6 py-10 text-white shadow-2xl md:px-10 md:py-12">
-    <div class="absolute right-0 top-0 h-48 w-48 rounded-full bg-cyan-400/25 blur-3xl"></div>
-    <div class="absolute bottom-0 left-0 h-44 w-44 rounded-full bg-amber-300/25 blur-3xl"></div>
-
-    <div class="relative z-10 grid gap-6 lg:grid-cols-[1.3fr_0.7fr] lg:items-end">
-      <div>
-        <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
-          GreyBrain Academy
-        </p>
-        <h1 class="mb-4 text-3xl font-extrabold leading-tight md:text-5xl">
-          Become An AI-Enabled Doctor, Operator, or Founder
-        </h1>
-        <p class="max-w-2xl text-base text-slate-200 md:text-lg">
-          Cohort-based no-code AI learning for healthcare professionals. Learn with practical implementation workflows,
-          mentor guidance, and personalized AI tutoring.
-        </p>
-      </div>
-
-      <div class="grid gap-3 text-sm">
-        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Next Intake</p>
-          <p class="mt-1 text-lg font-semibold text-white">Enrollment Window Open</p>
-        </div>
-        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Learning Format</p>
-          <p class="mt-1 text-lg font-semibold text-white">Cohort + AI Tutor + Projects</p>
-        </div>
-        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Core Audience</p>
-          <p class="mt-1 text-lg font-semibold text-white">Doctors and Healthcare Teams</p>
-        </div>
-      </div>
+  <section class="academy-hero cognitive-hero reveal-up mb-8 px-5 py-6 md:px-8 md:py-8">
+    <div class="cognitive-aurora" aria-hidden="true"></div>
+    <div class="cognitive-scan" aria-hidden="true"></div>
+    <div class="cognitive-beacon" aria-hidden="true"></div>
+    <div class="cognitive-code-rain" aria-hidden="true">
+      <div class="code-line line-a">PROMPT CONTEXT REVIEW OUTPUT</div>
+      <div class="code-line line-b">CLINICAL NOTE MANUSCRIPT PILOT</div>
+      <div class="code-line line-c">TUTOR MENTOR COHORT CERTIFICATE</div>
+      <div class="code-line line-d">PRACTICE PUBLISH BUILD PRACTICE</div>
+      <div class="code-line line-e">DOCTORS WHO CAN USE AI CAN LEAD</div>
     </div>
-  </section>
-
-  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Clinical AI Briefs</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Fresh Weekly Signals You Can Act On</h2>
-        <p class="mt-1 text-sm text-slate-600">
-          Keep your edge with high-frequency GreyBrain clinical AI updates. Learn first, then enroll before the next cohort closes.
-        </p>
-      </div>
-      <a
-        href="https://greybrain.ai/clinical-ai"
-        target="_blank"
-        rel="noreferrer"
-        class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-      >
-        Read Clinical AI Feed
-      </a>
+    <div class="cognitive-neural-core" aria-hidden="true">
+      <svg viewBox="0 0 260 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path class="core-flow" d="M10 42H96" />
+        <path class="core-flow flow-c" d="M164 42H250" />
+        <path class="core-flow" d="M10 110H96" />
+        <path class="core-flow flow-d" d="M164 110H250" />
+        <rect class="core-chip" x="96" y="20" width="68" height="132" rx="16" />
+        <rect class="core-chip-inner" x="112" y="40" width="36" height="92" rx="10" />
+        <path class="core-trace" d="M121 58H139" />
+        <path class="core-trace trace-c" d="M121 80H139" />
+        <path class="core-trace trace-d" d="M121 102H139" />
+        <path class="core-trace trace-e" d="M121 124H139" />
+        <circle class="data-packet" cx="44" cy="42" r="5" />
+        <circle class="data-packet packet-b" cx="216" cy="42" r="5" />
+        <circle class="data-packet packet-c" cx="44" cy="110" r="5" />
+        <circle class="data-packet packet-d" cx="216" cy="110" r="5" />
+      </svg>
     </div>
 
-    <ClinicalFeedPanel client:load initialPosts={blogPosts} />
-  </section>
-
-  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+    <div class="academy-hero-grid relative z-10">
       <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Choose Your Track</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Goal-Based Learning Paths</h2>
-        <p class="mt-1 text-sm text-slate-600">Pick a role outcome and follow a curated sequence of courses with practical execution focus.</p>
-      </div>
-      <a href="/tracks" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
-        Compare Tracks
-      </a>
-    </div>
-
-    <div class="grid gap-3 md:grid-cols-3">
-      {TRACKS.map((track) => (
-        <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-emerald-700">{track.duration}</p>
-          <h3 class="mt-2 text-xl font-bold text-slate-900">{track.title}</h3>
-          <p class="mt-2 text-sm text-slate-600">{track.tagline}</p>
-          <p class="mt-2 text-xs text-slate-500">Ideal for: {track.idealFor}</p>
-          <a href={`/tracks/${track.slug}`} class="mt-4 inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-            View Track
+        <div class="flex flex-wrap items-center gap-3">
+          <span class="academy-kicker">GreyBrain Academy</span>
+          <a
+            href="/certifications/iihmrb-generative-ai-for-doctors-certificate.pdf"
+            target="_blank"
+            rel="noreferrer"
+            class="academy-trust-badge"
+          >
+            IIHMRB Recognized
           </a>
-        </article>
-      ))}
+        </div>
+        <h1 class="academy-hero-title mt-5 text-white">The AI Academy for Doctors Who Want to <em>Practice, Publish, and Build</em></h1>
+        <p class="academy-hero-standfirst mt-5">
+          GreyBrain helps doctors use AI in real work: clinical productivity, academic research, and healthcare venture building.
+        </p>
+        <div class="mt-6">
+          <AudienceCtaSwitcher client:load enrollTargetId="enroll" />
+        </div>
+        <div class="hero-trust-strip mt-5">
+          {heroTrustPoints.map((item) => (
+            <article class="hero-trust-chip">
+              <p class="hero-trust-label">{item.label}</p>
+              <p class="hero-trust-value">{item.value}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+
+      <aside class="academy-instrument">
+        <div class="academy-instrument-panel">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <p class="academy-pipeline-label">GreyBrain workflow</p>
+              <h2 class="mt-2 text-2xl font-extrabold text-white">Prompt. Ground. Review. Use.</h2>
+            </div>
+            <span class="rounded-full border border-white/12 bg-white/8 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-200">Doctor-ready AI</span>
+          </div>
+          <p class="academy-instrument-caption">One system turns doctor questions into clinical assets, research outputs, and venture-ready briefs.</p>
+          <div class="academy-instrument-stage mt-4" aria-hidden="true">
+            <div class="academy-stage-halo"></div>
+            <div class="academy-stage-axis academy-stage-axis--h"></div>
+            <div class="academy-stage-axis academy-stage-axis--v"></div>
+            <div class="academy-stage-label academy-stage-label--prompt">Prompt</div>
+            <div class="academy-stage-label academy-stage-label--context">Context</div>
+            <div class="academy-stage-label academy-stage-label--review">Review</div>
+            <div class="academy-stage-label academy-stage-label--practice">Practice</div>
+            <div class="academy-stage-label academy-stage-label--publish">Publish</div>
+            <div class="academy-stage-label academy-stage-label--build">Build</div>
+            <div class="academy-stage-core">
+              <span>GreyBrain tutor</span>
+            </div>
+            <div class="academy-stage-note academy-stage-note--left">Doctor task becomes a grounded draft</div>
+            <div class="academy-stage-note academy-stage-note--right">Three routes, one learning system</div>
+          </div>
+        </div>
+      </aside>
     </div>
   </section>
 
-  <section id="courses" class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Ongoing Courses</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Enroll In The Current Cohort Catalog</h2>
-        <p class="mt-1 text-sm text-slate-600">Course pages now follow a consistent conversion template with outcomes, syllabus signals, and enrollment actions.</p>
+  <section class="public-section reveal-up reveal-delay-1 mb-8 academy-logic-shell">
+    <div class="academy-logic-grid">
+      <article class="academy-logic-intro">
+        <p class="public-section-kicker">How GreyBrain works</p>
+        <h2 class="public-section-title">GreyBrain lowers the barrier before it raises the ambition.</h2>
+        <p class="public-section-copy">
+          Doctors do not need more vague AI noise. They need one clear system that explains how AI becomes reliable work in practice,
+          research, and venture building.
+        </p>
+        <div class="academy-logic-points">
+          <span>Doctor language</span>
+          <span>Real tasks</span>
+          <span>AI tutor</span>
+          <span>Mentor review</span>
+        </div>
+      </article>
+
+      <div class="academy-logic-map">
+        <div class="academy-logic-rail" aria-hidden="true"></div>
+        {productLogicStages.map((stage, index) => (
+          <article class={`academy-logic-step academy-logic-step--${index === 2 ? 'core' : 'edge'}`}>
+            <div class="academy-logic-step-index">{String(index + 1).padStart(2, '0')}</div>
+            <div class="academy-logic-step-body">
+              <p class="academy-manifesto-label">{stage.label}</p>
+              <h3>{stage.title}</h3>
+              <p>{stage.copy}</p>
+            </div>
+          </article>
+        ))}
       </div>
-      <a href="/courses" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
-        Browse All Courses
-      </a>
+    </div>
+  </section>
+
+  <section class="public-section reveal-up reveal-delay-2 mb-8 academy-path-shell">
+    <div class="public-section-head public-section-head--action">
+      <div>
+        <p class="public-section-kicker">Three outcome paths</p>
+        <h2 class="public-section-title">One foundation. Three visible doctor futures.</h2>
+      </div>
+      <div class="academy-path-caption">Choose the first outcome you want AI to improve.</div>
+    </div>
+    <div class="academy-path-stage mt-6">
+      <article class={`academy-path-feature ${PATH_THEME[featuredPathBoard.key].border}`}>
+        <div class="academy-path-feature-copy">
+          <div class="academy-path-board-head">
+            <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${PATH_THEME[featuredPathBoard.key].badge}`}>{featuredPathBoard.label}</span>
+            <span class="academy-output-mono text-[0.7rem] uppercase tracking-[0.12em] text-slate-500">Featured route</span>
+          </div>
+          <h3>{featuredPathBoard.title}</h3>
+          <p>{featuredPathBoard.copy}</p>
+          <div class="academy-path-pill-list">
+            {featuredPathBoard.bullets.map((item) => (
+              <span>{item}</span>
+            ))}
+          </div>
+          <div class="mt-5">
+            <a href={featuredPathBoard.href} class="public-inline-action">Explore {featuredPathBoard.label}</a>
+          </div>
+        </div>
+        <div class="academy-path-feature-visual">
+          <img
+            src={PATH_ILLUSTRATIONS[featuredPathBoard.key]}
+            alt={`${featuredPathBoard.label} illustration`}
+            class="academy-path-illustration academy-path-illustration--feature"
+            loading="lazy"
+          />
+          <div class="academy-path-floating-note academy-path-floating-note--top">Doctors who want practical leverage first</div>
+          <div class="academy-path-floating-note academy-path-floating-note--bottom">From clinic friction -> usable patient-facing output</div>
+        </div>
+      </article>
+
+      <div class="academy-path-side-stack">
+        {secondaryPathBoards.map((path) => (
+          <article class={`academy-path-side ${PATH_THEME[path.key].border}`}>
+            <img
+              src={PATH_ILLUSTRATIONS[path.key]}
+              alt={`${path.label} illustration`}
+              class="academy-path-illustration academy-path-illustration--side"
+              loading="lazy"
+            />
+            <div class="academy-path-board-head">
+              <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${PATH_THEME[path.key].badge}`}>{path.label}</span>
+              <span class="academy-output-mono text-[0.7rem] uppercase tracking-[0.12em] text-slate-500">Route</span>
+            </div>
+            <h3>{path.title}</h3>
+            <p>{path.copy}</p>
+            <div class="academy-path-pill-list">
+              {path.bullets.slice(0, 2).map((item) => (
+                <span>{item}</span>
+              ))}
+            </div>
+            <div class="mt-4">
+              <a href={path.href} class="public-inline-link">Open {path.label}</a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section id="insights" class="public-section reveal-up reveal-delay-2 mb-8 academy-signal-shell">
+    <div class="public-section-head public-section-head--action">
+      <div>
+        <p class="public-section-kicker">Academy signal board</p>
+        <h2 class="public-section-title">Daily signals, explainers, and reusable workflows for doctors using AI seriously.</h2>
+      </div>
+      <a href="/briefs" class="public-inline-action">Open Briefs Library</a>
     </div>
 
-    <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-      {featuredCourses.map((course, index) => (
-        <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-amber-700">{urgencyLabels[index % urgencyLabels.length]}</p>
-          <h3 class="mt-2 text-lg font-bold text-slate-900 line-clamp-2">{course.name}</h3>
-          <p class="mt-2 text-sm text-slate-600 line-clamp-3">{course.shortDescription}</p>
-          <p class="mt-2 text-xs text-slate-500">
-            {course.lessonCount > 0 ? `${course.lessonCount} lessons` : 'Structured curriculum'}{course.rating > 0 ? ` • ${course.rating}/10 rating` : ''}
-          </p>
-          <div class="mt-4 flex flex-wrap gap-2">
-            <a href={`/courses/${course.slug}`} class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-              View Details
-            </a>
-            <a
-              href={course.academyUrl}
-              target="_blank"
-              rel="noreferrer"
-              class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
-            >
-              Enroll Now
-            </a>
+    <div class="academy-intelligence-canvas mt-6">
+      <div class="academy-intelligence-story">
+        <p class="academy-manifesto-label">Live knowledge system</p>
+        <h3>Not a blog feed. A daily operating surface for doctors learning AI.</h3>
+        <p>Signals, workflows, concept explainers, and model notes are arranged to help doctors return, scan quickly, and open the next useful artifact.</p>
+        <div class="academy-signal-chips mt-5">
+          <span>Daily brief</span>
+          <span>Workflow</span>
+          <span>Wiki</span>
+          <span>Model watch</span>
+        </div>
+      </div>
+
+      <div class="academy-intelligence-stage" aria-hidden="true">
+        <div class="academy-intelligence-orb">
+          <span class="academy-output-mono">GreyBrain signal system</span>
+        </div>
+        <div class="academy-intelligence-grid">
+          {intelligenceCanvasCards.map((card) => (
+            <article class={`academy-intelligence-node ${card.pathTheme.border}`}>
+              <span class={`rounded-full px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${card.pathTheme.badge}`}>{card.label}</span>
+              <h4>{card.title}</h4>
+            </article>
+          ))}
+        </div>
+        <div class="academy-intelligence-line academy-intelligence-line--one"></div>
+        <div class="academy-intelligence-line academy-intelligence-line--two"></div>
+      </div>
+    </div>
+
+    <div class="academy-signal-strip mt-5 grid gap-3 md:grid-cols-3">
+      {academySignals.map((signal) => (
+        <article class="academy-signal-item">
+          <p class="academy-manifesto-label">{signal.label}</p>
+          <h3>{signal.value}</h3>
+          <p>{signal.copy}</p>
+          <div class="academy-signal-chips">
+            {signal.chips.map((chip) => (
+              <span>{chip}</span>
+            ))}
           </div>
         </article>
       ))}
     </div>
+
+    <div class="academy-insight-filter-row mb-4 mt-6 flex flex-wrap gap-2">
+      {insightPathFilters.map((filter) => (
+        <button
+          type="button"
+          class="home-insight-filter academy-insight-filter px-4 py-2 text-sm font-semibold transition"
+          data-filter-value={filter.value}
+        >
+          {filter.label}
+        </button>
+      ))}
+    </div>
+
+    <div class="academy-signal-grid">
+      {leadInsight ? (
+        <article class={`academy-signal-lead home-insight-card ${leadInsight.pathTheme.border}`} data-path={leadInsight.pathKey}>
+          <div class="academy-signal-lead-grid">
+            <div>
+              <div class="public-story-meta">
+                <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${leadInsight.pathTheme.badge}`}>{leadInsight.pathTheme.label}</span>
+                <span class="academy-output-mono text-[0.7rem] uppercase tracking-[0.12em] text-slate-500">{leadInsight.publishedLabel}</span>
+              </div>
+              <p class="academy-manifesto-label mt-4">Featured signal</p>
+              <h3>{leadInsight.title}</h3>
+              <p>{trimSummary(leadInsight.summary, 132)}</p>
+              <div class="public-story-footer">
+                <span class="public-story-source">{leadInsight.sourceLabel}</span>
+                <a href={leadInsight.link} class="public-inline-link">Read brief</a>
+              </div>
+            </div>
+            <div class="academy-signal-preview">
+              <img src={leadInsightVisual} alt={`${leadInsight.pathTheme.label} signal preview`} class="academy-signal-preview-image" loading="lazy" />
+              <div class="academy-signal-preview-meta">
+                <span>{leadInsight.pathTheme.label}</span>
+                <span>{leadInsight.sourceLabel}</span>
+                <span>Why open: one useful signal before the deeper library.</span>
+              </div>
+            </div>
+          </div>
+        </article>
+      ) : null}
+
+      <div class="academy-signal-stack">
+        {sideInsights.map((post) => (
+          <article class={`academy-signal-side home-insight-card ${post.pathTheme.border}`} data-path={post.pathKey}>
+            <div class="academy-signal-side-head">
+              <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${post.pathTheme.badge}`}>{post.pathTheme.label}</span>
+              <span class="academy-output-mono text-[0.68rem] uppercase tracking-[0.12em] text-slate-500">{post.publishedLabel}</span>
+            </div>
+            <h3>{post.title}</h3>
+            <p class="academy-signal-side-copy">{trimSummary(post.summary || '', 88)}</p>
+            <div class="public-story-footer">
+              <span class="public-story-source">{post.sourceLabel}</span>
+              <a href={post.link} class="public-inline-link">Open</a>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+
+    <div class="academy-knowledge-stage mt-6">
+      <section class="home-insight-group academy-knowledge-feature" data-group="workflow">
+        <div class="public-library-head">
+          <div>
+            <p class="public-section-kicker">Workflow Library</p>
+            <h3 class="public-library-title">Reusable doctor workflows</h3>
+          </div>
+          <a href="/briefs" class="public-inline-link">View all</a>
+        </div>
+        <div class="academy-knowledge-list mt-4">
+          {workflowHighlights.map((post) => (
+            <article class="home-insight-card academy-knowledge-card" data-path={post.pathKey}>
+              <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${post.pathTheme.badge}`}>{post.pathTheme.label}</span>
+              <h4>{post.title}</h4>
+              <a href={post.link} class="public-inline-link">Open workflow</a>
+            </article>
+          ))}
+        </div>
+      </section>
+      <div class="academy-knowledge-side">
+        <section class="home-insight-group academy-knowledge-panel" data-group="wiki">
+          <div class="public-library-head">
+            <div>
+              <p class="public-section-kicker">AI Wiki</p>
+              <h3 class="public-library-title">Concepts doctors should understand once</h3>
+            </div>
+            <a href="/briefs" class="public-inline-link">View all</a>
+          </div>
+          <div class="academy-knowledge-list mt-4">
+            {wikiHighlights.map((post) => (
+              <article class="home-insight-card academy-knowledge-card" data-path={post.pathKey}>
+                <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${post.pathTheme.badge}`}>{post.pathTheme.label}</span>
+                <h4>{post.title}</h4>
+                <a href={post.link} class="public-inline-link">Open explainer</a>
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <section class="home-insight-group academy-knowledge-panel" data-group="model_watch">
+          <div class="public-library-head">
+            <div>
+              <p class="public-section-kicker">Model Watch</p>
+              <h3 class="public-library-title">Models worth testing</h3>
+            </div>
+            <a href="/briefs" class="public-inline-link">View all</a>
+          </div>
+          <div class="academy-knowledge-list mt-4">
+            {modelWatchHighlights.map((post) => (
+              <article class="home-insight-card academy-knowledge-card" data-path={post.pathKey}>
+                <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${post.pathTheme.badge}`}>{post.pathTheme.label}</span>
+                <h4>{post.title}</h4>
+                <a href={post.link} class="public-inline-link">Open note</a>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
   </section>
 
-  <section class="mb-8 grid gap-4 md:grid-cols-3">
-    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">AI-Native Delivery</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">Personalized Tutor Support</h3>
-      <p class="mt-1 text-sm text-slate-600">Every learner gets guided AI support aligned to syllabus context and assignments.</p>
-    </article>
-    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Healthcare Context</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">Built For Clinical Reality</h3>
-      <p class="mt-1 text-sm text-slate-600">Workflows are tuned to healthcare communication, research, compliance, and operations.</p>
-    </article>
-    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Career Outcomes</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">From AI-Curious to AI-Confident</h3>
-      <p class="mt-1 text-sm text-slate-600">Build implementation-ready AI capability, not just theory, with guided project execution.</p>
-    </article>
+  <section id="courses" class="public-section reveal-up reveal-delay-3 mb-8 academy-course-shell">
+    <div class="public-section-head public-section-head--action">
+      <div>
+        <p class="public-section-kicker">Current cohorts</p>
+        <h2 class="public-section-title">Start with the refresher, then move into the cohort that matches your next outcome.</h2>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <a href="/courses" class="public-inline-action">View all courses</a>
+        <a href="/tracks" class="public-inline-action public-inline-action--ghost">Compare paths</a>
+      </div>
+    </div>
+
+    <div class="academy-offer-stage mt-6">
+      {starterCourseCard ? (
+        <article class="academy-starter-showcase">
+          <div class="academy-starter-showcase-copy">
+            <div class="public-story-meta">
+              <span class="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-800">Starter entry</span>
+              <span class="academy-output-mono text-[0.68rem] uppercase tracking-[0.12em] text-slate-500">{starterCourseCard.deliveryLabel}</span>
+            </div>
+            <p class="academy-manifesto-label mt-4">Begin here</p>
+            <h3>{starterCourseCard.name}</h3>
+            <p>{starterCourseCard.shortDescription}</p>
+            <div class="academy-course-meta-row">
+              <span>20-30 min</span>
+              <span>{starterCourseCard.lessonCount || starterCourseCard.moduleCount || 0} lessons</span>
+              <span>Prompt -> Context -> Review</span>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-2">
+              <a href={`/courses/${starterCourseCard.slug}`} class="public-inline-action public-inline-action--ghost">View refresher</a>
+              <a href={starterCourseCard.ctaUrl || '/#enroll'} class="public-inline-action">{starterCourseCard.ctaLabel || 'Register to unlock'}</a>
+            </div>
+          </div>
+          <div class="academy-starter-showcase-visual">
+            <img src="/images/home/refresher-flow.svg" alt="AI refresher starter flow" class="academy-starter-showcase-image" loading="lazy" />
+            <div class="academy-starter-showcase-note academy-starter-showcase-note--top">Prompt -> Context -> Model -> Review -> Output</div>
+            <div class="academy-starter-showcase-note academy-starter-showcase-note--bottom">Unlock after registration. Finish once. Use it as your on-ramp into the deeper cohort.</div>
+            <div class="academy-course-gridline academy-course-gridline--one" aria-hidden="true"></div>
+            <div class="academy-course-gridline academy-course-gridline--two" aria-hidden="true"></div>
+          </div>
+        </article>
+      ) : null}
+
+      {featuredCohortOffer ? (
+        <div class="academy-cohort-showcase">
+          <article class={`academy-cohort-feature ${featuredCohortOffer.pathTheme.border}`}>
+            <div class="academy-cohort-feature-copy">
+              <div class="public-story-meta">
+                <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${featuredCohortOffer.pathTheme.badge}`}>{featuredCohortOffer.pathTheme.label}</span>
+                <span class="academy-output-mono text-[0.68rem] uppercase tracking-[0.12em] text-slate-500">{featuredCohortOffer.stateLabel}</span>
+              </div>
+              <p class="academy-manifesto-label mt-4">Featured cohort</p>
+              <h3>{featuredCohortOffer.name}</h3>
+              <p>{featuredCohortOffer.shortDescription}</p>
+              <div class="academy-course-meta-row">
+                <span>{featuredCohortOffer.deliveryLabel}</span>
+                <span>{featuredCohortOffer.lessonCount || featuredCohortOffer.moduleCount || 0} lessons</span>
+                <span>Mentor-led cohort</span>
+              </div>
+              <div class="academy-path-pill-list mt-5">
+                {featuredCohortOffer.pathKey === 'productivity' ? (
+                  <>
+                    <span>Clinical drafting</span>
+                    <span>Patient communication</span>
+                    <span>Workflow critique</span>
+                  </>
+                ) : null}
+                {featuredCohortOffer.pathKey === 'research' ? (
+                  <>
+                    <span>Literature synthesis</span>
+                    <span>Protocol critique</span>
+                    <span>Manuscript support</span>
+                  </>
+                ) : null}
+                {featuredCohortOffer.pathKey === 'entrepreneurship' ? (
+                  <>
+                    <span>Problem framing</span>
+                    <span>Pilot thinking</span>
+                    <span>Founder workflow</span>
+                  </>
+                ) : null}
+              </div>
+              <div class="mt-5 flex flex-wrap gap-2">
+                <a href={`/courses/${featuredCohortOffer.slug}`} class="public-inline-action">View cohort</a>
+                <a href="/tracks" class="public-inline-action public-inline-action--ghost">Compare all paths</a>
+              </div>
+            </div>
+            <div class="academy-cohort-feature-visual">
+              <img
+                src={PATH_ILLUSTRATIONS[featuredCohortOffer.pathKey] || '/images/home/practice-path.svg'}
+                alt={`${featuredCohortOffer.pathTheme.label} cohort illustration`}
+                class="academy-cohort-feature-image"
+                loading="lazy"
+              />
+              <div class="academy-cohort-feature-note academy-cohort-feature-note--top">
+                Outcome focus
+                <strong>{featuredCohortOffer.pathKey === 'productivity' ? 'Clinic friction -> usable draft' : featuredCohortOffer.pathKey === 'research' ? 'Paper load -> evidence structure' : 'Pain point -> pilot brief'}</strong>
+              </div>
+              <div class="academy-cohort-feature-note academy-cohort-feature-note--bottom">
+                Tutor-grounded assignments, mentor review, and a clearer route into implementation.
+              </div>
+              <div class="academy-course-gridline academy-course-gridline--one" aria-hidden="true"></div>
+              <div class="academy-course-gridline academy-course-gridline--three" aria-hidden="true"></div>
+            </div>
+          </article>
+
+          <div class="academy-cohort-support-grid">
+            {secondaryCohortOffers.map((course) => (
+              <article class={`academy-cohort-support ${course.pathTheme.border}`}>
+                <div class="academy-cohort-support-visual">
+                  <img
+                    src={PATH_ILLUSTRATIONS[course.pathKey] || '/images/home/research-path.svg'}
+                    alt={`${course.pathTheme.label} cohort illustration`}
+                    class="academy-cohort-support-image"
+                    loading="lazy"
+                  />
+                  <div class="academy-course-gridline academy-course-gridline--two" aria-hidden="true"></div>
+                </div>
+                <div class="public-story-meta mt-4">
+                  <span class={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] ${course.pathTheme.badge}`}>{course.pathTheme.label}</span>
+                  <span class="academy-output-mono text-[0.68rem] uppercase tracking-[0.12em] text-slate-500">{course.stateLabel}</span>
+                </div>
+                <h4>{course.name}</h4>
+                <p>{trimSummary(course.shortDescription || '', 110)}</p>
+                <div class="public-course-footer">
+                  <span>{course.deliveryLabel}</span>
+                  <a href={`/courses/${course.slug}`} class="public-inline-link">Open cohort</a>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
   </section>
 
-  <CounselorChat client:load />
-  <WebinarLeadForm client:load siteKey={turnstileSiteKey} />
-  <ChatInterface client:load />
+  <section id="enroll" class="public-section reveal-up reveal-delay-4 mb-8 academy-final-stage-shell">
+    <div class="public-section-head public-section-head--action">
+      <div>
+        <p class="public-section-kicker">Enrollment and counselor</p>
+        <h2 class="public-section-title">Start with registration, then use the counselor only where you still need clarity.</h2>
+        <p class="public-section-copy">GreyBrain is designed to lower the barrier first: unlock the refresher, review the path, then ask targeted questions on cohort, certification, schedule, or fit.</p>
+      </div>
+      <div class="public-annotation">
+        Covers Path 1, Path 2, Path 3, onboarding, assignments, and IIHMRB certificate questions.
+      </div>
+    </div>
 
-  <section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-600">
-    Explore tracks on <a href="/tracks" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/tracks</a>, full catalog on
-    <a href="/courses" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/courses</a>, partner story on
-    <a href="/platform" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/platform</a>, and internal operations on
-    <a href="/console" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/console</a>.
+    <div class="academy-final-stage mt-6">
+      <aside class="academy-final-intro">
+        <p class="academy-manifesto-label">How entry works</p>
+        <h3>Register once. Unlock the refresher. Move into the right cohort.</h3>
+        <p>The starter layer explains prompt, context, model behavior, review, and output before you commit to the deeper path.</p>
+        <div class="academy-course-meta-row mt-4">
+          <span>Low-friction entry</span>
+          <span>Interactive refresher</span>
+          <span>Mentor-led cohorts</span>
+        </div>
+        {refresherCourse ? (
+          <div class="academy-final-refresher">
+            <img src="/images/home/refresher-flow.svg" alt="AI refresher learning flow" class="academy-final-refresher-image" loading="lazy" />
+            <div class="academy-final-refresher-copy">
+              <div class="public-story-meta">
+                <span class="rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.1em] text-emerald-800">Starter course</span>
+                <span class="academy-output-mono text-[0.68rem] uppercase tracking-[0.12em] text-slate-500">20-30 min orientation</span>
+              </div>
+              <h4>{refresherCourse.name}</h4>
+              <p>{trimSummary(refresherCourse.shortDescription || '', 132)}</p>
+              <div class="mt-4 flex flex-wrap gap-2">
+                <a href={`/courses/${refresherCourse.slug}`} class="public-inline-link">View refresher</a>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </aside>
+
+      <div class="academy-final-enroll">
+        <WebinarLeadForm client:load mode="compact" defaultCourseSlug="ai-productivity-clinical-practice" />
+      </div>
+
+      <div class="academy-final-counselor">
+        <div class="academy-final-counselor-head">
+          <p class="academy-manifesto-label">Counselor support</p>
+          <h3>Ask path, fee, schedule, certification, and onboarding questions before you commit.</h3>
+          <p>The counselor is FAQ-first. Review what matters, then open the chat only for the next unresolved question.</p>
+        </div>
+        <CounselorChat client:load mode="embedded" className="academy-final-counselor-panel min-h-[24rem]" />
+      </div>
+    </div>
   </section>
+
+  <script is:inline>
+    (() => {
+      const chips = Array.from(document.querySelectorAll('.home-insight-filter'));
+      if (!chips.length) return;
+      const cards = Array.from(document.querySelectorAll('.home-insight-card'));
+      const groups = Array.from(document.querySelectorAll('.home-insight-group'));
+      const state = { path: 'all' };
+
+      const render = () => {
+        cards.forEach((card) => {
+          const matches = state.path === 'all' || card.dataset.path === state.path;
+          card.style.display = matches ? '' : 'none';
+        });
+
+        groups.forEach((group) => {
+          const visibleChildren = group.querySelectorAll('.home-insight-card:not([style*="display: none"])').length;
+          group.style.display = visibleChildren > 0 ? '' : 'none';
+        });
+
+        chips.forEach((chip) => {
+          const active = chip.dataset.filterValue === state.path;
+          chip.classList.toggle('is-active', active);
+        });
+      };
+
+      chips.forEach((chip) => {
+        chip.addEventListener('click', () => {
+          state.path = chip.dataset.filterValue || 'all';
+          render();
+        });
+      });
+
+      render();
+    })();
+  </script>
+
+  <HomeEngagementBar client:load enrollTargetId="enroll" />
 </BaseLayout>

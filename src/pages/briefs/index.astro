@@ -1,0 +1,244 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { fetchPublishedBriefs, formatBriefDate, getBriefPathMeta, getContentTypeMeta } from '../../lib/briefs.js';
+
+const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const posts = await fetchPublishedBriefs(120).catch(() => []);
+const sortedPosts = [...posts].sort((a, b) => Number(new Date(b.date || 0)) - Number(new Date(a.date || 0)));
+const leadPost = sortedPosts[0] || null;
+const featurePosts = sortedPosts.slice(1, 4);
+const archivePosts = sortedPosts.slice(4);
+const pathFilters = [
+  { value: 'all', label: 'All Paths' },
+  { value: 'productivity', label: 'Practice' },
+  { value: 'research', label: 'Publish' },
+  { value: 'entrepreneurship', label: 'Build' }
+];
+const typeFilters = [
+  { value: 'all', label: 'All Types' },
+  { value: 'daily_brief', label: 'Daily Briefs' },
+  { value: 'workflow', label: 'Workflows' },
+  { value: 'wiki', label: 'Wiki' },
+  { value: 'model_watch', label: 'Model Watch' }
+];
+---
+
+<BaseLayout
+  title="GreyBrain Briefs"
+  description="A daily clinical AI briefing system for doctors across practice, research, and entrepreneurship."
+  canonical={`${SITE_ORIGIN}/briefs`}
+>
+  <section class="mx-auto max-w-6xl px-4 py-12 md:px-6 md:py-16">
+    <div class="rounded-[2rem] border border-slate-200 bg-white/95 p-6 shadow-sm md:p-10">
+      <div class="grid gap-8 lg:grid-cols-[1.25fr_0.75fr]">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">GreyBrain Briefs</p>
+          <h1 class="mt-2 max-w-4xl text-3xl font-extrabold leading-tight tracking-tight text-slate-950 md:text-5xl">
+            A clinician-first AI briefing system for doctors who want to practice, publish, and build.
+          </h1>
+          <p class="mt-4 max-w-3xl text-base leading-8 text-slate-600 md:text-lg">
+            Daily signals, workflow patterns, model watch notes, and evergreen wiki entries organized around the actual outcomes doctors care about.
+          </p>
+        </div>
+
+        <div class="grid gap-3 self-start">
+          <div class="rounded-2xl border border-emerald-200 bg-emerald-50/70 p-4">
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-emerald-800">Editorial System</p>
+            <p class="mt-2 text-lg font-bold text-slate-950">Daily signal + reusable workflows + AI wiki</p>
+          </div>
+          <div class="rounded-2xl border border-sky-200 bg-sky-50/70 p-4">
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-sky-800">Organized by Outcome</p>
+            <p class="mt-2 text-sm leading-7 text-slate-700">Practice for clinical work, Publish for research output, Build for healthcare ventures.</p>
+          </div>
+          <div class="rounded-2xl border border-amber-200 bg-amber-50/70 p-4">
+            <p class="text-xs font-semibold uppercase tracking-[0.16em] text-amber-800">Use With Courses</p>
+            <p class="mt-2 text-sm leading-7 text-slate-700">Each brief can route readers into the right GreyBrain track, cohort, and AI tutor flow.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 pb-6 md:px-6">
+    <div class="rounded-[2rem] border border-slate-200 bg-white/95 p-5 shadow-sm md:p-6">
+      <div class="flex flex-col gap-5">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Filter Briefs</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            {pathFilters.map((filter) => (
+              <button
+                class="brief-filter-chip rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-900 hover:text-slate-950"
+                data-filter-group="path"
+                data-filter-value={filter.value}
+                type="button"
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <div class="flex flex-wrap gap-2">
+            {typeFilters.map((filter) => (
+              <button
+                class="brief-filter-chip rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-900 hover:text-slate-950"
+                data-filter-group="type"
+                data-filter-value={filter.value}
+                type="button"
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {leadPost ? (
+    <section class="mx-auto max-w-6xl px-4 pb-6 md:px-6">
+      <a
+        href={`/briefs/${leadPost.slug}`}
+        class="brief-card block rounded-[2rem] border border-slate-200 bg-white/95 p-6 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 md:p-8"
+        data-path={leadPost.path || 'productivity'}
+        data-type={leadPost.content_type || 'daily_brief'}
+      >
+        <div class="flex flex-wrap items-center gap-2 text-xs font-semibold uppercase tracking-[0.16em]">
+          <span class={`rounded-full px-3 py-1 ${
+            getBriefPathMeta(leadPost.path).accent === 'emerald'
+              ? 'bg-emerald-50 text-emerald-800'
+              : getBriefPathMeta(leadPost.path).accent === 'sky'
+                ? 'bg-sky-50 text-sky-800'
+                : 'bg-amber-50 text-amber-800'
+          }`}>
+            {getBriefPathMeta(leadPost.path).label}
+          </span>
+          <span class="rounded-full bg-slate-100 px-3 py-1 text-slate-600">{getContentTypeMeta(leadPost.content_type).label}</span>
+          <span class="text-slate-500">{formatBriefDate(leadPost.published_at_ms || leadPost.created_at_ms || leadPost.date)}</span>
+        </div>
+        <h2 class="mt-4 max-w-4xl text-2xl font-extrabold leading-tight text-slate-950 md:text-4xl">{leadPost.title}</h2>
+        <p class="mt-4 max-w-4xl text-base leading-8 text-slate-600 md:text-lg">{leadPost.summary}</p>
+      </a>
+    </section>
+  ) : null}
+
+  <section class="mx-auto max-w-6xl px-4 pb-8 md:px-6 md:pb-12">
+    <div class="grid gap-5 md:grid-cols-3">
+      {featurePosts.map((post) => {
+        const pathMeta = getBriefPathMeta(post.path);
+        const typeMeta = getContentTypeMeta(post.content_type);
+        return (
+          <a
+            href={`/briefs/${post.slug}`}
+            class="brief-card flex h-full flex-col rounded-[1.6rem] border border-slate-200 bg-white/95 p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300"
+            data-path={post.path || 'productivity'}
+            data-type={post.content_type || 'daily_brief'}
+          >
+            <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em]">
+              <span class={`rounded-full px-3 py-1 ${
+                pathMeta.accent === 'emerald'
+                  ? 'bg-emerald-50 text-emerald-800'
+                  : pathMeta.accent === 'sky'
+                    ? 'bg-sky-50 text-sky-800'
+                    : 'bg-amber-50 text-amber-800'
+              }`}>
+                {pathMeta.label}
+              </span>
+              <span class="rounded-full bg-slate-100 px-3 py-1 text-slate-600">{typeMeta.label}</span>
+            </div>
+            <h3 class="mt-4 text-xl font-extrabold leading-tight text-slate-950">{post.title}</h3>
+            <p class="mt-3 flex-1 text-sm leading-7 text-slate-600">{post.summary}</p>
+            <div class="mt-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+              <span>{formatBriefDate(post.published_at_ms || post.created_at_ms || post.date)}</span>
+              <span>Open brief</span>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+  </section>
+
+  <section class="mx-auto max-w-6xl px-4 pb-16 md:px-6">
+    <div class="mb-4 flex items-end justify-between gap-4">
+      <div>
+        <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Brief Archive</p>
+        <h2 class="mt-2 text-2xl font-extrabold tracking-tight text-slate-950">Signals, workflows, wiki entries, and model watch notes</h2>
+      </div>
+      <p id="brief-filter-status" class="text-sm text-slate-500">{sortedPosts.length} entries</p>
+    </div>
+
+    <div id="brief-archive-grid" class="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+      {archivePosts.map((post) => {
+        const pathMeta = getBriefPathMeta(post.path);
+        const typeMeta = getContentTypeMeta(post.content_type);
+        return (
+          <a
+            href={`/briefs/${post.slug}`}
+            class="brief-card flex h-full flex-col rounded-[1.4rem] border border-slate-200 bg-white/95 p-5 shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300"
+            data-path={post.path || 'productivity'}
+            data-type={post.content_type || 'daily_brief'}
+          >
+            <div class="flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.14em]">
+              <span class={`rounded-full px-3 py-1 ${
+                pathMeta.accent === 'emerald'
+                  ? 'bg-emerald-50 text-emerald-800'
+                  : pathMeta.accent === 'sky'
+                    ? 'bg-sky-50 text-sky-800'
+                    : 'bg-amber-50 text-amber-800'
+              }`}>
+                {pathMeta.eyebrow}
+              </span>
+              <span class="rounded-full bg-slate-100 px-3 py-1 text-slate-600">{typeMeta.label}</span>
+            </div>
+            <h3 class="mt-4 text-lg font-extrabold leading-tight text-slate-950">{post.title}</h3>
+            <p class="mt-3 flex-1 text-sm leading-7 text-slate-600">{post.summary}</p>
+            <div class="mt-4 flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">
+              <span>{formatBriefDate(post.published_at_ms || post.created_at_ms || post.date)}</span>
+              <span>{typeMeta.description}</span>
+            </div>
+          </a>
+        );
+      })}
+    </div>
+  </section>
+
+  <script is:inline>
+    (() => {
+      const chips = Array.from(document.querySelectorAll('.brief-filter-chip'));
+      const cards = Array.from(document.querySelectorAll('.brief-card'));
+      const statusNode = document.getElementById('brief-filter-status');
+      const state = { path: 'all', type: 'all' };
+
+      const render = () => {
+        let visibleCount = 0;
+        cards.forEach((card) => {
+          const matchesPath = state.path === 'all' || card.dataset.path === state.path;
+          const matchesType = state.type === 'all' || card.dataset.type === state.type;
+          const visible = matchesPath && matchesType;
+          card.style.display = visible ? '' : 'none';
+          if (visible) visibleCount += 1;
+        });
+        if (statusNode) {
+          statusNode.textContent = `${visibleCount} entries`;
+        }
+        chips.forEach((chip) => {
+          const active = state[chip.dataset.filterGroup] === chip.dataset.filterValue;
+          chip.classList.toggle('bg-slate-900', active);
+          chip.classList.toggle('text-white', active);
+          chip.classList.toggle('border-slate-900', active);
+          chip.classList.toggle('bg-white', !active);
+          chip.classList.toggle('text-slate-700', !active);
+        });
+      };
+
+      chips.forEach((chip) => {
+        chip.addEventListener('click', () => {
+          state[chip.dataset.filterGroup] = chip.dataset.filterValue;
+          render();
+        });
+      });
+
+      render();
+    })();
+  </script>
+</BaseLayout>

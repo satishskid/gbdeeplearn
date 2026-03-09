@@ -1,0 +1,68 @@
+name: Pages Direct Upload
+
+on:
+  workflow_dispatch:
+  repository_dispatch:
+    types:
+      - pages-deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "Missing required secret: CLOUDFLARE_API_TOKEN"
+            exit 1
+          fi
+          if [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "Missing required secret: CLOUDFLARE_ACCOUNT_ID"
+            exit 1
+          fi
+
+      - name: Build static site
+        env:
+          PUBLIC_DEEPLEARN_API_ORIGIN: ${{ vars.PUBLIC_DEEPLEARN_API_ORIGIN }}
+          PUBLIC_FIREBASE_API_KEY: ${{ vars.PUBLIC_FIREBASE_API_KEY }}
+          PUBLIC_FIREBASE_AUTH_DOMAIN: ${{ vars.PUBLIC_FIREBASE_AUTH_DOMAIN }}
+          PUBLIC_FIREBASE_PROJECT_ID: ${{ vars.PUBLIC_FIREBASE_PROJECT_ID }}
+          PUBLIC_FIREBASE_STORAGE_BUCKET: ${{ vars.PUBLIC_FIREBASE_STORAGE_BUCKET }}
+          PUBLIC_FIREBASE_MESSAGING_SENDER_ID: ${{ vars.PUBLIC_FIREBASE_MESSAGING_SENDER_ID }}
+          PUBLIC_FIREBASE_APP_ID: ${{ vars.PUBLIC_FIREBASE_APP_ID }}
+          PUBLIC_FIREBASE_MEASUREMENT_ID: ${{ vars.PUBLIC_FIREBASE_MEASUREMENT_ID }}
+          PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.PUBLIC_TURNSTILE_SITE_KEY }}
+          PUBLIC_COORDINATOR_EMAILS: ${{ vars.PUBLIC_COORDINATOR_EMAILS }}
+          PUBLIC_CONTENT_EDITOR_EMAILS: ${{ vars.PUBLIC_CONTENT_EDITOR_EMAILS }}
+          PUBLIC_COUNSELOR_EMAILS: ${{ vars.PUBLIC_COUNSELOR_EMAILS }}
+          PUBLIC_TEACHER_EMAILS: ${{ vars.PUBLIC_TEACHER_EMAILS }}
+          PUBLIC_CTO_EMAILS: ${{ vars.PUBLIC_CTO_EMAILS }}
+          PUBLIC_WHATSAPP_ENROLL_URL: ${{ vars.PUBLIC_WHATSAPP_ENROLL_URL }}
+          PUBLIC_TELEGRAM_ENROLL_URL: ${{ vars.PUBLIC_TELEGRAM_ENROLL_URL }}
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CF_PAGES_PROJECT: gbdeeplearn
+          CF_PAGES_BRANCH: main
+        run: npm run cf:pages:deploy

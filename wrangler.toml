@@ -16,6 +16,19 @@ AI_GATEWAY_BASE_URL = "https://gateway.ai.cloudflare.com/v1/9f4998a66a5d7bd7a230
 TURNSTILE_REQUIRED = "true"
 LEAD_WEBHOOK_URL = ""
 ALERT_WEBHOOK_URL = ""
+ALERT_TELEGRAM_BOT_TOKEN = ""
+ALERT_TELEGRAM_CHAT_ID = ""
+ALERT_TELEGRAM_TOPIC_ID = ""
+ALERT_EMAIL_TO = ""
+ALERT_EMAIL_FROM = "alerts@edu.greybrain.ai"
+ALERT_EMAIL_FROM_NAME = "DeepLearn Ops Alerts"
+ALERT_EMAIL_SUBJECT_PREFIX = "[DeepLearn Alert]"
+CONTENT_REVIEW_WINDOW_MINUTES = "180"
+CONTENT_REVIEW_AUTO_PUBLISH = "true"
+CONTENT_APPROVED_AUTO_PUBLISH = "true"
+CONTENT_REVIEWER_ROLES = "coordinator,content_editor,counselor,cto"
+CONTENT_REVIEWER_EMAILS = "satish@skids.health"
+PAGES_DEPLOY_HOOK_URL = ""
 
 [ai]
 binding = "AI"
@@ -53,4 +66,4 @@ invocation_logs = true
 head_sampling_rate = 1
 
 [triggers]
-crons = ["30 3 * * *"]
+crons = ["30 3 * * *", "0 * * * *"]

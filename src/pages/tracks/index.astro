@@ -5,12 +5,13 @@ import { TRACKS, hydrateTrack } from '../../lib/tracks';
 
 const catalog = await getCourseCatalog();
 const hydratedTracks = TRACKS.map((track) => hydrateTrack(track, catalog));
+const SITE_ORIGIN = 'https://edu.greybrain.ai';
 ---
 
 <BaseLayout
   title="GreyBrain Tracks | Goal-Based Learning Paths"
   description="Compare GreyBrain learning tracks for clinical AI practice, research acceleration, and doctor entrepreneurship."
-  canonical="https://gbdeeplearn.pages.dev/tracks"
+  canonical={`${SITE_ORIGIN}/tracks`}
 >
   <section class="mb-8 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
     <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">

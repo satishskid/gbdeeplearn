@@ -4,90 +4,109 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
 <BaseLayout
   title="GreyBrain Platform | AI Learning Infrastructure for Healthcare Education"
-  description="GreyBrain Platform helps institutes and training partners launch AI-enabled healthcare learning programs with edge analytics, offline-first UX, and role-based operations."
-  canonical="https://gbdeeplearn.pages.dev/platform"
+  description="GreyBrain Platform is the B2B operating stack for healthcare AI education: acquisition funnel, cohort delivery, AI tutor, and role-based operations on Cloudflare edge."
+  canonical="https://edu.greybrain.ai/platform"
+  navMode="platform"
 >
-  <section class="mb-6 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
-    <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
-      B2B Platform
-    </p>
-    <h1 class="text-3xl font-extrabold leading-tight md:text-4xl">AI Learning Infrastructure For Partners, Institutes, and Investors</h1>
-    <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">
-      GreyBrain Platform powers cohort-based healthcare AI programs with no-cookie edge analytics, AI tutor workflows,
-      and low-ops deployment on Cloudflare.
-    </p>
-    <div class="mt-4 flex flex-wrap gap-2">
-      <a
-        href="https://greybrain.ai/academy"
-        target="_blank"
-        rel="noreferrer"
-        class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
-      >
-        View Current Academy
-      </a>
-      <a
-        href="/"
-        class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
-      >
-        Go To Learner Site
-      </a>
+  <section class="relative mb-8 overflow-hidden rounded-[2rem] bg-slate-950 px-6 py-9 text-white shadow-2xl md:px-10 md:py-12">
+    <div class="absolute -left-20 top-0 h-64 w-64 rounded-full bg-cyan-400/20 blur-3xl"></div>
+    <div class="absolute -right-16 bottom-0 h-64 w-64 rounded-full bg-emerald-400/15 blur-3xl"></div>
+    <div class="relative z-10 grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
+      <div>
+        <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
+          GreyBrain B2B Stack
+        </p>
+        <h1 class="text-3xl font-extrabold leading-tight md:text-5xl">
+          Launch Healthcare AI Academies Without Building A New Product Team
+        </h1>
+        <p class="mt-3 max-w-3xl text-sm text-slate-200 md:text-base">
+          Conversion funnel, cohort delivery, AI tutor, CRM, and completion analytics in one platform for institutes,
+          associations, and partners.
+        </p>
+        <div class="mt-5 flex flex-wrap gap-2">
+          <a
+            href="/"
+            class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100"
+          >
+            View Academy Experience
+          </a>
+          <a
+            href="/console"
+            class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20"
+          >
+            Open Team Console
+          </a>
+        </div>
+      </div>
+      <div class="grid gap-2">
+        <article class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
+          <p class="text-xs uppercase tracking-[0.12em] text-slate-300">Acquisition</p>
+          <p class="mt-1 text-lg font-bold">SEO + Lead Funnel + Counselor</p>
+        </article>
+        <article class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
+          <p class="text-xs uppercase tracking-[0.12em] text-slate-300">Delivery</p>
+          <p class="mt-1 text-lg font-bold">Cohorts + Assignments + Certification</p>
+        </article>
+        <article class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
+          <p class="text-xs uppercase tracking-[0.12em] text-slate-300">Operations</p>
+          <p class="mt-1 text-lg font-bold">RBAC Console + Edge Analytics</p>
+        </article>
+      </div>
     </div>
   </section>
 
-  <section class="mb-8 grid gap-4 md:grid-cols-3">
-    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Delivery Engine</p>
-      <h2 class="mt-2 text-xl font-extrabold text-slate-900">Live Cohorts + AI Tutor</h2>
-      <p class="mt-1 text-sm text-slate-600">
-        Launch instructor-led cohorts where learners also get syllabus-grounded AI tutoring support.
-      </p>
+  <section id="capability" class="mb-8 grid gap-4 md:grid-cols-2">
+    <article class="rounded-3xl border border-slate-900/10 bg-white/90 p-5 shadow-lg md:p-6">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Capability Map</p>
+      <h2 class="mt-1 text-2xl font-extrabold text-slate-900">What A Partner Launches In 4 Weeks</h2>
+      <div class="mt-4 grid gap-2">
+        {[
+          'Branded public academy site with course catalog and urgency-driven enrollment flow.',
+          'AI counselor for logistics + payment flow with lead state tracking.',
+          'Internal LMS with learner progression, sessions, assignments, and certificates.',
+          'Coordinator dashboard for cohorts, completion, and operational health.'
+        ].map((item) => (
+          <p class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">{item}</p>
+        ))}
+      </div>
     </article>
-    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Edge Analytics</p>
-      <h2 class="mt-2 text-xl font-extrabold text-slate-900">Request-Level Lead Intelligence</h2>
-      <p class="mt-1 text-sm text-slate-600">
-        Capture funnel events at the edge for cleaner partner reporting and better campaign decisions.
+    <article class="rounded-3xl border border-slate-900/10 bg-white/90 p-5 shadow-lg md:p-6">
+      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Operating Thesis</p>
+      <h2 class="mt-1 text-2xl font-extrabold text-slate-900">High-Learning Velocity, Low Infrastructure Drag</h2>
+      <p class="mt-3 text-sm text-slate-600">
+        Cloudflare edge + Firebase state gives strong run-rate economics while preserving responsive learner
+        experience and operational observability.
       </p>
-    </article>
-    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Operating Model</p>
-      <h2 class="mt-2 text-xl font-extrabold text-slate-900">Free-Tier Friendly Stack</h2>
-      <p class="mt-1 text-sm text-slate-600">
-        Cloudflare + Firebase architecture keeps infrastructure cost efficient while maintaining premium learner UX.
-      </p>
+      <div class="mt-4 grid grid-cols-3 gap-2">
+        <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p class="text-xs text-slate-500">Stack</p>
+          <p class="text-sm font-bold text-slate-900">Astro + Worker</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p class="text-xs text-slate-500">Data</p>
+          <p class="text-sm font-bold text-slate-900">D1 + R2 + Vectorize</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+          <p class="text-xs text-slate-500">AI</p>
+          <p class="text-sm font-bold text-slate-900">BYOK + fallback</p>
+        </div>
+      </div>
     </article>
   </section>
 
-  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/80 p-5 shadow-lg md:p-6">
-    <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Platform Capability</p>
-    <h2 class="mt-1 text-2xl font-extrabold text-slate-900">What Partners Can Launch</h2>
-    <div class="mt-4 grid gap-3 md:grid-cols-2">
-      {[
-        'White-labeled course landing pages with lead capture',
-        'Role-based operations for coordinator, teacher, and learner',
-        'Offline-friendly course access and persistent study context',
-        'BYOK + server fallback AI tutoring model',
-        'Assignment completion and certificate workflow',
-        'Cloudflare-native deployment for fast global delivery'
-      ].map((item) => (
-        <p class="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">{item}</p>
-      ))}
-    </div>
-  </section>
-
-  <section class="rounded-3xl border border-slate-900/10 bg-white/80 p-5 shadow-lg md:p-6">
+  <section id="partner-actions" class="rounded-3xl border border-slate-900/10 bg-white/90 p-5 shadow-lg md:p-6">
     <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Partner Actions</p>
-    <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Explore Collaboration</h2>
+    <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Run A Technical Walkthrough</h2>
     <p class="mt-2 max-w-3xl text-sm text-slate-600">
-      Use this platform page for partner conversations, investor walkthroughs, and enterprise pilots while the main
-      site focuses on course enrollment and learner conversion.
+      Use this section for partner onboarding, institute demos, and investor diligence. The learner-facing growth and
+      enrollment story remains on the public academy homepage.
     </p>
     <div class="mt-4 flex flex-wrap gap-2">
-      <a
-        href="/console"
-        class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-      >
-        Team Console
+      <a href="/console" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        Open Team Console
+      </a>
+      <a href="/" class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
+        Open Academy Site
       </a>
       <a
         href="https://greybrain.ai/clinical-ai"
@@ -95,7 +114,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         rel="noreferrer"
         class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
       >
-        Clinical AI Content
+        Read Clinical AI Intelligence
       </a>
     </div>
   </section>

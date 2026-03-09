@@ -5,8 +5,15 @@ const {
   title = 'GreyBrain Academy',
   description = 'No-code AI learning for healthcare professionals with cohort-based training and AI-enabled support.',
   canonical = '',
-  noindex = false
+  ogImage = '',
+  ogImageAlt = 'GreyBrain Academy preview',
+  noindex = false,
+  navMode = 'public'
 } = Astro.props;
+
+const isAppNav = navMode === 'app';
+const isPlatformNav = navMode === 'platform';
+const isPublicNav = !isAppNav && !isPlatformNav;
 ---
 
 <!doctype html>
@@ -19,33 +26,92 @@ const {
     <meta name="description" content={description} />
     <meta name="robots" content={noindex ? 'noindex,follow' : 'index,follow'} />
     {canonical ? <link rel="canonical" href={canonical} /> : null}
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    {canonical ? <meta property="og:url" content={canonical} /> : null}
+    {ogImage ? <meta property="og:image" content={ogImage} /> : null}
+    {ogImage ? <meta property="og:image:alt" content={ogImageAlt} /> : null}
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    {ogImage ? <meta name="twitter:image" content={ogImage} /> : null}
+    {ogImage ? <meta name="twitter:image:alt" content={ogImageAlt} /> : null}
+    <slot name="head" />
   </head>
-  <body class="relative overflow-x-hidden">
-    <div class="pointer-events-none absolute inset-0">
-      <div class="absolute left-[-6rem] top-36 h-64 w-64 rounded-full bg-orange-200/30 blur-3xl"></div>
-      <div class="absolute right-[-5rem] top-20 h-72 w-72 rounded-full bg-sky-300/25 blur-3xl"></div>
-      <div class="absolute bottom-24 left-1/2 h-80 w-80 -translate-x-1/2 rounded-full bg-indigo-200/20 blur-3xl"></div>
+  <body class="academy-shell relative overflow-x-hidden">
+    <div class="academy-noise" aria-hidden="true"></div>
+    <div class="academy-background-glow" aria-hidden="true">
+      <div class="academy-background-orb academy-background-orb--left"></div>
+      <div class="academy-background-orb academy-background-orb--right"></div>
+      <div class="academy-background-orb academy-background-orb--bottom"></div>
     </div>
-    <main class="relative z-10 mx-auto min-h-screen w-full max-w-6xl px-4 py-8 md:px-8 md:py-12">
+    {isPublicNav ? (
+      <header id="academy-public-nav" class="academy-nav-wrap">
+        <div class="academy-nav-shell academy-public-shell">
+          <a href="/" class="academy-brandlock">
+            <span class="academy-brandmark" aria-hidden="true"></span>
+            <span>
+              <span class="academy-wordmark">GreyBrain Academy</span>
+              <span class="academy-wordmark-sub">AI academy for doctors</span>
+            </span>
+          </a>
+          <nav class="academy-nav-links">
+            <a href="/" class="academy-nav-link">Home</a>
+            <a href="/tracks" class="academy-nav-link">Paths</a>
+            <a href="/briefs" class="academy-nav-link">Briefs</a>
+            <a href="/courses" class="academy-nav-link">Courses</a>
+            <a href="/learn" class="academy-nav-cta">Learner Login</a>
+          </nav>
+        </div>
+      </header>
+    ) : null}
+    <main class={`relative z-10 mx-auto min-h-screen w-full ${isPublicNav ? 'max-w-[82rem] px-4 pb-10 pt-28 md:px-8 md:pb-16' : 'max-w-6xl px-4 py-8 md:px-8 md:py-12'}`}>
+      {!isPublicNav ? (
       <header class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-900/10 bg-white/70 px-4 py-3 backdrop-blur">
         <a href="/" class="text-sm font-extrabold uppercase tracking-[0.16em] text-slate-900">GreyBrain Academy</a>
-        <nav class="flex items-center gap-2 text-sm font-semibold">
-          <a href="/" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Courses</a>
-          <a href="/courses" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Catalog</a>
-          <a href="/tracks" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Tracks</a>
-          <a
-            href="https://greybrain.ai/clinical-ai"
-            target="_blank"
-            rel="noreferrer"
-            class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100"
-          >
-            Clinical AI Blogs
-          </a>
-          <a href="/platform" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Platform</a>
-          <a href="/learn" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Learner Hub</a>
-        </nav>
+        {isAppNav ? (
+          <nav class="flex items-center gap-2 text-sm font-semibold">
+            <a href="/learn" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Learner Hub</a>
+            <a href="/console" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Team Console</a>
+            <a href="/" class="rounded-lg border border-slate-300 px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Public Site</a>
+          </nav>
+        ) : isPlatformNav ? (
+          <nav class="flex items-center gap-2 text-sm font-semibold">
+            <a href="/platform" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Platform</a>
+            <a href="/platform#capability" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Capability</a>
+            <a href="/platform#partner-actions" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Partner Actions</a>
+            <a href="/" class="rounded-lg border border-slate-300 px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Academy Site</a>
+          </nav>
+        ) : (
+          <nav class="flex items-center gap-2 text-sm font-semibold">
+            <a href="/" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Home</a>
+            <a href="/courses" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Courses</a>
+            <a href="/tracks" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Paths</a>
+            <a href="/briefs" class="rounded-lg px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">AI Briefs</a>
+            <a href="/learn" class="rounded-lg border border-slate-300 px-3 py-1.5 text-slate-700 transition hover:bg-slate-100">Learner Login</a>
+          </nav>
+        )}
       </header>
+      ) : null}
       <slot />
     </main>
+    {isPublicNav ? (
+      <script is:inline>
+        (() => {
+          const header = document.getElementById('academy-public-nav');
+          if (!header) return;
+          const onScroll = () => {
+            if (window.scrollY > 24) {
+              header.classList.add('is-scrolled');
+            } else {
+              header.classList.remove('is-scrolled');
+            }
+          };
+          onScroll();
+          window.addEventListener('scroll', onScroll, { passive: true });
+        })();
+      </script>
+    ) : null}
   </body>
 </html>

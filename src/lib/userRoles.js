@@ -4,7 +4,10 @@ import { db } from './firebase';
 const ROLE_ALIAS = {
   admin: 'coordinator',
   trainer: 'teacher',
-  student: 'learner'
+  student: 'learner',
+  editor: 'content_editor',
+  'content-editor': 'content_editor',
+  'content editor': 'content_editor'
 };
 
 function normalizeRole(value) {
@@ -42,8 +45,10 @@ function parseEmailEnv(value) {
 }
 
 const coordinatorEmails = parseEmailEnv(import.meta.env.PUBLIC_COORDINATOR_EMAILS);
+const contentEditorEmails = parseEmailEnv(import.meta.env.PUBLIC_CONTENT_EDITOR_EMAILS);
 const teacherEmails = parseEmailEnv(import.meta.env.PUBLIC_TEACHER_EMAILS);
 const ctoEmails = parseEmailEnv(import.meta.env.PUBLIC_CTO_EMAILS);
+const counselorEmails = parseEmailEnv(import.meta.env.PUBLIC_COUNSELOR_EMAILS);
 
 function addRole(roles, role) {
   const normalized = normalizeRole(role);
@@ -56,6 +61,8 @@ function applyEmailFallbackRoles(email, roles) {
 
   if (ctoEmails.has(normalizedEmail)) addRole(roles, 'cto');
   if (coordinatorEmails.has(normalizedEmail)) addRole(roles, 'coordinator');
+  if (contentEditorEmails.has(normalizedEmail)) addRole(roles, 'content_editor');
+  if (counselorEmails.has(normalizedEmail)) addRole(roles, 'counselor');
   if (teacherEmails.has(normalizedEmail)) addRole(roles, 'teacher');
 }
 
@@ -106,7 +113,7 @@ export function hasAnyRole(roles, allowedRoles) {
 export function preferredPlatformTab(roles) {
   const roleSet = new Set((roles || []).map(normalizeRole).filter(Boolean));
   if (roleSet.has('cto')) return 'cto';
-  if (roleSet.has('coordinator')) return 'coordinator';
+  if (roleSet.has('coordinator') || roleSet.has('content_editor')) return 'coordinator';
   if (roleSet.has('teacher')) return 'teacher';
   return 'learner';
 }

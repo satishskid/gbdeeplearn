@@ -92,28 +92,84 @@ const seedSpec = {
           title: 'Hypothesis and Methodology Loop',
           description: 'Start with sound research logic before introducing AI acceleration.',
           lab_type: 'methodology-lab',
-          estimated_minutes: 50
+          estimated_minutes: 50,
+          content_markdown: `## Objective
+Frame a research question that can survive peer review.
+
+## Clinical Method Core
+- Define primary endpoint and at least one secondary endpoint.
+- Specify inclusion/exclusion criteria and confounders.
+- Pre-register assumptions before model experimentation.
+
+## Assignment
+Submit a one-page protocol scaffold with endpoint definitions and bias controls.`,
+          rubric: {
+            pass_threshold: 72,
+            criteria: ['Endpoint clarity and clinical relevance', 'Methodology rigor and confounder handling', 'Reproducibility and protocol completeness']
+          }
         },
         {
           module_key: 'literature-synthesis-with-ai',
           title: 'Literature Synthesis With AI',
           description: 'Use AI to speed up literature mapping while retaining citation integrity.',
           lab_type: 'nlp-lab',
-          estimated_minutes: 65
+          estimated_minutes: 65,
+          content_markdown: `## Objective
+Accelerate literature review without compromising citation fidelity.
+
+## Workflow
+- Build query clusters from hypothesis keywords.
+- Extract evidence by outcome, cohort, and intervention.
+- Maintain a citation ledger for every AI-assisted claim.
+
+## Assignment
+Upload an evidence map containing at least 10 papers with rationale tags.`,
+          rubric: {
+            pass_threshold: 75,
+            criteria: ['Coverage of relevant literature', 'Citation traceability', 'Evidence synthesis quality']
+          }
         },
         {
           module_key: 'study-design-and-data-logic',
           title: 'Study Design and Data Logic',
           description: 'Translate clinical questions into robust data plans and experiment designs.',
           lab_type: 'regression-lab',
-          estimated_minutes: 75
+          estimated_minutes: 75,
+          content_markdown: `## Objective
+Map hypothesis into measurable data structures and baseline experiments.
+
+## Data Logic
+- Define feature dictionary and outcome encoding strategy.
+- Distinguish regression vs classification decisions.
+- Set baseline model and error analysis checklist.
+
+## Assignment
+Submit a study design matrix with variable definitions and experiment plan.`,
+          rubric: {
+            pass_threshold: 75,
+            criteria: ['Variable and outcome design quality', 'Baseline experiment planning', 'Bias and leakage controls']
+          }
         },
         {
           module_key: 'manuscript-and-peer-review-prep',
           title: 'Manuscript and Peer Review Prep',
           description: 'Convert evidence into publication-ready outputs and reviewer-ready argumentation.',
           lab_type: 'writing-lab',
-          estimated_minutes: 55
+          estimated_minutes: 55,
+          content_markdown: `## Objective
+Convert research outputs into publication-ready manuscript structure.
+
+## Writing Workflow
+- Draft abstract, methods, and limitations with explicit evidence anchors.
+- Anticipate reviewer objections and prepare response matrix.
+- Ensure claims remain bounded by available data.
+
+## Assignment
+Submit manuscript outline and reviewer-response draft.`,
+          rubric: {
+            pass_threshold: 78,
+            criteria: ['Manuscript structure quality', 'Evidence-constrained claims', 'Reviewer response preparedness']
+          }
         }
       ],
       cohort: {
@@ -123,7 +179,30 @@ const seedSpec = {
         start_date: '2026-04-01',
         end_date: '2026-06-10',
         fee_cents: 29900
-      }
+      },
+      sessions: [
+        {
+          title: 'Research Kickoff: Hypothesis to Method',
+          description: 'Live cohort workshop on endpoint framing and protocol design.',
+          starts_at: '2026-04-01T18:30:00+05:30',
+          ends_at: '2026-04-01T20:00:00+05:30',
+          status: 'scheduled'
+        },
+        {
+          title: 'Evidence Synthesis Lab',
+          description: 'Guided literature mapping and citation integrity workflow.',
+          starts_at: '2026-04-08T18:30:00+05:30',
+          ends_at: '2026-04-08T20:00:00+05:30',
+          status: 'scheduled'
+        },
+        {
+          title: 'Manuscript Readiness Review',
+          description: 'Mentor review of manuscript structure and reviewer-risk matrix.',
+          starts_at: '2026-05-20T18:30:00+05:30',
+          ends_at: '2026-05-20T20:00:00+05:30',
+          status: 'scheduled'
+        }
+      ]
     },
     {
       slug: 'doctor-ai-venture-builder',
@@ -145,38 +224,117 @@ const seedSpec = {
           title: 'Problem Selection and Validation',
           description: 'Select high-value clinical problems and validate demand with structured interviews.',
           lab_type: 'venture-lab',
-          estimated_minutes: 60
+          estimated_minutes: 60,
+          content_markdown: `## Objective
+Identify a real healthcare problem with measurable demand and urgency.
+
+## Core Tasks
+- Define buyer, user, and beneficiary clearly.
+- Run structured interviews and map pain frequency.
+- Document current workaround costs and risk exposure.
+
+## Assignment
+Submit a problem validation memo with interview evidence.`,
+          rubric: {
+            pass_threshold: 72,
+            criteria: ['Problem clarity and clinical relevance', 'Evidence of demand validation', 'Stakeholder mapping quality']
+          }
         },
         {
           module_key: 'no-code-mvp-and-prototype',
           title: 'No-Code MVP and Prototype',
           description: 'Build clinician-safe MVP flows quickly using no-code and AI tooling.',
           lab_type: 'prototype-lab',
-          estimated_minutes: 80
+          estimated_minutes: 80,
+          content_markdown: `## Objective
+Ship a functional MVP workflow with explicit clinical safety boundaries.
+
+## Build Frame
+- Define in-scope vs out-of-scope workflow states.
+- Implement fallback and escalation paths.
+- Log assumptions and known model limitations.
+
+## Assignment
+Submit MVP demo URL and workflow boundary map.`,
+          rubric: {
+            pass_threshold: 75,
+            criteria: ['MVP usability and workflow integrity', 'Safety and escalation design', 'Implementation completeness']
+          }
         },
         {
           module_key: 'clinical-go-to-market',
           title: 'Clinical Go-To-Market',
           description: 'Design distribution, adoption, and trust pathways for healthcare buyers.',
           lab_type: 'gtm-lab',
-          estimated_minutes: 55
+          estimated_minutes: 55,
+          content_markdown: `## Objective
+Build a clinically credible go-to-market plan with adoption metrics.
+
+## GTM Elements
+- Define ICP by specialty and institution type.
+- Create pilot-to-contract conversion checkpoints.
+- Model pricing and unit economics for healthcare buyers.
+
+## Assignment
+Submit GTM one-pager with pilot metrics and pricing assumptions.`,
+          rubric: {
+            pass_threshold: 75,
+            criteria: ['Market strategy realism', 'Adoption and KPI design', 'Pricing and economics clarity']
+          }
         },
         {
           module_key: 'capstone-vc-readiness',
           title: 'Capstone VC Readiness',
           description: 'Prepare capstone narratives, evidence packs, and funding readiness checkpoints.',
           lab_type: 'capstone-lab',
-          estimated_minutes: 90
+          estimated_minutes: 90,
+          content_markdown: `## Objective
+Package venture evidence into an investment-ready capstone.
+
+## Capstone Components
+- Problem, solution, and traction narrative.
+- Pilot evidence and adoption indicators.
+- Risk register, compliance posture, and next milestones.
+
+## Assignment
+Submit pitch deck, data room link, and capstone memo.`,
+          rubric: {
+            pass_threshold: 80,
+            criteria: ['Investment narrative quality', 'Evidence quality and traction signals', 'Risk and governance maturity']
+          }
         }
       ],
       cohort: {
         name: 'Path 3 Summer 2026',
         mode: 'instructor-led',
-        status: 'draft',
+        status: 'open',
         start_date: '2026-05-05',
         end_date: '2026-07-20',
         fee_cents: 39900
-      }
+      },
+      sessions: [
+        {
+          title: 'Venture Problem Discovery Clinic',
+          description: 'Mentor-led session on market pain validation and stakeholder alignment.',
+          starts_at: '2026-05-06T18:30:00+05:30',
+          ends_at: '2026-05-06T20:00:00+05:30',
+          status: 'scheduled'
+        },
+        {
+          title: 'MVP Build and Pilot Design Review',
+          description: 'Hands-on review of no-code MVP boundaries and pilot metrics.',
+          starts_at: '2026-05-20T18:30:00+05:30',
+          ends_at: '2026-05-20T20:00:00+05:30',
+          status: 'scheduled'
+        },
+        {
+          title: 'Capstone Venture Board',
+          description: 'Final capstone narrative review with investment-readiness rubric.',
+          starts_at: '2026-07-15T18:30:00+05:30',
+          ends_at: '2026-07-15T20:00:00+05:30',
+          status: 'scheduled'
+        }
+      ]
     }
   ]
 };
@@ -189,15 +347,22 @@ async function main() {
     courses_reused: 0,
     modules_created: 0,
     modules_reused: 0,
+    modules_updated: 0,
     rubrics_created: 0,
     rubrics_reused: 0,
+    rubrics_updated: 0,
     cohorts_created: 0,
     cohorts_reused: 0,
+    cohorts_updated: 0,
+    sessions_created: 0,
+    sessions_reused: 0,
     unlocks_created: 0,
     enrollments_upserted: 0,
     completions_marked: 0,
     logistics_docs: 0,
-    logistics_chunks: 0
+    logistics_chunks: 0,
+    content_docs: 0,
+    content_chunks: 0
   };
 
   const orgs = await listOrganizations();
@@ -242,6 +407,7 @@ async function main() {
 
     const modules = await listModules(course.id);
     const moduleByKey = new Map(modules.map((module) => [module.module_key, module]));
+    const moduleSpecByKey = new Map(courseSpec.modules.map((moduleSpec) => [moduleSpec.module_key, moduleSpec]));
     for (const [idx, moduleSpec] of courseSpec.modules.entries()) {
       let module = moduleByKey.get(moduleSpec.module_key);
       if (!module) {
@@ -253,6 +419,7 @@ async function main() {
           lab_type: moduleSpec.lab_type,
           unlock_policy: 'cohort',
           estimated_minutes: moduleSpec.estimated_minutes,
+          content_markdown: moduleSpec.content_markdown || '',
           sort_order: idx,
           is_published: true
         });
@@ -260,7 +427,19 @@ async function main() {
         moduleByKey.set(moduleSpec.module_key, module);
         stats.modules_created += 1;
       } else {
+        await post(`/api/admin/courses/${course.id}/modules/${module.id}`, {
+          path_key: courseSpec.path_key,
+          title: moduleSpec.title,
+          description: moduleSpec.description,
+          lab_type: moduleSpec.lab_type,
+          unlock_policy: 'cohort',
+          estimated_minutes: moduleSpec.estimated_minutes,
+          content_markdown: moduleSpec.content_markdown || '',
+          sort_order: idx,
+          is_published: true
+        });
         stats.modules_reused += 1;
+        stats.modules_updated += 1;
       }
     }
 
@@ -269,21 +448,32 @@ async function main() {
     const rubricByTitle = new Map(rubrics.map((rubric) => [rubric.title, rubric]));
     for (const module of latestModules) {
       const rubricTitle = `${module.title} Rubric`;
-      if (rubricByTitle.has(rubricTitle)) {
+      const moduleSpec = moduleSpecByKey.get(module.module_key);
+      const rubricSpec = moduleSpec?.rubric || {};
+      const criteria = Array.isArray(rubricSpec.criteria) && rubricSpec.criteria.length > 0
+        ? rubricSpec.criteria
+        : ['Clinical clarity and relevance', 'Methodological correctness', 'Evidence-backed reasoning', 'Actionable next steps'];
+      const passThreshold = Number.isFinite(Number(rubricSpec.pass_threshold)) ? Number(rubricSpec.pass_threshold) : 70;
+      const existingRubric = rubricByTitle.get(rubricTitle);
+      if (existingRubric) {
+        await post(`/api/admin/rubrics/${existingRubric.id}`, {
+          title: rubricTitle,
+          pass_threshold: passThreshold,
+          rubric: {
+            criteria,
+            scale: '0-100'
+          }
+        });
         stats.rubrics_reused += 1;
+        stats.rubrics_updated += 1;
         continue;
       }
       await post(`/api/admin/courses/${course.id}/rubrics`, {
         module_id: module.id,
         title: rubricTitle,
-        pass_threshold: 70,
+        pass_threshold: passThreshold,
         rubric: {
-          criteria: [
-            'Clinical clarity and relevance',
-            'Methodological correctness',
-            'Evidence-backed reasoning',
-            'Actionable next steps'
-          ],
+          criteria,
           scale: '0-100'
         }
       });
@@ -308,6 +498,48 @@ async function main() {
       stats.cohorts_created += 1;
     } else {
       stats.cohorts_reused += 1;
+      await post(`/api/admin/cohorts/${cohort.id}`, {
+        org_id: primaryOrgId,
+        course_id: course.id,
+        name: courseSpec.cohort.name,
+        mode: courseSpec.cohort.mode,
+        status: courseSpec.cohort.status,
+        start_date: courseSpec.cohort.start_date,
+        end_date: courseSpec.cohort.end_date,
+        instructor_user_id: courseSpec.teacher.user_id,
+        fee_cents: courseSpec.cohort.fee_cents
+      });
+      stats.cohorts_updated += 1;
+    }
+
+    if (Array.isArray(courseSpec.sessions) && courseSpec.sessions.length > 0) {
+      const existingSessions = await listSessions(cohort.id);
+      const existingSessionTitles = new Set(existingSessions.map((session) => String(session.title || '').trim().toLowerCase()).filter(Boolean));
+      for (const sessionSpec of courseSpec.sessions) {
+        const sessionTitle = String(sessionSpec.title || '').trim();
+        const sessionKey = sessionTitle.toLowerCase();
+        if (!sessionTitle) continue;
+        if (existingSessionTitles.has(sessionKey)) {
+          stats.sessions_reused += 1;
+          continue;
+        }
+
+        const startsAtMs = Date.parse(String(sessionSpec.starts_at || '').trim());
+        const endsAtMs = Date.parse(String(sessionSpec.ends_at || '').trim());
+        await post(`/api/admin/cohorts/${cohort.id}/sessions`, {
+          title: sessionTitle,
+          description: sessionSpec.description || '',
+          starts_at_ms: Number.isFinite(startsAtMs) ? startsAtMs : Date.now() + 7 * 24 * 60 * 60 * 1000,
+          ends_at_ms: Number.isFinite(endsAtMs) ? endsAtMs : null,
+          status: sessionSpec.status || 'scheduled',
+          resources_json: {
+            slides: '',
+            prep: '',
+            path_key: courseSpec.path_key
+          }
+        });
+        stats.sessions_created += 1;
+      }
     }
 
     const unlocks = await listUnlocks(cohort.id);
@@ -347,6 +579,9 @@ async function main() {
   const logistics = await ingestLogisticsContext();
   stats.logistics_docs = Number(logistics?.documents || 0);
   stats.logistics_chunks = Number(logistics?.chunks || 0);
+  const content = await ingestCourseContentContext();
+  stats.content_docs = Number(content?.documents || 0);
+  stats.content_chunks = Number(content?.chunks || 0);
 
   console.log('\nSeed completed');
   console.table(stats);
@@ -383,8 +618,17 @@ async function listUnlocks(cohortId) {
   return response.unlocks || [];
 }
 
+async function listSessions(cohortId) {
+  const response = await get(`/api/admin/cohorts/${cohortId}/sessions?limit=100`);
+  return response.sessions || [];
+}
+
 async function ingestLogisticsContext() {
   return post('/api/admin/knowledge/ingest-logistics', {});
+}
+
+async function ingestCourseContentContext() {
+  return post('/api/admin/knowledge/ingest-course-content', {});
 }
 
 async function get(path) {
