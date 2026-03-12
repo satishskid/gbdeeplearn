@@ -9,29 +9,7 @@ const INTEREST_ENDPOINT = apiUrl('/api/funnel/interest');
 const PAYMENT_ORDER_ENDPOINT = apiUrl('/api/funnel/payment/create-order');
 const PAYMENT_STATUS_ENDPOINT = apiUrl('/api/funnel/payment/status');
 const PAYMENT_VERIFY_ENDPOINT = apiUrl('/api/funnel/payment/verify');
-const PAYMENT_SUCCESS_ENDPOINT = apiUrl('/api/funnel/payment/success');
-const DEFAULT_WEBINAR_ID = 'deep-rag-live-webinar';
-const TURNSTILE_TEST_SITE_KEY = '1x00000000000000000000AA';
-const COHORT_OVERVIEW_LINK = '/tracks';
-const WHATSAPP_ENROLL_NUMBER = String(import.meta.env.PUBLIC_WHATSAPP_ENROLL_NUMBER || '').replace(/[^\d]/g, '');
-const WHATSAPP_ENROLL_URL = String(import.meta.env.PUBLIC_WHATSAPP_ENROLL_URL || '').trim();
-const TELEGRAM_ENROLL_URL = String(import.meta.env.PUBLIC_TELEGRAM_ENROLL_URL || '').trim();
-const FALLBACK_WHATSAPP_GROUP_URL = 'https://chat.whatsapp.com/D8pR8tE6aYeLiE6PnU7gqL';
-const FALLBACK_TELEGRAM_URL = 'https://t.me/greybrainsoai';
-const COURSE_OPTIONS = [
-  {
-    slug: 'ai-productivity-clinical-practice',
-    label: 'Path 1: Clinical Productivity'
-  },
-  {
-    slug: 'in-silico-investigator-research',
-    label: 'Path 2: AI Research Accelerator'
-  },
-  {
-    slug: 'doctor-ai-venture-builder',
-    label: 'Path 3: Venture Builder'
-  }
-];
+const COHORTS_ENDPOINT = apiUrl('/api/funnel/cohorts');
 
 const WEBINAR_EVENTS = {
   view: 'webinar_landing_view',
@@ -135,16 +113,16 @@ function isGoogleAuthEnabledForHost(hostname) {
 export default function WebinarLeadForm({
   siteKey = TURNSTILE_TEST_SITE_KEY,
   mode = 'full',
-  defaultCourseSlug = COURSE_OPTIONS[0].slug
+  defaultCourseSlug = ''
 }) {
-  const initialCourseSlug = COURSE_OPTIONS.some((item) => item.slug === defaultCourseSlug)
-    ? defaultCourseSlug
-    : COURSE_OPTIONS[0].slug;
+  const [cohorts, setCohorts] = useState([]);
+  const [selectedCohortId, setSelectedCohortId] = useState('');
+  const [loadingCohorts, setLoadingCohorts] = useState(true);
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [leadId, setLeadId] = useState('');
-  const [selectedCourseSlug, setSelectedCourseSlug] = useState(initialCourseSlug);
+  const [selectedCourseSlug, setSelectedCourseSlug] = useState('');
   const [status, setStatus] = useState('idle');
   const [message, setMessage] = useState('');
   const [activation, setActivation] = useState(null);
@@ -165,8 +143,12 @@ export default function WebinarLeadForm({
   const googleAuthAvailable = useMemo(() => isGoogleAuthEnabledForHost(currentHost), [currentHost]);
   const showGoogleDomainHint = useMemo(() => Boolean(currentHost) && !googleAuthAvailable, [currentHost, googleAuthAvailable]);
   const selectedCourse = useMemo(
-    () => COURSE_OPTIONS.find((option) => option.slug === selectedCourseSlug) || COURSE_OPTIONS[0],
-    [selectedCourseSlug]
+    () => {
+      const cohort = cohorts.find((c) => c.cohort_id === selectedCohortId);
+      if (cohort) return { ...cohort, label: `${cohort.course_title} (${cohort.cohort_name})` };
+      return { cohort_name: 'Loading...', course_title: 'Loading...', label: 'Loading Selection...' };
+    },
+    [cohorts, selectedCohortId]
   );
 
   const turnstileContainerRef = useRef(null);
@@ -285,6 +267,31 @@ export default function WebinarLeadForm({
   };
 
   useEffect(() => {
+    const fetchCohorts = async () => {
+      try {
+        const response = await fetch(COHORTS_ENDPOINT);
+        const data = await response.json();
+        if (data.cohorts && data.cohorts.length > 0) {
+          setCohorts(data.cohorts);
+          const matching = defaultCourseSlug ? data.cohorts.find(c => c.course_slug === defaultCourseSlug) : null;
+          if (matching) {
+            setSelectedCourseSlug(matching.course_slug);
+            setSelectedCohortId(matching.cohort_id);
+          } else {
+            setSelectedCourseSlug(data.cohorts[0].course_slug);
+            setSelectedCohortId(data.cohorts[0].cohort_id);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch cohorts:', error);
+      } finally {
+        setLoadingCohorts(false);
+      }
+    };
+    void fetchCohorts();
+  }, [defaultCourseSlug]);
+
+  useEffect(() => {
     void postEvent(WEBINAR_EVENTS.view);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -357,6 +364,7 @@ export default function WebinarLeadForm({
         email: emailAddress,
         phone: phoneNumber,
         course_slug: selectedCourseSlug,
+        cohort_id: selectedCohortId,
         webinar_id: DEFAULT_WEBINAR_ID,
         source,
         session_id: sessionId,
@@ -527,6 +535,7 @@ export default function WebinarLeadForm({
         body: JSON.stringify({
           lead_id: targetLeadId,
           course_slug: selectedCourseSlug,
+          cohort_id: selectedCohortId,
           email: targetEmail,
           full_name: targetName,
           source
@@ -667,6 +676,7 @@ export default function WebinarLeadForm({
         body: JSON.stringify({
           lead_id: leadId,
           course_slug: selectedCourseSlug,
+          cohort_id: selectedCohortId,
           email,
           full_name: fullName,
           source: 'landing',
@@ -827,14 +837,27 @@ export default function WebinarLeadForm({
       <div className="grid gap-3 md:grid-cols-3">
         <select
           className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2 md:col-span-3"
-          value={selectedCourseSlug}
-          onChange={(e) => setSelectedCourseSlug(e.target.value)}
+          value={selectedCohortId}
+          onChange={(e) => {
+            const cohort = cohorts.find((c) => c.cohort_id === e.target.value);
+            if (cohort) {
+              setSelectedCohortId(cohort.cohort_id);
+              setSelectedCourseSlug(cohort.course_slug);
+            }
+          }}
+          disabled={loadingCohorts}
         >
-          {COURSE_OPTIONS.map((option) => (
-            <option key={option.slug} value={option.slug}>
-            {option.label}
-          </option>
-        ))}
+          {loadingCohorts ? (
+            <option>Loading available batches...</option>
+          ) : cohorts.length === 0 ? (
+            <option>No active batches available</option>
+          ) : (
+            cohorts.map((c) => (
+              <option key={c.cohort_id} value={c.cohort_id}>
+                {c.course_title} — {c.cohort_name}
+              </option>
+            ))
+          )}
         </select>
 
         <div className="md:col-span-3 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">

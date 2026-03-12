@@ -1641,6 +1641,103 @@ app.get('/api/analytics/funnel', async (c) => {
   }
 });
 
+app.get('/api/admin/assignments/pending', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const submissions = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         s.id, s.course_id, s.module_id, s.user_id, s.answer_text, s.artifacts_json,
+         s.ai_feedback_json, s.score, s.passed, s.submitted_at_ms, s.status,
+         crs.title AS course_title,
+         mod.title AS module_title
+       FROM assignment_submissions s
+       JOIN courses crs ON crs.id = s.course_id
+       JOIN course_modules mod ON mod.id = s.module_id
+       WHERE s.status IN ('submitted', 'ai_graded')
+       ORDER BY s.submitted_at_ms ASC`
+    ).all();
+
+    return c.json({ submissions: submissions.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load pending assignments.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/assignments/:id/finalize', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const submissionId = c.req.param('id');
+  if (!submissionId) return c.json({ error: 'Submission ID is required.' }, 400);
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json();
+    const finalScore = Number(payload?.score);
+    const finalPassed = payload?.passed ? 1 : 0;
+    const mentorNotes = clean(payload?.mentor_notes || '', 2000);
+    const nowMs = Date.now();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE assignment_submissions
+       SET score = ?, passed = ?, graded_at_ms = ?, grader_mode = 'human', status = 'final', ai_feedback_json = ?
+       WHERE id = ?`
+    )
+      .bind(finalScore, finalPassed, nowMs, JSON.stringify({ mentor_notes: mentorNotes }), submissionId)
+      .run();
+
+    // Certification Flow (Phase 3)
+    if (finalPassed) {
+      const submission = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT user_id, course_id FROM assignment_submissions WHERE id = ?'
+      ).bind(submissionId).first();
+
+      if (submission) {
+        const certId = crypto.randomUUID();
+        const serialNumber = `GB-${Date.now()}-${submissionId.slice(0, 4).toUpperCase()}`;
+        
+        await c.env.DEEPLEARN_DB.prepare(
+          `INSERT INTO certificates (id, user_id, course_id, submission_id, serial_number, issued_at_ms, metadata_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(certId, submission.user_id, submission.course_id, submissionId, serialNumber, nowMs, JSON.stringify({
+            mentor_notes: mentorNotes,
+            final_score: finalScore
+          }))
+          .run();
+          
+        return c.json({ ok: true, submission_id: submissionId, certified: true, certificate_id: certId });
+      }
+    }
+
+    return c.json({ ok: true, submission_id: submissionId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to finalize assignment grade.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/admin/schema/apply', async (c) => {
   const authError = await assertAdmin(c);
   if (authError) return authError;
@@ -4563,6 +4660,44 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
   }
 });
 
+app.get('/api/funnel/cohorts', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohorts = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         ch.id AS cohort_id,
+         ch.course_id,
+         ch.name AS cohort_name,
+         ch.mode,
+         ch.status AS cohort_status,
+         ch.start_date,
+         ch.end_date,
+         ch.fee_cents,
+         crs.title AS course_title,
+         crs.slug AS course_slug,
+         crs.price_cents AS course_price_cents
+       FROM cohorts ch
+       JOIN courses crs ON crs.id = ch.course_id
+       WHERE ch.status IN ('active', 'published', 'open')
+       ORDER BY ch.start_date ASC`
+    ).all();
+
+    return c.json({ cohorts: cohorts.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load funnel cohorts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/learn/access', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -5112,6 +5247,20 @@ app.post('/api/learn/assignments/:moduleId/submit', async (c) => {
     if (actor.error) return actor.error;
     const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
     if (actorAccessError) return actorAccessError;
+
+    // Phase 3: AI Guardrail Check
+    const quizPass = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT passed FROM learner_quiz_attempts WHERE user_id = ? AND module_id = ? AND passed = 1 LIMIT 1'
+    )
+      .bind(userId, moduleId)
+      .first();
+
+    if (!quizPass) {
+      return c.json({ 
+        error: 'Forbidden: You must pass the AI Knowledge Check (Quiz) before submitting this assignment.',
+        requires_quiz: true 
+      }, 403);
+    }
     const courseId = clean(payload?.course_id, 64);
     const rubricId = clean(payload?.rubric_id, 64);
     const answerText = typeof payload?.answer_text === 'string' ? payload.answer_text.slice(0, 15000) : '';
@@ -6293,7 +6442,6 @@ app.post('/api/admin/knowledge/ingest-course-content', async (c) => {
   }
 
   try {
-    await ensureOpsSchema(c.env.DEEPLEARN_DB);
     const payload = await c.req.json().catch(() => ({}));
     let courseId = clean(payload?.course_id, 64);
     const courseSlug = slugify(clean(payload?.course_slug, 120));
@@ -6346,6 +6494,337 @@ app.post('/api/admin/knowledge/ingest-course-content', async (c) => {
       },
       500
     );
+  }
+});
+
+app.post('/api/admin/knowledge/ingest-research', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB || !c.env.DEEPLEARN_INDEX || !c.env.AI) {
+    return c.json({ error: 'D1, Vectorize, and AI bindings are required.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json().catch(() => ({}));
+    const courseId = clean(payload?.course_id, 64);
+
+    if (!courseId) return c.json({ error: 'course_id is required.' }, 400);
+
+    const docs = await buildResearchKnowledgeDocs(c.env.DEEPLEARN_DB, { courseId });
+    if (docs.length === 0) {
+      return c.json({ ok: true, documents: 0, note: 'No research/presentation items found.' });
+    }
+
+    const ingestion = await upsertKnowledgeDocuments(c.env, docs);
+    return c.json({
+      ok: true,
+      course_id: courseId,
+      documents: docs.length,
+      chunks: ingestion.chunkCount,
+      upserted: ingestion.upserted
+    });
+  } catch (error) {
+    return c.json({ error: 'Failed to ingest research.', details: error.message }, 500);
+  }
+});
+
+app.get('/api/admin/learner/spotlight/:userId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const db = c.env.DEEPLEARN_DB;
+  if (!db) return c.json({ error: 'D1 not configured.' }, 500);
+
+  const userId = c.req.param('userId');
+  if (!userId) return c.json({ error: 'userId is required.' }, 400);
+
+  try {
+    // 1. Lead / CRM data
+    const lead = await db.prepare('SELECT * FROM leads WHERE email = ? OR user_id = ? LIMIT 1').bind(userId, userId).first();
+    
+    // 2. Enrollment / Cohort data
+    const enrollments = await db.prepare(`
+      SELECT e.*, c.title as course_title, co.name as cohort_name
+      FROM enrollments e
+      LEFT JOIN courses c ON c.id = e.course_id
+      LEFT JOIN cohorts co ON co.id = e.cohort_id
+      WHERE e.user_id = ?
+    `).bind(userId).all();
+
+    // 3. Payment history
+    const payments = await db.prepare('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at_ms DESC').bind(userId).all();
+
+    // 4. Progress history
+    const progress = await db.prepare(`
+      SELECT p.*, m.title as module_title
+      FROM learner_progress p
+      LEFT JOIN course_modules m ON m.id = p.module_id
+      WHERE p.user_id = ?
+      ORDER BY p.updated_at_ms DESC
+    `).bind(userId).all();
+
+    // 5. Assignments
+    const assignments = await db.prepare(`
+      SELECT a.*, m.title as module_title
+      FROM assignment_submissions a
+      LEFT JOIN course_modules m ON m.id = a.module_id
+      WHERE a.user_id = ?
+      ORDER BY a.submitted_at_ms DESC
+    `).bind(userId).all();
+
+    // 6. Audit Trail
+    const audits = await db.prepare('SELECT * FROM crm_action_audit WHERE lead_id = ? OR details_json LIKE ? ORDER BY created_at_ms DESC LIMIT 50')
+      .bind(lead?.id || '', `%${userId}%`)
+      .all();
+
+    return c.json({
+      ok: true,
+      learner: {
+        userId,
+        lead,
+        enrollments: enrollments.results || [],
+        payments: payments.results || [],
+        progress: progress.results || [],
+        assignments: assignments.results || [],
+        audits: audits.results || []
+      }
+    });
+  } catch (error) {
+    return c.json({ error: 'Spotlight failed.', details: error.message }, 500);
+  }
+});
+
+// --- LIVE TEACHING (CLOUDFLARE CALLS) ---
+
+app.get('/api/learn/quiz/:moduleId', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+  try {
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    // 1. Check if quiz already exists
+    const questions = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT id, question, options_json, correct_index, explanation FROM module_quizzes WHERE module_id = ?'
+    )
+      .bind(moduleId)
+      .all();
+
+    let finalQuestions = questions.results || [];
+
+    // 2. If not, generate it
+    if (finalQuestions.length === 0) {
+      const moduleMeta = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT title, description FROM course_modules WHERE id = ?'
+      )
+        .bind(moduleId)
+        .first();
+
+      if (!moduleMeta) return c.json({ error: 'Module not found.' }, 404);
+
+      // Generate 3 MCQs via Gemini
+      const geminiKey = c.env.GEMINI_API_KEY || ''; 
+      if (!geminiKey) return c.json({ error: 'AI generation key missing.' }, 500);
+
+      const prompt = `Generate a 3-question Multiple Choice Quiz (MCQ) for a clinical AI module titled "${moduleMeta.title}".
+Context: ${moduleMeta.description}
+Requirements:
+1. Return strictly JSON: [{"question": "...", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "..."}]
+2. Questions should be challenging but relevant for a doctor.
+3. No preamble.`;
+
+      const gen = await callGeminiForDailyContent({ apiKey: geminiKey, model: 'gemini-1.5-flash', prompt });
+      
+      let quizData;
+      try {
+        const payloadStr = typeof gen.payload === 'string' ? gen.payload : JSON.stringify(gen.payload);
+        // Stripping markdown code blocks if necessary
+        const cleanJson = payloadStr.replace(/```json/g, '').replace(/```/g, '').trim();
+        quizData = JSON.parse(cleanJson);
+      } catch (pe) {
+        console.error('Quiz JSON Parse Error:', pe, gen.payload);
+        return c.json({ error: 'AI generated invalid quiz format.', details: pe.message }, 500);
+      }
+
+      if (Array.isArray(quizData)) {
+        for (const q of quizData) {
+          const qId = crypto.randomUUID();
+          await c.env.DEEPLEARN_DB.prepare(
+            'INSERT INTO module_quizzes (id, module_id, question, options_json, correct_index, explanation) VALUES (?, ?, ?, ?, ?, ?)'
+          )
+            .bind(qId, moduleId, q.question, JSON.stringify(q.options), q.correct_index, q.explanation)
+            .run();
+        }
+      }
+
+      const refreshed = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT id, question, options_json, correct_index, explanation FROM module_quizzes WHERE module_id = ?'
+      )
+        .bind(moduleId)
+        .all();
+      finalQuestions = refreshed.results || [];
+    }
+
+    // 3. Check if user already passed
+    const passStatus = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT score, passed, attempted_at_ms FROM learner_quiz_attempts WHERE user_id = ? AND module_id = ? ORDER BY attempted_at_ms DESC LIMIT 1'
+    )
+      .bind(actor.user.uid, moduleId)
+      .first();
+
+    return c.json({
+      ok: true,
+      questions: finalQuestions.map(q => ({ ...q, options: JSON.parse(q.options_json) })),
+      status: passStatus || { score: 0, passed: false }
+    });
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch quiz.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/learn/quiz/:moduleId/submit', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+  try {
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const payload = await c.req.json();
+    const answers = payload.answers || {}; // { questionId: selectedIndex }
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    const questions = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT id, correct_index FROM module_quizzes WHERE module_id = ?'
+    )
+      .bind(moduleId)
+      .all();
+
+    let correctCount = 0;
+    const details = [];
+    for (const q of questions.results) {
+      const isCorrect = answers[q.id] === q.correct_index;
+      if (isCorrect) correctCount++;
+      details.push({ question_id: q.id, correct: isCorrect });
+    }
+
+    const totalQuestions = questions.results.length || 1;
+    const score = Math.round((correctCount / totalQuestions) * 100);
+    const passed = score >= 80;
+
+    const attemptId = crypto.randomUUID();
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      'INSERT INTO learner_quiz_attempts (id, user_id, module_id, score, passed, attempted_at_ms) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+      .bind(attemptId, actor.user.uid, moduleId, score, passed ? 1 : 0, nowMs)
+      .run();
+
+    if (passed) {
+      await c.env.DEEPLEARN_DB.prepare(
+        'INSERT INTO learning_events (org_id, course_id, module_id, cohort_id, user_id, event_name, event_value, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+        .bind('', '', moduleId, '', actor.user.uid, 'quiz_passed', score, nowMs)
+        .run();
+    }
+
+    return c.json({ ok: true, score, passed, correctCount, total: totalQuestions });
+  } catch (error) {
+    return c.json({ error: 'Failed to submit quiz.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/admin/live/sessions', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const db = c.env.DEEPLEARN_DB;
+  const { cohort_id, title, metadata } = await c.req.json();
+
+  if (!cohort_id || !title) return c.json({ error: 'cohort_id and title are required.' }, 400);
+
+  try {
+    const id = `live-${Date.now()}`;
+    const now = Date.now();
+    
+    // In a real implementation, we would call Cloudflare Calls API here to get a session_id
+    // For now, we generate a mock session_id or use the one provided if available
+    const session_id = `cf-sess-${Math.random().toString(36).slice(2, 10)}`;
+
+    await db.prepare(`
+      INSERT INTO cohort_live_sessions (id, cohort_id, session_id, title, status, started_at_ms, created_at_ms, updated_at_ms, metadata_json)
+      VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+    `).bind(id, cohort_id, session_id, title, now, now, now, JSON.stringify(metadata || {})).run();
+
+    return c.json({ ok: true, session: { id, session_id, title, cohort_id } });
+  } catch (error) {
+    return c.json({ error: 'Failed to create live session.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/admin/live/sessions/:id/end', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const db = c.env.DEEPLEARN_DB;
+  const id = c.req.param('id');
+  const now = Date.now();
+
+  try {
+    await db.prepare(`
+      UPDATE cohort_live_sessions 
+      SET status = 'ended', ended_at_ms = ?, updated_at_ms = ?
+      WHERE id = ?
+    `).bind(now, now, id).run();
+
+    return c.json({ ok: true, message: 'Session ended.' });
+  } catch (error) {
+    return c.json({ error: 'Failed to end session.', details: error.message }, 500);
+  }
+});
+
+app.get('/api/learner/live/session/:cohortId', async (c) => {
+  // Add authentication check here (ensure user is enrolled in cohort)
+  const db = c.env.DEEPLEARN_DB;
+  const cohortId = c.req.param('cohortId');
+
+  try {
+    const session = await db.prepare(`
+      SELECT * FROM cohort_live_sessions 
+      WHERE cohort_id = ? AND status = 'active'
+      ORDER BY started_at_ms DESC LIMIT 1
+    `).bind(cohortId).first();
+
+    if (!session) return c.json({ active: false });
+
+    return c.json({ active: true, session });
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch active session.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/learner/live/attendance', async (c) => {
+  // Add authentication check here
+  const db = c.env.DEEPLEARN_DB;
+  const { session_id, user_id, device_info } = await c.req.json();
+  const now = Date.now();
+
+  if (!session_id || !user_id) return c.json({ error: 'session_id and user_id are required.' }, 400);
+
+  try {
+    await db.prepare(`
+      INSERT INTO live_session_attendance (session_id, user_id, joined_at_ms, device_info_json)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, user_id) DO UPDATE SET updated_at_ms = excluded.updated_at_ms -- if we had updated_at
+    `).bind(session_id, user_id, now, JSON.stringify(device_info || {})).run();
+
+    // Log to audit trail
+    await db.prepare(`
+      INSERT INTO crm_action_audit (id, lead_id, action, details_json, created_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(`audit-${Date.now()}`, user_id, 'live_session_joined', JSON.stringify({ session_id }), now).run();
+
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json({ error: 'Failed to log attendance.', details: error.message }, 500);
   }
 });
 
@@ -6443,7 +6922,7 @@ app.post('/api/admin/counselor/knowledge', async (c) => {
     const isActive = payload?.is_active === false ? 0 : 1;
     const createdBy = clean(payload?.created_by || c.req.header('x-user-id') || 'coordinator', 120);
 
-    if (!['faq', 'rule'].includes(kind)) return c.json({ error: 'kind must be faq or rule.' }, 400);
+    if (!['faq', 'rule', 'research', 'presentation'].includes(kind)) return c.json({ error: 'kind must be faq, rule, research or presentation.' }, 400);
     if (!['global', 'course'].includes(scope)) return c.json({ error: 'scope must be global or course.' }, 400);
     if (!title) return c.json({ error: 'title is required.' }, 400);
     if (!body) return c.json({ error: 'body is required.' }, 400);
@@ -8190,6 +8669,38 @@ function triggerAutoCourseContentIngestion(c, { courseId = '', pathKey = '', rea
   void task;
 }
 
+async function buildResearchKnowledgeDocs(db, { courseId = '' } = {}) {
+  if (!db) return [];
+
+  const cleanCourseId = clean(courseId || '', 64);
+  const result = await db.prepare(
+    `SELECT id, kind, title, body, course_id, updated_at_ms
+     FROM counselor_knowledge_items
+     WHERE kind IN ('research', 'presentation')
+       AND is_active = 1
+       ${cleanCourseId ? 'AND course_id = ?' : ''}
+     ORDER BY updated_at_ms DESC`
+  )
+    .bind(...(cleanCourseId ? [cleanCourseId] : []))
+    .all();
+
+  const docs = [];
+  for (const row of result.results || []) {
+    const docId = clean(row.id || '', 64);
+    if (!docId) continue;
+
+    const chunkText = `Title: ${clean(row.title || '', 220)}\nKind: ${clean(row.kind, 16)}\nBody: ${clean(row.body, 4000)}`;
+    docs.push({
+      document_id: docId,
+      chunk_text: chunkText,
+      type: 'research',
+      course_id: clean(row.course_id || '', 64),
+      module_id: ''
+    });
+  }
+  return docs;
+}
+
 async function autoIngestCourseContentKnowledge(env, { courseId = '', pathKey = '', reason = '' } = {}) {
   if (!env.DEEPLEARN_DB || !env.DEEPLEARN_INDEX || !env.AI) {
     return {
@@ -9096,6 +9607,26 @@ async function activatePaymentRegistration(c, payload, { sourcePath }) {
         nowMs
       });
       await ensureCohortBootstrapUnlock(c.env.DEEPLEARN_DB, target.cohortId, target.courseId, nowMs);
+
+      // Enqueue onboarding email
+      try {
+        const cohortRow = await c.env.DEEPLEARN_DB.prepare('SELECT name FROM cohorts WHERE id = ?').bind(target.cohortId).first();
+        const cohortName = clean(cohortRow?.name || 'Upcoming Batch', 120);
+
+        if (c.env.ONBOARDING_QUEUE) {
+          await c.env.ONBOARDING_QUEUE.send({
+            email,
+            fullName,
+            userId,
+            courseId: target.courseId,
+            courseTitle: target.courseTitle,
+            cohortId: target.cohortId,
+            cohortName
+          });
+        }
+      } catch (err) {
+        console.error('Failed to enqueue onboarding email:', err);
+      }
     }
   }
 
@@ -10728,9 +11259,62 @@ async function sha256Hex(input) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function handleOnboardingQueue(batch, env) {
+  for (const message of batch.messages) {
+    const { email, fullName, courseTitle, cohortName } = message.body;
+    try {
+      const resendKey = clean(env.RESEND_API_KEY || '', 240);
+      if (!resendKey) {
+        console.warn('RESEND_API_KEY missing. Skipping email.');
+        message.ack();
+        continue;
+      }
+
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${resendKey}`
+        },
+        body: JSON.stringify({
+          from: 'GreyBrain Academy <academy@edu.greybrain.ai>',
+          to: [email],
+          subject: `Welcome to ${courseTitle}`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 12px; padding: 24px;">
+              <h2 style="color: #0f172a;">Welcome, ${fullName}!</h2>
+              <p>Your enrollment in <b>${courseTitle}</b> (${cohortName}) is confirmed.</p>
+              <p>You can now access the learner workspace to start your journey.</p>
+              <div style="margin: 32px 0;">
+                <a href="https://edu.greybrain.ai/learn" style="background: #0f172a; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">Open Learner Workspace</a>
+              </div>
+              <hr style="border: 0; border-top: 1px solid #eee; margin: 32px 0;" />
+              <p style="font-size: 12px; color: #64748b;">GreyBrain Academy & Operational Incubator</p>
+            </div>
+          `
+        })
+      });
+
+      if (response.ok) {
+        message.ack();
+      } else {
+        const errorText = await response.text();
+        console.error('Resend API failure:', errorText);
+        message.retry();
+      }
+    } catch (err) {
+      console.error('Queue processing error:', err);
+      message.retry();
+    }
+  }
+}
+
 export default {
   fetch(request, env, ctx) {
     return app.fetch(request, env, ctx);
+  },
+  async queue(batch, env, ctx) {
+    ctx.waitUntil(handleOnboardingQueue(batch, env));
   },
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runScheduledContentGeneration(env, controller.cron));

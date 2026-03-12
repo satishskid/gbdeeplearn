@@ -29,6 +29,7 @@ CONTENT_APPROVED_AUTO_PUBLISH = "true"
 CONTENT_REVIEWER_ROLES = "coordinator,content_editor,counselor,cto"
 CONTENT_REVIEWER_EMAILS = "satish@skids.health"
 PAGES_DEPLOY_HOOK_URL = ""
+CALLS_APP_ID = "" # User needs to fill this after creating an app in Cloudflare dashboard
 
 [ai]
 binding = "AI"
@@ -67,3 +68,12 @@ head_sampling_rate = 1
 
 [triggers]
 crons = ["30 3 * * *", "0 * * * *"]
+
+[[queues.producers]]
+binding = "ONBOARDING_QUEUE"
+queue = "onboarding-queue"
+
+[[queues.consumers]]
+queue = "onboarding-queue"
+max_batch_size = 10
+max_batch_timeout = 30

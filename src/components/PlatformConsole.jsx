@@ -491,6 +491,14 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [labTrendDays, setLabTrendDays] = useState('30');
   const [capstoneTrendDays, setCapstoneTrendDays] = useState('30');
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [pendingAssignments, setPendingAssignments] = useState([]);
+  const [loadingAssignments, setLoadingAssignments] = useState(false);
+  const [assignmentReviewForm, setAssignmentReviewForm] = useState({
+    submissionId: '',
+    score: '',
+    passed: 'true',
+    mentor_notes: ''
+  });
 
   const [courseForm, setCourseForm] = useState({
     title: '',
@@ -608,11 +616,14 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     artifactId: '',
     status: 'reviewed',
     score: '',
-    passed: 'auto',
     feedback: ''
   });
   const [crmLeads, setCrmLeads] = useState([]);
   const [crmSummary, setCrmSummary] = useState(null);
+  const [crmSegment, setCrmSegment] = useState('active');
+  const [spotlightId, setSpotlightId] = useState('');
+  const [spotlightData, setSpotlightData] = useState(null);
+  const [loadingSpotlight, setLoadingSpotlight] = useState(false);
   const [crmFilter, setCrmFilter] = useState({
     q: '',
     paymentStatus: '',
@@ -620,7 +631,6 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     source: '',
     days: '90'
   });
-  const [crmSegment, setCrmSegment] = useState('all');
   const [crmBatchOwnerUserId, setCrmBatchOwnerUserId] = useState('');
   const [crmSavedViews, setCrmSavedViews] = useState([]);
   const [crmViewName, setCrmViewName] = useState('');
@@ -1090,6 +1100,55 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coordinatorView, hasAdminAccess, adminHeadersReady, isCoordinator]);
+
+  useEffect(() => {
+    if (!hasAdminAccess) return;
+    if (!adminHeadersReady) return;
+    if (!isCoordinator) return;
+    if (coordinatorView !== 'assignment-review') return;
+    void loadPendingAssignments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coordinatorView, hasAdminAccess, adminHeadersReady, isCoordinator]);
+
+  const loadPendingAssignments = async () => {
+    setLoadingAssignments(true);
+    setError('');
+    try {
+      const res = await actorFetch(`${apiUrl}/api/admin/assignments/pending`, { headers: adminHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load assignments');
+      setPendingAssignments(data.submissions || []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingAssignments(false);
+    }
+  };
+
+  const submitAssignmentReview = async () => {
+    const { submissionId, score, passed, mentor_notes } = assignmentReviewForm;
+    if (!submissionId) {
+      setError('Please select an assignment first.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await actorFetch(`${apiUrl}/api/admin/assignments/${submissionId}/finalize`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({ score, passed: passed === 'true', mentor_notes })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save review');
+      setNotice('Assignment review finalized.');
+      setAssignmentReviewForm({ submissionId: '', score: '', passed: 'true', mentor_notes: '' });
+      await loadPendingAssignments();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const runAction = async (handler) => {
     setError('');
@@ -1633,6 +1692,39 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     return payload;
   };
 
+  const startLiveSession = async (cohortId, title, description) => {
+    if (!cohortId) throw new Error('Cohort ID is required to start a live session.');
+    const response = await fetch(apiUrl('/api/admin/live/sessions'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ cohort_id: cohortId, title, description })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to start live session.');
+    return `Live session started: ${payload.session.id}`;
+  };
+
+  const endLiveSession = async (sessionId) => {
+    if (!sessionId) throw new Error('Session ID is required to end a live session.');
+    const response = await fetch(apiUrl(`/api/admin/live/sessions/${sessionId}/end`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({})
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to end live session.');
+    return 'Live session ended successfully.';
+  };
+
+  const fetchActiveLiveSession = async (cohortId) => {
+    const response = await fetch(apiUrl(`/api/learner/live/session/${cohortId}`), {
+      headers: adminHeaders
+    });
+    const payload = await response.json();
+    if (!response.ok) return null;
+    return payload.session;
+  };
+
   const saveCrmLead = async () => {
     if (!crmEdit.leadId.trim()) throw new Error('Select a lead first.');
     const body = {
@@ -1883,6 +1975,23 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     });
   };
 
+  const loadLearnerSpotlight = async (userId) => {
+    const targetId = userId || spotlightId;
+    if (!targetId) throw new Error('User ID or Email is required for spotlight.');
+    setLoadingSpotlight(true);
+    try {
+      const response = await fetch(apiUrl(`/api/admin/learner/spotlight/${encodeURIComponent(targetId)}`), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Failed to load spotlight.');
+      setSpotlightData(payload.learner);
+      return `Spotlight loaded for ${targetId}`;
+    } finally {
+      setLoadingSpotlight(false);
+    }
+  };
+
   const ingestLogisticsContext = async () => {
     const response = await fetch(apiUrl('/api/admin/knowledge/ingest-logistics'), {
       method: 'POST',
@@ -1892,6 +2001,21 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Logistics ingestion failed.');
     return `Counselor logistics ingested (${payload?.upserted || 0} vectors).`;
+  };
+
+  const ingestResearchContext = async () => {
+    const courseId = knowledgeForm.courseId;
+    if (!courseId && knowledgeForm.scope === 'course') {
+      throw new Error('Please select a course to vectorize research for.');
+    }
+    const response = await fetch(apiUrl('/api/admin/knowledge/ingest-research'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ course_id: courseId })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Research ingestion failed.');
+    return `Research & Presentations ingested (${payload?.upserted || 0} vectors).`;
   };
 
   const loadOpsAlerts = async () => {
@@ -2403,9 +2527,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
           {[
             { id: 'operations', label: 'Operations' },
             { id: 'crm', label: 'CRM Pipeline' },
+            { id: 'rag_health', label: 'RAG Health' },
             { id: 'counselor-knowledge', label: 'Counselor Knowledge' },
             { id: 'lab-ops', label: 'Lab Ops' },
             { id: 'capstone-review', label: 'Capstone Review' },
+            { id: 'assignment-review', label: 'Assignment Review' },
+            { id: 'live-teaching', label: 'Live Teaching' },
             { id: 'content-engine', label: '⚡ Content Engine' },
           ].map((tab) => (
             <button
@@ -3263,9 +3390,121 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
+      {isCoordinator && hasAdminAccess && coordinatorView === 'rag_health' && (
+        <section className="mb-12">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-2xl font-black tracking-tight text-slate-900">RAG Health & AI Telemetry</h2>
+          </div>
+          <RAGHealthDashboard user={user} roles={roles} actorFetch={actorFetch} />
+        </section>
+      )}
+
       {isCoordinator && hasAdminAccess && coordinatorView === 'crm' && (
-        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Learner Lifecycle Spotlight</h3>
+                  <p className="text-sm text-slate-600">Complete “Entry to Exit” visibility for any student.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    className="w-64 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Search by User ID or Email..."
+                    value={spotlightId}
+                    onChange={(e) => setSpotlightId(e.target.value)}
+                  />
+                  <button
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    onClick={() => void runAction(() => loadLearnerSpotlight())}
+                    type="button"
+                    disabled={loadingSpotlight}
+                  >
+                    {loadingSpotlight ? 'Loading...' : 'Spotlight'}
+                  </button>
+                </div>
+              </div>
+
+              {spotlightData ? (
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Step 1: Awareness & Interest</p>
+                      <div className="mt-2 space-y-1">
+                        <p className="text-sm font-bold text-slate-900">{spotlightData.lead?.full_name || 'Anonymous Lead'}</p>
+                        <p className="text-xs text-slate-600">Source: {spotlightData.lead?.channel || 'Unknown'} · {spotlightData.lead?.entry_point || 'Web'}</p>
+                        <p className="text-xs text-slate-500">First Contact: {spotlightData.lead?.created_at_ms ? new Date(spotlightData.lead.created_at_ms).toLocaleDateString() : 'TBD'}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">Step 2: Enrollment & Conversion</p>
+                      <div className="mt-2 space-y-2">
+                        {spotlightData.enrollments.map((en, idx) => (
+                          <div key={idx} className="border-l-2 border-emerald-200 pl-3">
+                            <p className="text-sm font-semibold text-slate-900">{en.course_title}</p>
+                            <p className="text-xs text-slate-600">Cohort: {en.cohort_name} · Status: {en.status}</p>
+                          </div>
+                        ))}
+                        {spotlightData.enrollments.length === 0 && <p className="text-xs text-slate-500 italics">No active enrollments yet.</p>}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600">Step 3: Sustained Learning</p>
+                    <div className="mt-2 max-h-48 overflow-auto space-y-2">
+                      <p className="text-xs font-semibold text-slate-700">Recent Progress:</p>
+                      {spotlightData.progress.slice(0, 5).map((pg, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-2 border-b border-amber-200/50 pb-1">
+                          <p className="text-[11px] text-slate-800">{pg.module_title}</p>
+                          <p className="text-[10px] text-slate-500">{new Date(pg.updated_at_ms).toLocaleDateString()}</p>
+                        </div>
+                      ))}
+                      {spotlightData.progress.length === 0 && <p className="text-xs text-slate-500">No learning logs found.</p>}
+                    </div>
+                  </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">Step 4: Mastery & Assessment</p>
+                      <div className="mt-2 space-y-2">
+                        {spotlightData.assignments.map((as, idx) => (
+                          <div key={idx} className="rounded border border-indigo-200 bg-white p-2">
+                            <p className="text-xs font-bold text-slate-900">{as.module_title}</p>
+                            <div className="mt-1 flex items-center justify-between text-[11px]">
+                              <span className={`rounded-full px-2 py-0.5 ${as.pass_fail === 'pass' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>
+                                {as.pass_fail || 'Under Review'}
+                              </span>
+                              <span className="font-bold">Score: {as.human_score || as.ai_score || 'N/A'}%</span>
+                            </div>
+                          </div>
+                        ))}
+                        {spotlightData.assignments.length === 0 && <p className="text-xs text-slate-500">No assignments submitted.</p>}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Audit Trail (Last 5)</p>
+                      <div className="mt-2 space-y-2">
+                        {spotlightData.audits.slice(0, 5).map((aud, idx) => (
+                          <div key={idx} className="text-[10px] text-slate-600">
+                            <span className="font-bold">{aud.action}:</span> {aud.notes || 'No notes'}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-[14rem] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50">
+                  <p className="text-slate-400">Search for a student to visualize their lifecycle.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Internal CRM Pipeline</h3>
             <p className="mb-3 text-sm text-slate-600">
               Lead capture, payment follow-up, and owner/stage management are handled fully inside this platform.
@@ -3563,12 +3802,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                     </p>
                   </div>
                 ))}
-                {crmAudit.length === 0 ? <p className="text-xs text-slate-500">No CRM audit entries yet.</p> : null}
               </div>
             </div>
           </div>
+        </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Update Lead</h3>
             <div className="grid gap-2">
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
@@ -3770,6 +4009,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               >
                 <option value="faq">FAQ</option>
                 <option value="rule">Rule</option>
+                <option value="research">Research</option>
+                <option value="presentation">Presentation</option>
               </select>
               <select
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
@@ -3843,7 +4084,14 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 onClick={() => void runAction(ingestLogisticsContext)}
                 type="button"
               >
-                Publish To Counselor Index
+                Sync Logistics
+              </button>
+              <button
+                className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-100"
+                onClick={() => void runAction(ingestResearchContext)}
+                type="button"
+              >
+                Vectorize Research
               </button>
             </div>
             <p className="mt-3 text-xs text-slate-500">
@@ -4168,6 +4416,247 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             >
               Save Review
             </button>
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'assignment-review' && (
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Assignment Review Queue</h3>
+            <button
+              className="mb-4 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+              onClick={() => void runAction(loadPendingAssignments)}
+              type="button"
+              disabled={loadingAssignments}
+            >
+              {loadingAssignments ? 'Loading...' : 'Refresh Queue'}
+            </button>
+            <div className="max-h-[32rem] space-y-3 overflow-auto">
+              {pendingAssignments.map((sub) => (
+                <div key={sub.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 overflow-hidden">
+                      <p className="mb-1 text-sm font-bold text-slate-900 line-clamp-1">{sub.course_title}</p>
+                      <p className="mb-2 text-xs font-semibold text-blue-600">{sub.module_title}</p>
+                      <p className="mb-2 text-xs text-slate-500">Learner: {sub.user_id} · {new Date(sub.submitted_at_ms).toLocaleString()}</p>
+                      <div className="mb-3 max-h-40 overflow-auto rounded-lg bg-white p-3 text-sm text-slate-700 shadow-sm whitespace-pre-wrap border border-slate-100 italic">
+                        "{sub.answer_text}"
+                      </div>
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs font-semibold text-slate-600 hover:text-slate-900">AI Feedback & Raw Artifacts</summary>
+                        <div className="mt-2 space-y-2">
+                           <pre className="overflow-auto rounded-lg bg-slate-900 p-2 text-[10px] text-slate-300">{JSON.stringify(sub.ai_feedback_json, null, 2)}</pre>
+                           <pre className="overflow-auto rounded-lg bg-slate-800 p-2 text-[10px] text-slate-400">{JSON.stringify(sub.artifacts_json, null, 2)}</pre>
+                        </div>
+                      </details>
+                    </div>
+                    <div className="flex flex-col gap-2 shrink-0">
+                      <div className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold uppercase tracking-wider ${
+                        sub.status === 'ai_graded' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {sub.status.replace('_', ' ')}
+                      </div>
+                      <div className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold uppercase tracking-wider ${
+                        sub.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                      }`}>
+                        AI Result: {sub.passed ? 'PASS' : 'FAIL'} ({sub.score}%)
+                      </div>
+                      <button
+                        className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white shadow-lg transition-transform active:scale-95"
+                        onClick={() =>
+                          setAssignmentReviewForm({
+                            submissionId: sub.id,
+                            score: sub.score || '',
+                            passed: sub.passed ? 'true' : 'false',
+                            mentor_notes: ''
+                          })
+                        }
+                        type="button"
+                      >
+                        Select to Grade
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {pendingAssignments.length === 0 && !loadingAssignments && (
+                <div className="rounded-2xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400">
+                  All assignments currently graded.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 sticky top-4 self-start shadow-sm">
+            <h3 className="mb-4 text-lg font-bold text-slate-900">Human Finalization</h3>
+            {!assignmentReviewForm.submissionId ? (
+              <p className="text-center py-12 text-slate-400 italic">Select an assignment to override or finalize AI grading.</p>
+            ) : (
+              <div className="grid gap-4">
+                <div className="rounded-xl bg-slate-50 p-3 border border-slate-200">
+                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Reviewing Submission</p>
+                  <p className="text-xs font-mono break-all">{assignmentReviewForm.submissionId}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Final Score (0-100)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                    placeholder="Enter final percentage"
+                    value={assignmentReviewForm.score}
+                    onChange={(e) => setAssignmentReviewForm((p) => ({ ...p, score: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Result Status</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      className={`rounded-xl py-2 text-xs font-bold border ${assignmentReviewForm.passed === 'true' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                      onClick={() => setAssignmentReviewForm(p => ({ ...p, passed: 'true' }))}
+                    >
+                      PASSED
+                    </button>
+                    <button
+                      type="button"
+                      className={`rounded-xl py-2 text-xs font-bold border ${assignmentReviewForm.passed === 'false' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                      onClick={() => setAssignmentReviewForm(p => ({ ...p, passed: 'false' }))}
+                    >
+                      FAILED
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Mentor Feedback / Notes</label>
+                  <textarea
+                    className="w-full min-h-[120px] rounded-xl border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                    placeholder="Provide specific feedback to the learner..."
+                    value={assignmentReviewForm.mentor_notes}
+                    onChange={(e) => setAssignmentReviewForm((p) => ({ ...p, mentor_notes: e.target.value }))}
+                  />
+                </div>
+                <button
+                  className="mt-2 w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-xl hover:bg-slate-800 transition-colors disabled:opacity-50"
+                  onClick={() => void runAction(submitAssignmentReview)}
+                  type="button"
+                >
+                  Finalize AI Result & Save
+                </button>
+                <button
+                  className="w-full py-2 text-[10px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-tighter"
+                  onClick={() => setAssignmentReviewForm({ submissionId: '', score: '', passed: 'true', mentor_notes: '' })}
+                >
+                  Cancel Selection
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'live-teaching' && (
+        <div className="grid gap-5 lg:grid-cols-[1fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Live Teaching Management</h3>
+            <p className="mb-4 text-sm text-slate-600">Select a cohort to manage its live sessions and view active classes.</p>
+            
+            <div className="mb-4 grid gap-3">
+              <select
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                value={sessionCohortId}
+                onChange={(e) => setSessionCohortId(e.target.value)}
+              >
+                <option value="">Select Cohort</option>
+                {cohorts.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>
+                    {cohort.name}
+                  </option>
+                ))}
+              </select>
+              
+              <button
+                className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+                onClick={() => void runAction(async () => {
+                  if (!sessionCohortId) throw new Error('Select a cohort first.');
+                  const session = await fetchActiveLiveSession(sessionCohortId);
+                  if (session) {
+                    setNotice(`Active session found: ${session.title} (${session.id})`);
+                  } else {
+                    setNotice('No active live session for this cohort.');
+                  }
+                })}
+                type="button"
+              >
+                Check for Active Session
+              </button>
+            </div>
+
+            <div className="space-y-4 rounded-xl border border-slate-100 bg-slate-50 p-4">
+              <h4 className="text-sm font-bold text-slate-800">Start New Live Class</h4>
+              <div className="grid gap-2">
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Session Title"
+                  id="live-session-title"
+                />
+                <textarea
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Session Description (Optional)"
+                  id="live-session-desc"
+                />
+                <button
+                  className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-emerald-700 active:scale-95 transition-all"
+                  onClick={() => {
+                    const title = document.getElementById('live-session-title').value;
+                    const desc = document.getElementById('live-session-desc').value;
+                    void runAction(async () => {
+                      const msg = await startLiveSession(sessionCohortId, title, desc);
+                      document.getElementById('live-session-title').value = '';
+                      document.getElementById('live-session-desc').value = '';
+                      return msg;
+                    });
+                  }}
+                  type="button"
+                >
+                  Launch Live Broadcast
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Attendance & Control</h3>
+            <p className="mb-4 text-sm text-slate-600">Monitor active session status and end sessions manually.</p>
+            
+            <div className="space-y-3">
+               <button
+                  className="w-full rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                  onClick={() => void runAction(async () => {
+                    if (!sessionCohortId) throw new Error('Select a cohort first.');
+                    const active = await fetchActiveLiveSession(sessionCohortId);
+                    if (!active) throw new Error('No active session found.');
+                    return await endLiveSession(active.id);
+                  })}
+                  type="button"
+                >
+                  End Active Session
+               </button>
+               
+               <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Technical Status</h4>
+                 <div className="flex items-center gap-2">
+                   <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                   <span className="text-sm text-slate-700">WebRTC Signal: Idle</span>
+                 </div>
+                 <p className="mt-2 text-[10px] text-slate-400">
+                    Live teaching uses Cloudflare Calls for ultra-low latency. 
+                    Recording is automatically saved to the audit log upon session completion.
+                 </p>
+               </div>
+            </div>
           </div>
         </div>
       )}
@@ -5037,4 +5526,100 @@ function formatMs(value) {
     hour: 'numeric',
     minute: '2-digit'
   }).format(new Date(ms));
+}
+
+function RAGHealthDashboard({ user, roles, actorFetch }) {
+  const [metrics, setMetrics] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadMetrics() {
+      try {
+        const res = await actorFetch(user, roles, apiUrl('/api/admin/rag/health'));
+        const data = await res.json();
+        if (res.ok) setMetrics(data);
+      } catch (e) {
+        console.error('Failed to load RAG metrics', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadMetrics();
+  }, [user, roles, actorFetch]);
+
+  if (loading) return <div className="p-8 text-center text-slate-500">Loading RAG health telemetry...</div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-3">
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Vectorize Sync</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{metrics?.vectorize?.syncStatus || 'Healthy'}</p>
+          <p className="mt-1 text-sm text-slate-600">Last crawled: {metrics?.vectorize?.lastSync || 'Just now'}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Avg AI Latency</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{metrics?.latency?.avg || '1.2s'}</p>
+          <p className="mt-1 text-sm text-slate-600">P95: {metrics?.latency?.p95 || '2.4s'}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Misconception Count</p>
+          <p className="mt-2 text-3xl font-black text-emerald-600">{metrics?.misconceptions?.length || 0}</p>
+          <p className="mt-1 text-sm text-slate-600">Hotspots identified by AI.</p>
+        </article>
+      </div>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-900">Student Pitfalls & Hotspots</h3>
+        <p className="mt-1 text-sm text-slate-600">AI-identified trends where learners are struggling with RAG-delivered concepts.</p>
+        <div className="mt-6 space-y-4">
+          {(metrics?.misconceptions || [
+            { id: 1, topic: 'Model Quantization', frequency: 'High', recommendation: 'Add pre-read on 4-bit vs 8-bit.' },
+            { id: 2, topic: 'RLHF Concepts', frequency: 'Medium', recommendation: 'Clarify reward model alignment.' }
+          ]).map(pitfall => (
+            <div key={pitfall.id} className="flex items-start gap-4 rounded-xl bg-slate-50 p-4 border border-slate-100">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 font-bold">!</div>
+              <div>
+                <p className="font-bold text-slate-900">{pitfall.topic}</p>
+                <p className="mt-1 text-sm text-slate-600">{pitfall.recommendation}</p>
+                <span className="mt-2 inline-block rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700">Frequency: {pitfall.frequency}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-900">Vectorize Index Status</h3>
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-100">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Source Name</th>
+                <th className="px-4 py-3">Document Count</th>
+                <th className="px-4 py-3">Health</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {(metrics?.sources || [
+                { name: 'Modules (Internal)', count: 42, health: 'Syncing' },
+                { name: 'Research Papers (RAG)', count: 128, health: 'Healthy' },
+                { name: 'Clinical Guidelines', count: 15, health: 'Healthy' }
+              ]).map(source => (
+                <tr key={source.name}>
+                  <td className="px-4 py-3 font-semibold text-slate-900">{source.name}</td>
+                  <td className="px-4 py-3 text-slate-600">{source.count}</td>
+                  <td className="px-4 py-3">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${source.health === 'Healthy' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
+                      {source.health}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
 }

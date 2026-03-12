@@ -332,6 +332,8 @@ export default function LearnerWorkspace() {
   const [showCapstoneStudio, setShowCapstoneStudio] = useState(false);
   const [showReviewBoard, setShowReviewBoard] = useState(false);
   const [activeFocus, setActiveFocus] = useState(null);
+  const [quizStatus, setQuizStatus] = useState({ passed: false, score: 0 });
+  const [showQuiz, setShowQuiz] = useState(false);
 
   return (
     <AuthRoleGate
@@ -399,6 +401,48 @@ export default function LearnerWorkspace() {
             tutorPrompts: Array.isArray(module?.tutor_prompts) ? module.tutor_prompts : []
           });
           setTutorContext(moduleKey || moduleId);
+          
+          // Fetch Quiz Status (Phase 3)
+          if (moduleId) {
+            async function checkQuiz() {
+              try {
+                const res = await actorFetch(user, roles, apiUrl(`/api/learn/quiz/${moduleId}`));
+                const data = await res.json();
+                if (res.ok) {
+                  setQuizStatus(data.status || { passed: false, score: 0 });
+                  if (data.status?.passed === false) setShowQuiz(true);
+                }
+              } catch (e) { console.error('Quiz status check failed', e); }
+            }
+            checkQuiz();
+          }
+        };
+
+        const checkForActiveLiveSession = async (cohortId) => {
+          if (!cohortId) return null;
+          try {
+            const response = await actorFetch(user, roles, apiUrl(`/api/learner/live/session/${cohortId}`));
+            const payload = await response.json();
+            if (!response.ok) return null;
+            return payload.session;
+          } catch {
+            return null;
+          }
+        };
+
+        const logAttendance = async (sessionId, status) => {
+          try {
+            await actorFetch(user, roles, apiUrl('/api/learner/live/attendance'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                session_id: sessionId,
+                status: status || 'present'
+              })
+            });
+          } catch (err) {
+            console.error('Failed to log attendance:', err);
+          }
         };
 
         const loadAccess = async () => {
@@ -705,6 +749,26 @@ export default function LearnerWorkspace() {
                     </div>
 
                     <div className="mt-4 space-y-3">
+                      {/* --- ACTIVE SESSION HIGHLIGHT --- */}
+                      {access.map(item => {
+                        const cohortId = item.cohort?.cohort_id;
+                        if (!cohortId) return null;
+                        return (
+                          <div key={`active-live-${cohortId}`} className="group relative">
+                             <CohortActiveSessionWidget 
+                               cohortId={cohortId} 
+                               onJoin={(session) => {
+                                 logAttendance(session.id, 'present');
+                                 // Future: window.open(`/live/${session.id}`, '_blank');
+                               }}
+                               actorFetch={actorFetch}
+                               user={user}
+                               roles={roles}
+                             />
+                          </div>
+                        );
+                      })}
+
                       {(sessions || []).slice(0, 6).map((session) => {
                         const startText = Number.isFinite(Number(session.starts_at_ms))
                           ? new Date(Number(session.starts_at_ms)).toLocaleString()
@@ -1540,10 +1604,218 @@ export default function LearnerWorkspace() {
 
               {notice ? <p className="rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</p> : null}
               {error ? <p className="rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+
+              {showQuiz && activeFocus?.moduleId ? (
+                <AIQuizOverlay 
+                  moduleId={activeFocus.moduleId}
+                  user={user}
+                  roles={roles}
+                  actorFetch={actorFetch}
+                  onPassed={() => {
+                    setQuizStatus({ passed: true, score: 90 });
+                    setShowQuiz(false);
+                    setNotice('AI Knowledge Check Passed! Assignment submission unlocked.');
+                  }}
+                  onClose={() => setShowQuiz(false)}
+                />
+              ) : null}
             </div>
           </section>
         );
       }}
     </AuthRoleGate>
+  );
+}
+
+function AIQuizOverlay({ moduleId, user, roles, actorFetch, onPassed, onClose }) {
+  const [quiz, setQuiz] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    async function loadQuiz() {
+      try {
+        const res = await actorFetch(user, roles, apiUrl(`/api/learn/quiz/${moduleId}`));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load quiz');
+        setQuiz(data);
+        if (data.status?.passed) {
+          onPassed && onPassed();
+        }
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadQuiz();
+  }, [moduleId]);
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    setError('');
+    try {
+      const res = await actorFetch(user, roles, apiUrl(`/api/learn/quiz/${moduleId}/submit`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answers })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Submission failed');
+      setResult(data);
+      if (data.passed) {
+        setTimeout(() => onPassed && onPassed(), 1500);
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (loading) return null;
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
+      <div className="w-full max-w-xl rounded-[2rem] border border-slate-200 bg-white p-8 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.15em] text-cyan-700">AI Knowledge Check</p>
+            <h3 className="mt-1 text-2xl font-extrabold tracking-tight text-slate-900">Module Mastery Quiz</h3>
+          </div>
+          <button onClick={onClose} className="rounded-full p-2 hover:bg-slate-100">
+            <svg className="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {error && <p className="mt-4 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-700 font-medium">{error}</p>}
+
+        {result ? (
+          <div className="mt-8 text-center">
+            <div className={`mx-auto flex h-20 w-20 items-center justify-center rounded-full ${result.passed ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+              <span className="text-2xl font-bold">{result.score}%</span>
+            </div>
+            <h4 className="mt-4 text-xl font-bold text-slate-900">{result.passed ? 'Mastery Confirmed!' : 'Keep Learning'}</h4>
+            <p className="mt-2 text-slate-600">
+              {result.passed 
+                ? 'You have successfully passed the AI Knowledge Check. Assignment submission is now unlocked.' 
+                : `You scored ${result.score}%. You need 80% to pass. Review the module content and try again.`}
+            </p>
+            {!result.passed && (
+              <button 
+                onClick={() => setResult(null)}
+                className="mt-6 w-full rounded-2xl bg-slate-900 py-4 text-sm font-bold text-white shadow-lg shadow-slate-200"
+              >
+                Try Again
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="mt-8 space-y-6">
+            {quiz?.questions?.map((q, idx) => (
+              <div key={q.id || idx} className="space-y-3">
+                <p className="text-sm font-semibold text-slate-900">{idx + 1}. {q.question}</p>
+                <div className="grid gap-2">
+                  {q.options.map((opt, oIdx) => (
+                    <button
+                      key={oIdx}
+                      onClick={() => setAnswers(prev => ({ ...prev, [q.id]: oIdx }))}
+                      className={`flex items-center rounded-xl border px-4 py-3 text-sm transition ${
+                        answers[q.id] === oIdx 
+                          ? 'border-cyan-500 bg-cyan-50 font-bold text-cyan-900' 
+                          : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className={`mr-3 flex h-5 w-5 items-center justify-center rounded-full border ${answers[q.id] === oIdx ? 'border-cyan-500 bg-cyan-500 text-white' : 'border-slate-300'}`}>
+                        {String.fromCharCode(65 + oIdx)}
+                      </span>
+                      {opt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <button
+              disabled={submitting || Object.keys(answers).length < (quiz?.questions?.length || 0)}
+              onClick={handleSubmit}
+              className="mt-4 w-full rounded-2xl bg-slate-900 py-4 text-sm font-bold text-white shadow-lg shadow-slate-200 disabled:opacity-50"
+            >
+              {submitting ? 'Validating Answers...' : 'Submit Answers'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CohortActiveSessionWidget({ cohortId, onJoin, actorFetch, user, roles }) {
+  const [activeSession, setActiveSession] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    const check = async () => {
+      try {
+        const response = await actorFetch(user, roles, apiUrl(`/api/learner/live/session/${cohortId}`));
+        const payload = await response.json();
+        if (active && response.ok && payload.session) {
+          setActiveSession(payload.session);
+        } else if (active) {
+          setActiveSession(null);
+        }
+      } catch (err) {
+        console.error('Active session check failed:', err);
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+
+    void check();
+    const interval = setInterval(check, 60000); // Check every minute
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [cohortId, user?.uid]);
+
+  if (loading || !activeSession) return null;
+
+  return (
+    <div className="mb-4 animate-in fade-in slide-in-from-top-4 duration-700">
+      <div className="flex items-center justify-between rounded-2xl border border-rose-200 bg-rose-50/50 p-4 backdrop-blur-sm">
+        <div className="flex items-center gap-4">
+          <div className="relative flex h-12 w-12 items-center justify-center rounded-xl bg-rose-600 text-white shadow-lg">
+            <div className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-rose-500 animate-ping" />
+            <div className="absolute -right-1 -top-1 h-3 w-3 rounded-full bg-rose-400" />
+            <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+            </svg>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-bold uppercase tracking-widest text-rose-600">Live Now</span>
+              <span className="h-1 w-1 rounded-full bg-rose-300" />
+              <span className="text-[10px] font-medium text-rose-500">Ultra-low latency</span>
+            </div>
+            <h4 className="text-sm font-bold text-slate-900">{activeSession.title}</h4>
+            <p className="text-[11px] text-slate-600 line-clamp-1">{activeSession.description || 'Live teaching session in progress...'}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => onJoin(activeSession)}
+          className="rounded-xl bg-rose-600 px-5 py-2 text-xs font-bold text-white shadow-xl shadow-rose-200 transition-all hover:bg-rose-700 hover:scale-105 active:scale-95"
+          type="button"
+        >
+          Join Broadcast
+        </button>
+      </div>
+    </div>
   );
 }

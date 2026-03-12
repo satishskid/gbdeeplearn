@@ -18,6 +18,11 @@ ALTER TABLE content_posts ADD COLUMN suggested_models_json TEXT NOT NULL DEFAULT
 -- Community engagement
 ALTER TABLE content_posts ADD COLUMN community_likes INTEGER NOT NULL DEFAULT 0;
 
+-- Missing base fields from worker.js
+-- We add these here because they were omitted in 0002
+ALTER TABLE content_posts ADD COLUMN content_type TEXT NOT NULL DEFAULT 'daily_brief';
+ALTER TABLE content_posts ADD COLUMN canonical_url TEXT NOT NULL DEFAULT '';
+
 -- Index for content type + status queries
 CREATE INDEX IF NOT EXISTS idx_content_posts_type_status_published
   ON content_posts(content_type, status, published_at_ms);
