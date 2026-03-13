@@ -1,9 +1,10 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import { formatDisplayDate, getCourseCatalog, getHuggingFaceModelSpotlights } from '../lib/academyData';
-import { fetchPublishedBriefs, fetchLatestByType } from '../lib/briefs.js';
+import { formatDisplayDate, getCourseCatalog, getHuggingFaceModelSpotlights, getHuggingFaceSpacesSpotlights } from '../lib/academyData';
+import { fetchPublishedBriefs, fetchLatestByType, fetchHomepageConfig, fetchSpotlightedPosts } from '../lib/briefs.js';
 
 const modelSpotlights = await getHuggingFaceModelSpotlights(5);
+const spacesSpotlights = await getHuggingFaceSpacesSpotlights(5);
 const publishedBriefs = await fetchPublishedBriefs(6).catch(() => []);
 const allCourses = await getCourseCatalog();
 const refresherCourse = allCourses.find((course) => course.slug === 'ai-refresher-for-doctors') || null;
@@ -13,31 +14,109 @@ const latestModelSpotlight = await fetchLatestByType('model_spotlight').catch(()
 const latestDaiy = await fetchLatestByType('daiy_prompt').catch(() => null);
 const latestHealthNews = await fetchPublishedBriefs(3).catch(() => []);
 
+// Phase 8: Dynamic homepage config (ticker text, spotlight flags)
+const homepageConfig = await fetchHomepageConfig().catch(() => ({}));
+const spotlightedBriefs = await fetchSpotlightedPosts(publishedBriefs).catch(() => []);
+const spotlightedIds = new Set(spotlightedBriefs.map((p) => p.id));
+const tickerText = homepageConfig?.ticker_text?.trim() ||
+  '🧠 Merlin (Stanford, Nature 2026) — native 3D volumetric VLM for CT/MRI · 🏆 Open Medical LLM Leaderboard updated · 🤖 Google MedGemma expansion · 📋 SAHI India Strategy rollout · ⚡ AbraHealth FDA clearance for autonomous triage · ✨ GreyBrain Cohort 3 applications open — apply now';
+
 // Featured HuggingFace model (first from trending list)
 const featuredModel = modelSpotlights[0] || null;
 
 // DAIY: parse prompt data from DB post or use fallback
-const daiyPrompt = latestDaiy?.prompt_text || `I am a physician.
-Based on the attached clinical paper, act as a medical communications expert and create:
-1. A three-point plain-language summary for a patient's family
-2. Two 'Did You Know?' insights derived directly from the study data
-3. A five-step outline suitable for a patient-facing infographic`;
+const daiyPrompt = latestDaiy?.prompt_text || `I am a physician. Act as an empathetic Medical Communication Agent. Take the attached clinical note and transform it into:
+1) An ‘After Visit Summary’ written at a 5th-grade reading level (warm tone).
+2) A ‘Why This Matters’ section explaining the diagnosis without jargon.
+3) A visual ‘Home Care Checklist’ using emojis for easy scanning.`;
 
 const daiyKeyword = latestDaiy?.prompt_keyword || 'Patient Communication';
 const daiyPreview = latestDaiy?.prompt_output_preview || 'You\'ll receive a structured, doctor-vetted breakdown that transforms dense clinical language into clear, actionable takeaways — ready for your next consultation or social post.';
 const daiyLikes = latestDaiy?.community_likes || 0;
 const daiyPostId = latestDaiy?.id || '';
 
-// Model try-it links for DAIY
-const DAIY_MODELS = [
-  { name: 'Claude', url: 'https://claude.ai', color: 'bg-orange-50 text-orange-700 border-orange-200' },
-  { name: 'Gemini', url: 'https://gemini.google.com', color: 'bg-blue-50 text-blue-700 border-blue-200' },
-  { name: 'Perplexity', url: 'https://perplexity.ai', color: 'bg-teal-50 text-teal-700 border-teal-200' },
-  { name: 'Qwen', url: 'https://chat.qwen.ai', color: 'bg-purple-50 text-purple-700 border-purple-200' },
-  { name: 'MiniMax', url: 'https://chat.minimax.io', color: 'bg-rose-50 text-rose-700 border-rose-200' },
-];
+// Comprehensive Classified Model & Space Arena (Exhaustive 2026 Directory)
+const DAIY_ARENA = {
+  categories: [
+    { id: 'logic', label: 'Clinical Logic (CoT)' },
+    { id: 'imaging', label: 'Imaging & Multimodal' },
+    { id: 'agents', label: 'Clinical Agents & Scribes' },
+    { id: 'research', label: 'Bio / Pharma / Labs' },
+    { id: 'spaces', label: 'Interactive HF Spaces' }
+  ],
+  models: {
+    logic: [
+      { name: 'DeepSeek-R1', url: 'https://chat.deepseek.com', desc: '671B MoE. State-of-the-art medical CoT.', trending: true, date: '2025-01' },
+      { name: 'Qwen 3.5-Max', url: 'https://chat.qwen.ai', desc: 'Doctoral-level scientific QA specialist.', trending: true, date: '2026-02' },
+      { name: 'OpenAI o1', url: 'https://chatgpt.com', desc: 'Reasoning-heavy medical diagnostics.', trending: false, date: '2024-11' },
+      { name: 'Claude 3.5 Sonnet', url: 'https://claude.ai', desc: 'Precision reasoning & medical ethics.', trending: false, date: '2024-10' },
+      { name: 'Kimi K2.5', url: 'https://kimi.moonshot.cn', desc: 'Ultra-long context clinical reasoning.', trending: true, date: '2026-01' },
+      { name: 'GLM-5', url: 'https://chatglm.cn', desc: 'Advanced multi-step clinical deduction.', trending: true, date: '2026-03' },
+      { name: 'Starling-LM-7B', url: 'https://huggingface.co/berkeley-nest/starling-lm-7b-alpha', desc: 'Top-tier open medical QA weights.', trending: false, date: '2024-05' },
+      { name: 'Hermes-3-Pro', url: 'https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-405B', desc: 'Complex medical instruction following.', trending: true, date: '2025-08' },
+      { name: 'Meditron-V3', url: 'https://huggingface.co/medical-ai/meditron-v3-70b', desc: 'Llama-3 fine-tuned on PubMed v2.', trending: true, date: '2025-11' },
+      { name: 'Instruction-Med', url: 'https://huggingface.co/medicalai/instruction-med-13b', desc: 'Clinical guidelines alignment.', trending: false, date: '2024-12' },
+      { name: 'BioMistral-v2', url: 'https://huggingface.co/BioMistral/BioMistral-7B-v2', desc: 'Specialized biomedical MoE.', trending: false, date: '2025-03' }
+    ],
+    imaging: [
+      { name: 'Gemini 2.0 Pro', url: 'https://gemini.google.com', desc: 'Native multimodal EHR + Radiology.', trending: true, date: '2025-12' },
+      { name: 'MedImageInsight', url: 'https://azure.microsoft.com', desc: 'Microsoft foundation for 14 modalities.', trending: true, date: '2025-06' },
+      { name: 'MedGemma-2', url: 'https://huggingface.co/google/medgemma-2-27b', desc: 'Advanced open weights for imaging.', trending: true, date: '2026-01' },
+      { name: 'Merlin (3D VLM)', url: 'https://huggingface.co/stanford/merlin-3d-vlm', desc: 'Native 3D clinical vision for volumetric CT/MRI.', trending: true, date: '2026-03', spotlight: true },
+      { name: 'Rad-Dino-V2', url: 'https://huggingface.co/microsoft/Rad-DINO-V2', desc: 'Global radiology foundation leader.', trending: true, date: '2025-10' },
+      { name: 'GLM-Vision-5', url: 'https://github.com/THUDM/GLM-5', desc: '3D spatial reasoning for CT/MRI scans.', trending: true, date: '2026-03' },
+      { name: 'BioViL-L', url: 'https://huggingface.co/microsoft/BioViL-L', desc: 'Vision-language foundation for CXR.', trending: false, date: '2024-09' },
+      { name: 'LLaVA-Med-v2', url: 'https://huggingface.co/microsoft/llava-med-v2', desc: 'Visual clinical chat & instruction.', trending: false, date: '2025-02' },
+      { name: 'PathAI-Dino', url: 'https://www.pathai.com', desc: 'Digital pathology feature extractor.', trending: false, date: '2024-05' },
+      { name: 'Aidoc-Core', url: 'https://www.aidoc.com', desc: 'Real-time radiology prioritization.', trending: false, date: '2024-08' },
+      { name: 'MedImageParse-V2', url: 'https://github.com/microsoft/MedImageParse', desc: 'Volumetric medical image segmentation.', trending: true, date: '2025-11' }
+    ],
+    agents: [
+      { name: 'Polaris 4.0', url: 'https://www.hippocraticai.com', desc: 'Next-gen patient-facing nursing suite.', trending: true, date: '2026-03' },
+      { name: 'Glass Health', url: 'https://glass.health', desc: 'Precision diagnostic & treatment agent.', trending: false, date: '2024-05' },
+      { name: 'Amboss LiSA', url: 'https://www.amboss.com', desc: 'Evidence-based clinical decision suite.', trending: false, date: '2024-06' },
+      { name: 'JSL Clinical Assistant', url: 'https://www.johnsnowlabs.com', desc: 'Verified clinical notes & extraction.', trending: true, date: '2025-09' },
+      { name: 'Abridge-Med', url: 'https://www.abridge.com', desc: 'Real-time doctor-patient scribe.', trending: true, date: '2025-07' },
+      { name: 'Suki-AI', url: 'https://www.suki.ai', desc: 'Voice-enabled AI assistant for EHR.', trending: false, date: '2024-03' },
+      { name: 'Augmedix', url: 'https://augmedix.com', desc: 'Ambient automation for clinical visits.', trending: false, date: '2024-11' },
+      { name: 'Clinical-Copilot', url: 'https://github.com/microsoft/clinical-copilot', desc: 'EHR-integrated decision support.', trending: true, date: '2025-12' },
+      { name: 'Health-Scribe', url: 'https://aws.amazon.com/healthscribe', desc: 'AWS clinical note generator.', trending: false, date: '2024-01' },
+      { name: 'MedGPT-Scribe', url: 'https://huggingface.co/med-ai/medgpt-scribe', desc: 'Open-weights clinical transcription.', trending: false, date: '2025-04' }
+    ],
+    research: [
+      { name: 'AlphaFold 3', url: 'https://alphafoldserver.com', desc: 'Google DeepMind protein agent.', trending: true, date: '2024-05' },
+      { name: 'ESM-3 (Evolutionary)', url: 'https://www.evolutionaryscale.ai', desc: 'Next-gen biological foundation.', trending: true, date: '2024-07' },
+      { name: 'TamGen-V2', url: 'https://github.com/microsoft/TamGen', desc: 'Microsoft drug target design suite.', trending: true, date: '2026-01' },
+      { name: 'BioNeMo (NVIDIA)', url: 'https://www.nvidia.com/bionemo', desc: 'High-compute biology simulation.', trending: true, date: '2025-08' },
+      { name: 'BioGPT-Max', url: 'https://huggingface.co/microsoft/biogpt-large', desc: 'Microsoft generative biology.', trending: false, date: '2024-03' },
+      { name: 'Protein-LM', url: 'https://huggingface.co/facebook/esm2_t33_650M_UR50D', desc: 'Meta protein language expert.', trending: false, date: '2023-09' },
+      { name: 'Stanford Med-RAG', url: 'https://huggingface.co/med-ai', desc: 'Research-grounded medical RAG.', trending: true, date: '2025-11' },
+      { name: 'TamGen-SRE', url: 'https://github.com/microsoft/TamGen', desc: 'Tampering-resistant drug design.', trending: false, date: '2025-12' },
+      { name: 'OpenBioML', url: 'https://openbioml.org', desc: 'Decentralized biological research.', trending: true, date: '2026-02' }
+    ],
+    spaces: [
+      { name: 'Open Med-LLM Leaderboard', url: 'https://huggingface.co/spaces/open-medical-llm/leaderboard', desc: 'Real-time ranking of medical AI.', trending: true, date: '2026-03' },
+      { name: 'Radiology Explainer', url: 'https://huggingface.co/spaces/google/rad_explain', desc: 'AI-led imaging interpretations.', trending: true, date: '2024-11' },
+      { name: 'EHR Navigator Agent', url: 'https://huggingface.co/spaces/google/ehr-navigator-agent-with-medgemma', desc: 'Complex record search agent.', trending: true, date: '2024-12' },
+      { name: 'Path Foundation Demo', url: 'https://huggingface.co/spaces/google/path-foundation-demo', desc: 'Digital pathology classification.', trending: true, date: '2024-10' },
+      { name: 'Symptom Analyzer Pro', url: 'https://huggingface.co/spaces/gnumanth/MedGemma-Symptoms', desc: 'Interactive clinical reasoning.', trending: true, date: '2026-01' },
+      { name: 'Med-Flamingo-V2', url: 'https://huggingface.co/spaces/med-ai/med-flamingo-demo', desc: 'Medical Visual Chat (VQA).', trending: false, date: '2025-05' },
+      { name: 'Med-PaLM Benchmark', url: 'https://huggingface.co/spaces/medical-ai/med-benchmark', desc: 'Clinical evaluation arena.', trending: true, date: '2025-01' },
+      { name: 'BioBERT-NER-HF', url: 'https://huggingface.co/spaces/biomedical/biobert-ner', desc: 'PubMed entity extractor.', trending: false, date: '2023-04' },
+      { name: 'HealthSearch-Live', url: 'https://huggingface.co/spaces/google/healthsearch', desc: 'Verified clinical info search.', trending: true, date: '2026-02' },
+      { name: 'Med-PaLM 2 Playground', url: 'https://huggingface.co/spaces/medical-ai/Med-PaLM', desc: 'Google clinical trial arena.', trending: true, date: '2025-09' },
+      { name: 'Brain Seg Demo', url: 'https://huggingface.co/spaces/akhaliq/Brain_Tumor_Segmentation', desc: 'Interactive MRI segmentation.', trending: false, date: '2024-03' },
+      { name: 'Clinical-Note-Assist', url: 'https://huggingface.co/spaces/clinical-ai/note-assistant', desc: 'Automated note structuring demo.', trending: true, date: '2026-02' },
+      { name: 'Med-Summarizer-HF', url: 'https://huggingface.co/spaces/biomedical/summarizer', desc: 'Clinical literature summarizer.', trending: true, date: '2025-10' },
+      { name: 'Drug-Discovery-LM', url: 'https://huggingface.co/spaces/chem-ai/drug-discovery', desc: 'Molecular design interactive.', trending: true, date: '2026-03' }
+    ]
+  }
+};
 
-const SITE_ORIGIN = 'https://edu.greybrain.ai';
+// Selection logic for daily prompt (Optional: metadata-driven in future)
+const arenaRecommended = latestDaiy?.model_tag || 'logic';
+
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 const daiyShareText = encodeURIComponent(`I just tried today's #DAIY prompt from @GreyBrainAcademy 🧠\n\nPrompt topic: "${daiyKeyword}"\n\nTry it yourself: ${SITE_ORIGIN} #AIForDoctors #ClinicalAI`);
 const daiyXUrl = `https://twitter.com/intent/tweet?text=${daiyShareText}`;
 const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(SITE_ORIGIN)}`;
@@ -79,6 +158,19 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
       </div>
     </div>
   </section>
+
+  <!-- DYNAMIC NEWS TICKER (admin-controlled via Homepage Control) -->
+  <div class="news-ticker-bar" aria-label="Clinical AI news ticker">
+    <div class="news-ticker-inner">
+      <span class="news-ticker-label">📡 LIVE</span>
+      <div class="news-ticker-scroll-outer">
+        <div class="news-ticker-scroll">
+          <span>{tickerText}</span>
+          <span aria-hidden="true">&nbsp;&nbsp;·&nbsp;&nbsp;{tickerText}</span>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- 2. THE INFRASTRUCTURE (How) -->
   <section class="bg-slate-50 border-y border-slate-100 py-24">
@@ -154,7 +246,7 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
               <p class="cinema-desc">Execute in-silico experiments using advanced open-source models. Move from hypothesis to publication-ready manuscript outline.</p>
               <div class="flex gap-4">
                 <a href="/tracks/ai-research-accelerator" class="nav-btn !px-8 !py-3 !bg-blue-600 hover:!bg-blue-500">Enter Research Lab</a>
-                <a href="/research-lab" class="inline-flex items-center text-white/60 hover:text-white transition gap-2 font-bold text-sm">Open Laboratory &rarr;</a>
+                <a href="/app/research-lab" class="inline-flex items-center text-white/60 hover:text-white transition gap-2 font-bold text-sm">Open Laboratory &rarr;</a>
               </div>
             </div>
 
@@ -257,7 +349,17 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
 
       <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
         {publishedBriefs.map((post) => (
-          <article class="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition flex flex-col">
+          <article class={`bg-white p-6 rounded-2xl border shadow-sm hover:shadow-md transition flex flex-col ${
+            spotlightedIds.has(post.id)
+              ? 'border-cyan-300 ring-2 ring-cyan-100 relative'
+              : 'border-slate-200'
+          }`}>
+            {spotlightedIds.has(post.id) && (
+              <div class="absolute -top-3 left-4 flex items-center gap-1.5 bg-cyan-500 text-white text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full shadow">
+                <span class="h-1.5 w-1.5 rounded-full bg-white animate-pulse"></span>
+                SPOTLIGHT
+              </div>
+            )}
             <div class="flex items-center justify-between mb-4">
                <span class="text-[10px] font-bold uppercase tracking-wider text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full">
                  {post.content_type || 'Deep Brief'}
@@ -287,21 +389,21 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
     <div class="section-container">
       <div class="bg-slate-900 rounded-[3rem] p-10 md:p-16 text-white relative overflow-hidden">
         <!-- Decorative glows -->
-        <div class="absolute -top-24 -right-24 w-96 h-96 bg-blue-600/20 blur-[100px] rounded-full"></div>
-        <div class="absolute -bottom-24 -left-24 w-96 h-96 bg-teal-600/10 blur-[100px] rounded-full"></div>
+        <div class="absolute -top-24 -right-24 w-96 h-96 bg-blue-600/30 blur-[100px] rounded-full"></div>
+        <div class="absolute -bottom-24 -left-24 w-96 h-96 bg-indigo-600/10 blur-[100px] rounded-full"></div>
 
         <div class="relative z-10">
           <!-- Header row -->
           <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
             <div>
-              <div class="terminal-section-label">
+              <div class="terminal-section-label terminal-section-label--blue">
                 <span class="live-dot"></span>
                 [01] MODEL_INTELLIGENCE // HUGGINGFACE: CONNECTED
               </div>
               <h2 class="text-white text-3xl md:text-4xl">Explore Clinical Open Source.</h2>
             </div>
             <div class="flex items-center gap-6">
-              <a href="/research-lab" class="nav-btn !bg-white !text-slate-900 hover:!bg-slate-100 !text-sm">Enter Lab</a>
+              <a href="/app/research-lab" class="nav-btn !bg-white !text-slate-900 hover:!bg-slate-100 !text-sm">Enter Lab</a>
               <a href="https://huggingface.co/models?pipeline_tag=text-generation&sort=trending" target="_blank" rel="noreferrer" class="text-slate-500 hover:text-white transition text-xs font-mono font-bold">
                 [ALL_MODELS ↗]
               </a>
@@ -317,16 +419,79 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
                 return (
                   <a
                     href={`/models/${modelId}`}
-                    class="model-ticker-card"
+                    class={`model-ticker-card model-ticker-card--blue ${model.isSpotlight ? 'model-ticker-card--spotlight' : ''}`}
                     aria-label={`View ${model.name || model.title} model details`}
                   >
-                    <span class="model-ticker-card__index">[{String((i % modelSpotlights.length) + 1).padStart(2,'0')}]</span>
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="model-ticker-card__index">[{String((i % modelSpotlights.length) + 1).padStart(2,'0')}]</span>
+                      {model.isSpotlight && <span class="spotlight-badge">SPOTLIGHT</span>}
+                    </div>
                     <p class="model-ticker-card__author">{model.author || 'Open Source'}</p>
                     <p class="model-ticker-card__name">{model.name || model.title}</p>
                     <p class="model-ticker-card__pipeline">{model.pipeline || 'AI Model'}</p>
                     <div class="model-ticker-card__stats">
                       <span class="model-ticker-card__stat">LIKES: {model.likesFormatted || 'n/a'} // DL: {model.downloadsFormatted || 'n/a'}</span>
                       <span class="model-ticker-card__cta">[DETAILS →]</span>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+  </section>
+
+  <!-- 5b. APPLIED AI LAB // INTERACTIVE SPACES -->
+  <section class="pb-24 overflow-hidden" aria-label="Interactive Medical AI Spaces Feed">
+    <div class="section-container">
+      <div class="bg-slate-950 rounded-[3rem] p-10 md:p-16 text-white relative overflow-hidden border border-white/5">
+        <!-- Interactive background effect -->
+        <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_-20%,rgba(245,158,11,0.08),transparent_70%)]"></div>
+        <div class="absolute -bottom-24 -right-24 w-80 h-80 bg-amber-600/10 blur-[100px] rounded-full"></div>
+
+        <div class="relative z-10">
+          <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+            <div>
+              <div class="terminal-section-label terminal-section-label--amber">
+                <span class="live-dot"></span>
+                [01b] APPLIED_AI_LAB // INTERACTIVE_SPACES: ONLINE
+              </div>
+              <h2 class="text-white text-3xl md:text-4xl">Applied clinical <span class="text-amber-400">playgrounds.</span></h2>
+            </div>
+            <div class="flex items-center gap-6">
+              <a href="/daiy" class="nav-btn !bg-amber-600 !text-white hover:!bg-amber-500 !text-sm border-none">Try Prompt</a>
+              <a href="https://huggingface.co/spaces?search=medical%20healthcare&sort=trending" target="_blank" rel="noreferrer" class="text-slate-500 hover:text-white transition text-xs font-mono font-bold">
+                [SEARCH_SPACES ↗]
+              </a>
+            </div>
+          </div>
+
+          <!-- Spaces ticker -->
+          <div class="model-ticker-outer" aria-label="Trending Medical Spaces">
+            <div class="model-ticker-track" style="animation-duration: 45s;">
+              {[...spacesSpotlights, ...spacesSpotlights].map((space, i) => {
+                return (
+                  <a
+                    href={space.hfUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    class={`model-ticker-card model-ticker-card--amber ${space.isSpotlight ? 'model-ticker-card--spotlight' : ''}`}
+                    aria-label={`Open ${space.name} interactive space`}
+                  >
+                    <div class="flex items-center justify-between mb-2">
+                       <span class="text-[8px] font-bold uppercase tracking-[0.2em] text-amber-500/80 bg-amber-950/50 px-2 py-0.5 rounded border border-amber-500/20">
+                         SPACE
+                       </span>
+                       {space.isSpotlight && <span class="spotlight-badge">TRENDING</span>}
+                       <span class="text-[8px] font-mono text-slate-500">{space.domain}</span>
+                    </div>
+                    <p class="model-ticker-card__author truncate">{space.author || 'HuggingFace'}</p>
+                    <p class="model-ticker-card__name text-amber-50 leading-tight mb-2">{space.name}</p>
+                    <p class="text-[9px] text-slate-400 leading-relaxed mb-4 line-clamp-2" style="font-family: inherit;">{space.clinicalBlurb}</p>
+                    <div class="model-ticker-card__stats mt-auto">
+                      <span class="model-ticker-card__stat">SDK: {space.sdk} // LIKES: {space.likesFormatted}</span>
+                      <span class="model-ticker-card__cta text-amber-400">[DEMO →]</span>
                     </div>
                   </a>
                 );
@@ -390,20 +555,57 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
           <p class="text-slate-300 text-sm leading-relaxed">{daiyPreview}</p>
         </div>
 
-        <!-- Try It In — Terminal link style -->
-        <div class="mt-8">
-          <p style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:#475569;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.75rem">TRY IN →</p>
-          <div class="daiy-model-links">
-            {DAIY_MODELS.map((m) => (
-              <a
-                href={m.url}
-                target="_blank"
-                rel="noreferrer"
-                class="daiy-model-link-terminal"
-                aria-label={`Try this prompt in ${m.name}`}
-              >
-                [{m.name} ↗]
-              </a>
+        <!-- Authoritative AI Arena // Clinical Directory -->
+        <div class="mt-12">
+          <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+            <p style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:#475569;font-weight:700;letter-spacing:0.1em;text-transform:uppercase">
+              AUTHORITATIVE AI ARENA // CLINICAL DIRECTORY →
+            </p>
+            <!-- Category Tabs -->
+            <div class="flex flex-wrap gap-2 arena-tabs">
+              {DAIY_ARENA.categories.map((cat) => (
+                <button
+                  class={`arena-tab ${cat.id === arenaRecommended ? 'active' : ''}`}
+                  data-category={cat.id}
+                  aria-label={`View ${cat.label} models`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+            <!-- Spaces Filters (Hidden unless 'spaces' active) -->
+            <div id="arena-filters" class="hidden items-center gap-3 bg-slate-800/50 px-3 py-1.5 rounded-full border border-white/5 ml-auto">
+               <span class="text-[8px] font-bold text-slate-500 uppercase tracking-widest mr-1">Sort:</span>
+               <button class="arena-filter-btn active" data-sort="trending">Trend</button>
+               <button class="arena-filter-btn" data-sort="date">Date</button>
+            </div>
+          </div>
+
+          <!-- Arena Grid -->
+          <div id="arena-grid" class="arena-grid">
+            {Object.entries(DAIY_ARENA.models).map(([catId, models]) => (
+              <div class={`arena-category-panel ${catId === arenaRecommended ? 'active' : ''}`} data-panel={catId}>
+                <div class="daiy-model-links">
+                    {models.map((m) => (
+                      <a
+                        href={m.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        class="daiy-model-link-terminal"
+                        title={m.desc}
+                        data-trending={m.trending ? 'true' : 'false'}
+                        data-date={m.date}
+                        aria-label={`Try prompt in ${m.name}`}
+                      >
+                        <div class="flex items-center justify-between mb-1">
+                          <span class="block">[{m.name} ↗]</span>
+                          {m.trending && <span class="trending-tag">Trend</span>}
+                        </div>
+                        <span class="text-[9px] opacity-40 leading-none block font-normal whitespace-normal line-clamp-2">{m.desc}</span>
+                      </a>
+                    ))}
+                </div>
+              </div>
             ))}
           </div>
         </div>
@@ -511,20 +713,9 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
           </div>
         ) : (
           <div class="grid md:grid-cols-3 gap-6">
-            {[
-              { tag: 'Funding', title: 'AI Health Startups raise $2.1B in Q1 2026', summary: 'Clinical decision support and ambient documentation tools continue to attract institutional capital as FDA clearance pathways accelerate.' },
-              { tag: 'Clinical AI', title: 'LLMs clear NHS pilot in radiology — 31% faster turnaround', summary: 'Early multicentre evaluation shows LLM-assisted radiology reporting reduces turnaround by 31% with no significant increase in discordance rates.' },
-              { tag: 'Regulation', title: 'CDSCO releases draft AI Medical Device framework for India', summary: 'The new guidance covers pre-market requirements, post-market surveillance, and mandatory clinical evaluation thresholds for AI SaMD.' },
-            ].map((item) => (
-              <article class="health-news-card">
-                <div class="flex items-center justify-between mb-3">
-                  <span class="text-[10px] font-bold uppercase tracking-widest text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">{item.tag}</span>
-                  <span class="text-[10px] text-slate-400">Coming soon</span>
-                </div>
-                <h3 class="text-base font-bold leading-snug mb-2 text-slate-400">{item.title}</h3>
-                <p class="text-slate-500 text-sm line-clamp-3 leading-relaxed">{item.summary}</p>
-              </article>
-            ))}
+            <div class="md:col-span-3 text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
+              <p class="text-slate-500 italic">Synchronizing latest clinical intelligence from HF & arXiv...</p>
+            </div>
           </div>
         )}
       </div>
@@ -549,21 +740,21 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
               <p class="font-bold text-slate-800">Clinical AI Practitioner</p>
               <p class="text-xs text-slate-500">Mentored 8-week track</p>
             </div>
-            <span class="text-teal-700 font-bold text-sm">April 15</span>
+            <span class="text-teal-700 font-bold text-sm">Admissions Open</span>
           </li>
           <li class="flex items-center justify-between border-b border-slate-200 pb-4">
             <div>
               <p class="font-bold text-slate-800">AI Research Accelerator</p>
               <p class="text-xs text-slate-500">Mentored 10-week track</p>
             </div>
-            <span class="text-teal-700 font-bold text-sm">May 10</span>
+            <span class="text-teal-700 font-bold text-sm">Applications Live</span>
           </li>
           <li class="flex items-center justify-between">
             <div>
               <p class="font-bold text-slate-800">Doctor-Founder Build</p>
               <p class="text-xs text-slate-500">Incubator track</p>
             </div>
-            <span class="text-teal-700 font-bold text-sm">June 02</span>
+            <span class="text-teal-700 font-bold text-sm">Reviewing Profiles</span>
           </li>
         </ul>
       </div>
@@ -670,6 +861,65 @@ const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${e
         }
       });
     }
+
+    // ─── AI Arena Tabs & Filters ──────────────────────────────────────────
+    const arenaTabs = document.querySelectorAll('.arena-tab');
+    const arenaPanels = document.querySelectorAll('.arena-category-panel');
+    const arenaFilters = document.getElementById('arena-filters');
+    const filterBtns = document.querySelectorAll('.arena-filter-btn');
+
+    function updateArenaFilters(category) {
+      if (category === 'spaces') {
+        arenaFilters?.classList.remove('hidden');
+        arenaFilters?.classList.add('flex');
+      } else {
+        arenaFilters?.classList.remove('flex');
+        arenaFilters?.classList.add('hidden');
+      }
+    }
+
+    arenaTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const category = tab.getAttribute('data-category');
+        arenaTabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        arenaPanels.forEach(panel => {
+          panel.classList.toggle('active', panel.getAttribute('data-panel') === category);
+        });
+        updateArenaFilters(category);
+      });
+    });
+
+    // Space Sorting Logic
+    filterBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sortType = btn.getAttribute('data-sort');
+        filterBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const spacesPanel = document.querySelector('[data-panel="spaces"]');
+        const grid = spacesPanel?.querySelector('.daiy-model-links');
+        const cards = Array.from(grid?.querySelectorAll('.daiy-model-link-terminal') || []);
+
+        cards.sort((a, b) => {
+          if (sortType === 'trending') {
+            const aTrend = a.getAttribute('data-trending') === 'true';
+            const bTrend = b.getAttribute('data-trending') === 'true';
+            return bTrend - aTrend;
+          } else {
+            const aDate = a.getAttribute('data-date') || '';
+            const bDate = b.getAttribute('data-date') || '';
+            return bDate.localeCompare(aDate);
+          }
+        });
+
+        cards.forEach(card => grid?.appendChild(card));
+      });
+    });
+
+    // Initialize state
+    const initialCat = document.querySelector('.arena-tab.active')?.getAttribute('data-category');
+    updateArenaFilters(initialCat);
   </script>
 
 </BaseLayout>

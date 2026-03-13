@@ -5,7 +5,7 @@ import { TRACKS, hydrateTrack } from '../../lib/tracks';
 
 const catalog = await getCourseCatalog();
 const hydratedTracks = TRACKS.map((track) => hydrateTrack(track, catalog));
-const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 ---
 
 <BaseLayout

@@ -50,7 +50,7 @@ const { id } = Astro.params;
 const { model, contentPost } = Astro.props;
 
 if (!model && !contentPost) {
-  return Astro.redirect('/research-lab', 308);
+  return Astro.redirect('/app/research-lab', 308);
 }
 
 const modelName = model?.name || contentPost?.title || id;
@@ -62,7 +62,7 @@ const modelLikes = model?.likesFormatted || contentPost?.hf_model_likes || '';
 const modelHfUrl = model?.hfUrl || `https://huggingface.co/${id}`;
 const contentMarkdown = contentPost?.content_markdown || '';
 
-const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 const canonical = `${SITE_ORIGIN}/models/${id}`;
 const pageTitle = `${modelName} — AI Model Spotlight | GreyBrain Academy`;
 const pageDesc = modelBlurb || `Deep dive into ${modelName} by ${modelAuthor}: a ${modelPipeline} model. Learn how clinicians can use it for research, documentation, and evidence synthesis.`;
@@ -127,7 +127,7 @@ const schema = JSON.stringify({
       <a href={modelHfUrl} target="_blank" rel="noreferrer" class="nav-btn">
         Try on HuggingFace ↗
       </a>
-      <a href="/research-lab" class="inline-flex items-center gap-2 font-bold text-slate-600 hover:text-teal-700 transition text-sm">
+      <a href="/app/research-lab" class="inline-flex items-center gap-2 font-bold text-slate-600 hover:text-teal-700 transition text-sm">
         Use in Research Lab →
       </a>
     </div>

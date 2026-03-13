@@ -1,13 +1,16 @@
-name = "deeplearn-worker"
+name = "med-greybrain-worker"
 main = "src/worker.js"
 compatibility_date = "2026-02-27"
 account_id = "9f4998a66a5d7bd7a230d0222544fbe6"
 workers_dev = true
 
+
 [vars]
 APP_NAME = "DeepLearn"
-PAGES_PROJECT = "gbdeeplearn"
-CERTIFICATE_BUCKET = "gbdeeplearn-certificates"
+PAGES_PROJECT = "med-greybrain"
+CERTIFICATE_BUCKET = "med-greybrain-certificates"
+ALLOWED_ORIGINS = ["https://med.greybrain.ai", "https://med-greybrain.pages.dev", "https://edu.greybrain.ai", "https://med-greybrain-app.pages.dev", "http://localhost:4321"]
+PUBLIC_BASE_URL = "https://med.greybrain.ai"
 LEADS_BUCKET = "gbdeeplearn-leads"
 GROQ_API_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -20,10 +23,10 @@ ALERT_TELEGRAM_BOT_TOKEN = ""
 ALERT_TELEGRAM_CHAT_ID = ""
 ALERT_TELEGRAM_TOPIC_ID = ""
 ALERT_EMAIL_TO = ""
-ALERT_EMAIL_FROM = "alerts@edu.greybrain.ai"
+ALERT_EMAIL_FROM = "alerts@med.greybrain.ai"
 ALERT_EMAIL_FROM_NAME = "DeepLearn Ops Alerts"
 ALERT_EMAIL_SUBJECT_PREFIX = "[DeepLearn Alert]"
-CONTENT_REVIEW_WINDOW_MINUTES = "180"
+CONTENT_REVIEW_WINDOW_MINUTES = "330"
 CONTENT_REVIEW_AUTO_PUBLISH = "true"
 CONTENT_APPROVED_AUTO_PUBLISH = "true"
 CONTENT_REVIEWER_ROLES = "coordinator,content_editor,counselor,cto"
@@ -67,13 +70,13 @@ invocation_logs = true
 head_sampling_rate = 1
 
 [triggers]
-crons = ["30 3 * * *", "0 * * * *"]
+crons = ["30 3 * * *"]
 
 [[queues.producers]]
 binding = "ONBOARDING_QUEUE"
-queue = "onboarding-queue"
+queue = "med-onboarding-queue"
 
 [[queues.consumers]]
-queue = "onboarding-queue"
+queue = "med-onboarding-queue"
 max_batch_size = 10
 max_batch_timeout = 30

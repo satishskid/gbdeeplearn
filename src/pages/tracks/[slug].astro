@@ -16,7 +16,7 @@ const catalog = await getCourseCatalog();
 const track = hydrateTrack(rawTrack, catalog);
 const hasResearchLab = track?.slug === 'ai-research-accelerator';
 const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
-const SITE_ORIGIN = 'https://edu.greybrain.ai';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 ---
 
 <BaseLayout
@@ -39,12 +39,12 @@ const SITE_ORIGIN = 'https://edu.greybrain.ai';
       <a href="/courses" class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100">
         Browse Courses
       </a>
-      <a href="/learn" class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">
+      <a href="/app/learn" class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">
         Learner Hub
       </a>
       {hasResearchLab ? (
         <a
-          href="/research-lab"
+          href="/app/research-lab"
           class="inline-flex rounded-xl border border-cyan-300/50 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20"
         >
           Open In-Silico Research Lab
@@ -52,7 +52,7 @@ const SITE_ORIGIN = 'https://edu.greybrain.ai';
       ) : null}
       {hasVentureStudio ? (
         <a
-          href="/venture-studio"
+          href="/app/venture-studio"
           class="inline-flex rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20"
         >
           Open Venture Studio
@@ -93,7 +93,7 @@ const SITE_ORIGIN = 'https://edu.greybrain.ai';
             Learn research methodology first, then AI tools: promptable literature synthesis, RAG tutor guidance, and experiment workflows.
           </p>
         </div>
-        <a href="/research-lab" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        <a href="/app/research-lab" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
           View Path 2 Scaffold
         </a>
       </div>
@@ -110,7 +110,7 @@ const SITE_ORIGIN = 'https://edu.greybrain.ai';
             Move from clinical pain point to investable capstone with no-code AI product workflows and governance checkpoints.
           </p>
         </div>
-        <a href="/venture-studio" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        <a href="/app/venture-studio" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
           View Path 3 Scaffold
         </a>
       </div>
