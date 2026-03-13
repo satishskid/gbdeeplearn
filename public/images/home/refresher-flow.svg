@@ -1,0 +1,46 @@
+<svg width="900" height="320" viewBox="0 0 900 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="900" height="320" rx="40" fill="#F7FBFD"/>
+  <rect x="24" y="24" width="852" height="272" rx="28" fill="url(#bg)"/>
+  <g>
+    <rect x="52" y="116" width="128" height="88" rx="22" fill="#ffffff"/>
+    <text x="116" y="150" text-anchor="middle" fill="#0F172A" font-size="16" font-family="Outfit, Arial" font-weight="700">Prompt</text>
+    <text x="116" y="175" text-anchor="middle" fill="#62758A" font-size="12" font-family="Plus Jakarta Sans, Arial">What do I want?</text>
+  </g>
+  <g>
+    <rect x="212" y="116" width="128" height="88" rx="22" fill="#ffffff"/>
+    <text x="276" y="150" text-anchor="middle" fill="#0F172A" font-size="16" font-family="Outfit, Arial" font-weight="700">Context</text>
+    <text x="276" y="175" text-anchor="middle" fill="#62758A" font-size="12" font-family="Plus Jakarta Sans, Arial">What should guide it?</text>
+  </g>
+  <g>
+    <rect x="372" y="116" width="128" height="88" rx="22" fill="#0F172A"/>
+    <text x="436" y="150" text-anchor="middle" fill="#ffffff" font-size="16" font-family="Outfit, Arial" font-weight="700">Model</text>
+    <text x="436" y="175" text-anchor="middle" fill="#C7D2E1" font-size="12" font-family="Plus Jakarta Sans, Arial">Drafts an answer</text>
+  </g>
+  <g>
+    <rect x="532" y="116" width="128" height="88" rx="22" fill="#ffffff"/>
+    <text x="596" y="150" text-anchor="middle" fill="#0F172A" font-size="16" font-family="Outfit, Arial" font-weight="700">Review</text>
+    <text x="596" y="175" text-anchor="middle" fill="#62758A" font-size="12" font-family="Plus Jakarta Sans, Arial">What is safe and usable?</text>
+  </g>
+  <g>
+    <rect x="692" y="92" width="152" height="136" rx="28" fill="#ffffff"/>
+    <text x="768" y="132" text-anchor="middle" fill="#0F172A" font-size="16" font-family="Outfit, Arial" font-weight="700">Output</text>
+    <text x="768" y="156" text-anchor="middle" fill="#62758A" font-size="12" font-family="Plus Jakarta Sans, Arial">Practice · Publish · Build</text>
+    <rect x="720" y="176" width="95" height="12" rx="6" fill="#2FA8A0" fill-opacity="0.8"/>
+    <rect x="720" y="196" width="78" height="12" rx="6" fill="#3D7BE0" fill-opacity="0.75"/>
+    <rect x="720" y="216" width="102" height="12" rx="6" fill="#F0B369" fill-opacity="0.8"/>
+  </g>
+  <path d="M180 160H212" stroke="#B7C9D8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M340 160H372" stroke="#B7C9D8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M500 160H532" stroke="#B7C9D8" stroke-width="8" stroke-linecap="round"/>
+  <path d="M660 160H692" stroke="#B7C9D8" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="196" cy="160" r="6" fill="#2FA8A0"/>
+  <circle cx="356" cy="160" r="6" fill="#3D7BE0"/>
+  <circle cx="516" cy="160" r="6" fill="#2FA8A0"/>
+  <circle cx="676" cy="160" r="6" fill="#F0B369"/>
+  <defs>
+    <linearGradient id="bg" x1="40" y1="40" x2="860" y2="280" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBFDFF"/>
+      <stop offset="1" stop-color="#F4FBF8"/>
+    </linearGradient>
+  </defs>
+</svg>

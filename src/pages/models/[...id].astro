@@ -1,0 +1,141 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { getHuggingFaceModelSpotlights, normalizeModelSpotlight } from '../../lib/academyData.js';
+
+export async function getStaticPaths() {
+  let models = [];
+  try {
+    models = await getHuggingFaceModelSpotlights(60);
+  } catch { /* fallback */ }
+
+  let contentPosts = [];
+  try {
+    const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || 'https://deeplearn-worker.satish-9f4.workers.dev';
+    const res = await fetch(`${API_ORIGIN}/api/content/posts?content_type=model_spotlight&limit=100`);
+    if (res.ok) {
+      const data = await res.json();
+      contentPosts = Array.isArray(data.posts) ? data.posts : (Array.isArray(data) ? data : []);
+    }
+  } catch { /* fallback */ }
+
+  const paths = new Map();
+  
+  models.forEach(m => {
+    const slug = (m.hfModelId || m.name || '').toLowerCase().replace(/[^a-z0-9\-]/g, '-');
+    if (slug) paths.set(slug, { model: m });
+    const id = (m.hfModelId || '').toLowerCase();
+    if (id && id !== slug) paths.set(id, { model: m });
+  });
+
+  contentPosts.forEach(p => {
+    const id = (p.hf_model_id || '').toLowerCase();
+    if (id) {
+      const existing = paths.get(id) || {};
+      paths.set(id, { ...existing, contentPost: p });
+    }
+    const slug = id.replace(/[^a-z0-9\-]/g, '-');
+    if (slug && slug !== id) {
+      const existing = paths.get(slug) || {};
+      paths.set(slug, { ...existing, contentPost: p });
+    }
+  });
+
+  return Array.from(paths.entries()).map(([id, props]) => ({
+    params: { id },
+    props
+  }));
+}
+
+const { id } = Astro.params;
+const { model, contentPost } = Astro.props;
+
+if (!model && !contentPost) {
+  return Astro.redirect('/app/research-lab', 308);
+}
+
+const modelName = model?.name || contentPost?.title || id;
+const modelAuthor = model?.author || contentPost?.hf_model_author || 'Open Source';
+const modelPipeline = model?.pipeline || contentPost?.hf_model_pipeline || 'AI Model';
+const modelBlurb = model?.clinicalBlurb || contentPost?.summary || '';
+const modelDownloads = model?.downloadsFormatted || contentPost?.hf_model_downloads || '';
+const modelLikes = model?.likesFormatted || contentPost?.hf_model_likes || '';
+const modelHfUrl = model?.hfUrl || `https://huggingface.co/${id}`;
+const contentMarkdown = contentPost?.content_markdown || '';
+
+const SITE_ORIGIN = 'https://med.greybrain.ai';
+const canonical = `${SITE_ORIGIN}/models/${id}`;
+const pageTitle = `${modelName} — AI Model Spotlight | GreyBrain Academy`;
+const pageDesc = modelBlurb || `Deep dive into ${modelName} by ${modelAuthor}: a ${modelPipeline} model. Learn how clinicians can use it for research, documentation, and evidence synthesis.`;
+
+const schema = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": pageTitle,
+  "description": pageDesc,
+  "author": { "@type": "Organization", "name": "GreyBrain Academy" },
+  "publisher": { "@type": "Organization", "name": "GreyBrain Academy", "url": SITE_ORIGIN },
+  "url": canonical,
+  "keywords": `${modelName}, ${modelAuthor}, ${modelPipeline}, HuggingFace, clinical AI, AI model for doctors`
+});
+---
+
+<BaseLayout title={pageTitle} description={pageDesc} canonical={canonical}>
+  <Fragment slot="head">
+    <script type="application/ld+json" set:html={schema} />
+    <meta property="og:type" content="article" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDesc} />
+    <meta property="og:url" content={canonical} />
+  </Fragment>
+
+  <div class="ce-page-shell">
+    <a href="/" class="inline-flex items-center gap-2 text-slate-500 hover:text-teal-700 text-sm font-bold mb-8 transition">← Home</a>
+
+    <!-- Header -->
+    <div class="terminal-section-label" style="color:#22d3ee">
+      <span class="live-dot"></span>
+      MODEL_INTELLIGENCE // HUGGINGFACE: TRENDING
+    </div>
+
+    <div style="display:flex;align-items:flex-start;gap:1rem;flex-wrap:wrap;margin-bottom:1.5rem">
+      <div style="flex:1;min-width:0">
+        <p style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:#22d3ee;font-weight:700;margin-bottom:0.25rem">{modelAuthor.toUpperCase()}</p>
+        <h1 class="text-3xl md:text-5xl mb-2">{modelName}</h1>
+        <span style="font-family:'IBM Plex Mono',monospace;font-size:0.7rem;color:#64748b;background:#f1f5f9;padding:3px 10px;border-radius:4px">{modelPipeline}</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:0.4rem;flex-shrink:0">
+        {modelDownloads && <span style="font-family:'IBM Plex Mono',monospace;font-size:0.72rem;color:#22d3ee;font-weight:700">↓ DL: {modelDownloads}</span>}
+        {modelLikes && <span style="font-family:'IBM Plex Mono',monospace;font-size:0.72rem;color:#4ade80;font-weight:700">♥ {modelLikes}</span>}
+      </div>
+    </div>
+
+    <!-- Clinical take -->
+    {modelBlurb && (
+      <p class="text-slate-700 text-lg leading-relaxed mb-8 max-w-2xl">{modelBlurb}</p>
+    )}
+
+    <!-- AI Revolution paragraph from content post -->
+    {contentMarkdown && (
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:1rem;padding:2rem;margin-bottom:2rem">
+        <p style="font-size:0.65rem;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:#0d9488;margin-bottom:1rem">CLINICAL INTELLIGENCE NOTE</p>
+        <div style="color:#334155;line-height:1.8;font-size:0.95rem" set:html={contentMarkdown.replace(/\n/g, '<br/>')} />
+      </div>
+    )}
+
+    <!-- Actions -->
+    <div style="display:flex;gap:1rem;flex-wrap:wrap;margin-bottom:3rem">
+      <a href={modelHfUrl} target="_blank" rel="noreferrer" class="nav-btn">
+        Try on HuggingFace ↗
+      </a>
+      <a href="/app/research-lab" class="inline-flex items-center gap-2 font-bold text-slate-600 hover:text-teal-700 transition text-sm">
+        Use in Research Lab →
+      </a>
+    </div>
+
+    <!-- Back to list -->
+    <div style="border-top:1px solid #e2e8f0;padding-top:2rem;margin-top:2rem">
+      <p style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:#94a3b8;margin-bottom:1rem">MORE MODEL SPOTLIGHTS</p>
+      <a href="/?section=models" class="text-sm font-bold text-slate-600 hover:text-teal-700 transition">← Back to Homepage Model Ticker</a>
+    </div>
+  </div>
+</BaseLayout>

@@ -1,0 +1,98 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { fetchPublishedBriefs } from '../../lib/briefs.js';
+
+// Fetch health news posts
+let posts = [];
+try {
+  const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || 'https://deeplearn-worker.satish-9f4.workers.dev';
+  const res = await fetch(`${API_ORIGIN}/api/content/posts?content_type=health_news&limit=40`);
+  if (res.ok) {
+    const data = await res.json();
+    posts = data.posts || data || [];
+  }
+} catch { /* ignore */ }
+
+// Also pull from regular briefs as fallback source
+if (posts.length < 3) {
+  const briefs = await fetchPublishedBriefs(20).catch(() => []);
+  const newsBriefs = briefs.filter(b => b.content_type === 'health_news' || b.path === 'entrepreneurship');
+  posts = [...posts, ...newsBriefs].slice(0, 30);
+}
+
+const SITE_ORIGIN = 'https://med.greybrain.ai';
+const canonical = `${SITE_ORIGIN}/news`;
+const pageTitle = 'AI Healthcare News | GreyBrain Academy';
+const pageDesc = 'Daily curated intelligence on AI in healthcare — funding, regulation, clinical adoption, and entrepreneurship. Updated every day by the GreyBrain team.';
+
+function formatDate(d) {
+  if (!d) return '';
+  try { return new Date(d).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
+  catch { return d; }
+}
+---
+
+<BaseLayout title={pageTitle} description={pageDesc} canonical={canonical}>
+  <Fragment slot="head">
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDesc} />
+    <meta property="og:url" content={canonical} />
+  </Fragment>
+
+  <!-- Dark marquee strip -->
+  <div class="news-marquee-outer">
+    <div class="news-marquee-track">
+      {[...posts.slice(0, 8), ...posts.slice(0, 8)].map((p, i) => (
+        <a
+          href={p.canonical_url || p.slug ? `/briefs/${p.slug}` : '#'}
+          class="news-marquee-item"
+          target={p.canonical_url ? '_blank' : '_self'}
+          rel={p.canonical_url ? 'noreferrer' : ''}
+        >
+          <span class="news-marquee-item__tag">[NEWS]</span>
+          {p.title}
+        </a>
+      ))}
+    </div>
+  </div>
+
+  <div class="ce-page-shell--wide">
+    <!-- Header -->
+    <div style="margin-bottom:3rem">
+      <a href="/" class="inline-flex items-center gap-2 text-slate-500 hover:text-teal-700 text-sm font-bold mb-6 transition">← Home</a>
+      <div class="terminal-section-label" style="color:#f59e0b">
+        <span class="live-dot" style="background:#f59e0b"></span>
+        INTELLIGENCE_WIRE // AI HEALTHCARE // UPDATED DAILY
+      </div>
+      <h1 class="text-4xl md:text-6xl mb-4">What's Moving<br/><span style="color:#d97706">the Field.</span></h1>
+      <p class="text-slate-600 text-lg max-w-2xl">Daily curated intelligence on AI healthcare entrepreneurship, funding rounds, regulatory milestones, and clinical adoption.</p>
+    </div>
+
+    <!-- Cards grid -->
+    {posts.length > 0 ? (
+      <div class="ce-card-grid">
+        {posts.map((post) => (
+          <a
+            href={post.canonical_url || (post.slug ? `/briefs/${post.slug}` : '#')}
+            class="ce-card"
+            target={post.canonical_url ? '_blank' : '_self'}
+            rel={post.canonical_url ? 'noreferrer' : ''}
+          >
+            <p class="ce-card__date">{formatDate(post.date || post.published_at)}</p>
+            <span class="ce-card__keyword" style="color:#d97706;background:rgba(217,119,6,0.08);border-color:rgba(217,119,6,0.2)">
+              {post.content_type === 'health_news' ? 'AI HEALTH NEWS' : (post.path || 'NEWS').toUpperCase()}
+            </span>
+            <h2 class="ce-card__title">{post.title}</h2>
+            {post.summary && <p class="ce-card__summary">{post.summary}</p>}
+          </a>
+        ))}
+      </div>
+    ) : (
+      <div style="text-align:center;padding:4rem;color:#94a3b8">
+        <p style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem">[NO NEWS PUBLISHED YET]</p>
+        <p style="margin-top:1rem;font-size:0.9rem">Our AI healthcare news digest is published daily. Check back tomorrow.</p>
+      </div>
+    )}
+  </div>
+</BaseLayout>

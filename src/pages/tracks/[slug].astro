@@ -16,12 +16,13 @@ const catalog = await getCourseCatalog();
 const track = hydrateTrack(rawTrack, catalog);
 const hasResearchLab = track?.slug === 'ai-research-accelerator';
 const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 ---
 
 <BaseLayout
   title={`${track.title} | GreyBrain Track`}
   description={track.tagline}
-  canonical={`https://gbdeeplearn.pages.dev/tracks/${track.slug}`}
+  canonical={`${SITE_ORIGIN}/tracks/${track.slug}`}
 >
   <section class="mb-8 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
     <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
@@ -38,12 +39,12 @@ const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
       <a href="/courses" class="inline-flex rounded-xl bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition hover:bg-slate-100">
         Browse Courses
       </a>
-      <a href="/learn" class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">
+      <a href="/app/learn" class="inline-flex rounded-xl border border-white/30 bg-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/20">
         Learner Hub
       </a>
       {hasResearchLab ? (
         <a
-          href="/research-lab"
+          href="/app/research-lab"
           class="inline-flex rounded-xl border border-cyan-300/50 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-100 transition hover:bg-cyan-500/20"
         >
           Open In-Silico Research Lab
@@ -51,7 +52,7 @@ const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
       ) : null}
       {hasVentureStudio ? (
         <a
-          href="/venture-studio"
+          href="/app/venture-studio"
           class="inline-flex rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-500/20"
         >
           Open Venture Studio
@@ -69,6 +70,19 @@ const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
     </div>
   </section>
 
+  <section class="mb-8 rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
+    <h2 class="text-2xl font-extrabold text-slate-900">Curriculum Blueprint</h2>
+    <p class="mt-1 text-sm text-slate-600">Structured sequencing from fundamentals to deployable outcomes.</p>
+    <div class="mt-4 grid gap-3 md:grid-cols-2">
+      {(track.curriculumBlueprint || []).map((item) => (
+        <article class="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <p class="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">{item.block}</p>
+          <p class="mt-1 text-sm text-slate-700">{item.focus}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
   {hasResearchLab ? (
     <section class="mb-8 rounded-3xl border border-cyan-200 bg-cyan-50/70 p-5 shadow-sm">
       <div class="flex flex-wrap items-center justify-between gap-3">
@@ -79,7 +93,7 @@ const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
             Learn research methodology first, then AI tools: promptable literature synthesis, RAG tutor guidance, and experiment workflows.
           </p>
         </div>
-        <a href="/research-lab" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        <a href="/app/research-lab" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
           View Path 2 Scaffold
         </a>
       </div>
@@ -96,12 +110,41 @@ const hasVentureStudio = track?.slug === 'doctor-ai-entrepreneurship';
             Move from clinical pain point to investable capstone with no-code AI product workflows and governance checkpoints.
           </p>
         </div>
-        <a href="/venture-studio" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
+        <a href="/app/venture-studio" class="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
           View Path 3 Scaffold
         </a>
       </div>
     </section>
   ) : null}
+
+  <section class="mb-8 grid gap-4 md:grid-cols-3">
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+      <h3 class="text-sm font-bold uppercase tracking-[0.1em] text-slate-600">Deliverables</h3>
+      <ul class="mt-2 space-y-2 text-sm text-slate-700">
+        {(track.deliverables || []).map((item) => (
+          <li class="rounded-lg bg-slate-50 px-3 py-2">{item}</li>
+        ))}
+      </ul>
+    </article>
+
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+      <h3 class="text-sm font-bold uppercase tracking-[0.1em] text-slate-600">Assessment Gates</h3>
+      <ul class="mt-2 space-y-2 text-sm text-slate-700">
+        {(track.assessmentGates || []).map((item) => (
+          <li class="rounded-lg bg-slate-50 px-3 py-2">{item}</li>
+        ))}
+      </ul>
+    </article>
+
+    <article class="rounded-2xl border border-slate-200 bg-white/80 p-4 shadow-sm">
+      <h3 class="text-sm font-bold uppercase tracking-[0.1em] text-slate-600">Completion Criteria</h3>
+      <ul class="mt-2 space-y-2 text-sm text-slate-700">
+        {(track.completionCriteria || []).map((item) => (
+          <li class="rounded-lg bg-slate-50 px-3 py-2">{item}</li>
+        ))}
+      </ul>
+    </article>
+  </section>
 
   <section class="rounded-3xl border border-slate-200 bg-white/80 p-5 shadow-lg">
     <h2 class="text-2xl font-extrabold text-slate-900">Included Courses</h2>

@@ -1,13 +1,13 @@
-import AuthRoleGate from './AuthRoleGate';
+import AuthRoleGate from '../shared/AuthRoleGate';
 import PlatformConsole from './PlatformConsole';
 
 export default function PlatformWorkspace() {
   return (
     <AuthRoleGate
-      allowedRoles={['coordinator', 'teacher', 'cto']}
+      allowedRoles={['coordinator', 'content_editor', 'counselor', 'teacher', 'cto']}
       title="Platform Console"
       subtitle="Sign in with your Firebase account to manage cohorts and operations."
-      unauthorizedMessage="This console is restricted to coordinator, teacher, or CTO roles."
+      unauthorizedMessage="This console is restricted to coordinator, content editor, counselor, teacher, or CTO roles."
     >
       {({ user, roles, onSignOut }) => (
         <div className="space-y-4">

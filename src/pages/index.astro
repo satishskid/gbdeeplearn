@@ -1,200 +1,925 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
-import ChatInterface from '../components/ChatInterface.jsx';
-import CounselorChat from '../components/CounselorChat.jsx';
-import WebinarLeadForm from '../components/WebinarLeadForm.jsx';
-import ClinicalFeedPanel from '../components/ClinicalFeedPanel.jsx';
-import { getClinicalFeedPosts, getCourseCatalog } from '../lib/academyData';
-import { TRACKS } from '../lib/tracks';
+import { formatDisplayDate, getCourseCatalog, getHuggingFaceModelSpotlights, getHuggingFaceSpacesSpotlights } from '../lib/academyData';
+import { fetchPublishedBriefs, fetchLatestByType, fetchHomepageConfig, fetchSpotlightedPosts } from '../lib/briefs.js';
 
-const SITE_ORIGIN = 'https://gbdeeplearn.pages.dev';
-const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '1x00000000000000000000AA';
-const blogPosts = await getClinicalFeedPosts(4);
+const modelSpotlights = await getHuggingFaceModelSpotlights(5);
+const spacesSpotlights = await getHuggingFaceSpacesSpotlights(5);
+const publishedBriefs = await fetchPublishedBriefs(6).catch(() => []);
 const allCourses = await getCourseCatalog();
-const featuredCourses = allCourses.slice(0, 6);
+const refresherCourse = allCourses.find((course) => course.slug === 'ai-refresher-for-doctors') || null;
 
-const urgencyLabels = ['Admissions Open', 'Filling Fast', 'Waitlist Closing Soon'];
+// Fetch latest daily-generated content for each section
+const latestModelSpotlight = await fetchLatestByType('model_spotlight').catch(() => null);
+const latestDaiy = await fetchLatestByType('daiy_prompt').catch(() => null);
+const latestHealthNews = await fetchPublishedBriefs(3).catch(() => []);
 
-const structuredData = {
-  '@context': 'https://schema.org',
-  '@type': 'EducationalOrganization',
-  name: 'GreyBrain Academy',
-  url: `${SITE_ORIGIN}/`,
-  sameAs: ['https://greybrain.ai/academy', 'https://greybrain.ai/clinical-ai'],
-  description:
-    'No-code AI learning for doctors and healthcare professionals through cohort training and practical implementation.',
-  hasOfferCatalog: {
-    '@type': 'OfferCatalog',
-    name: 'GreyBrain Healthcare AI Courses',
-    itemListElement: allCourses.map((course) => ({
-      '@type': 'Course',
-      name: course.name,
-      url: `${SITE_ORIGIN}/courses/${course.slug}`,
-      provider: {
-        '@type': 'Organization',
-        name: 'GreyBrain Academy'
-      }
-    }))
+// Phase 8: Dynamic homepage config (ticker text, spotlight flags)
+const homepageConfig = await fetchHomepageConfig().catch(() => ({}));
+const spotlightedBriefs = await fetchSpotlightedPosts(publishedBriefs).catch(() => []);
+const spotlightedIds = new Set(spotlightedBriefs.map((p) => p.id));
+const tickerText = homepageConfig?.ticker_text?.trim() ||
+  '🧠 Merlin (Stanford, Nature 2026) — native 3D volumetric VLM for CT/MRI · 🏆 Open Medical LLM Leaderboard updated · 🤖 Google MedGemma expansion · 📋 SAHI India Strategy rollout · ⚡ AbraHealth FDA clearance for autonomous triage · ✨ GreyBrain Cohort 3 applications open — apply now';
+
+// Featured HuggingFace model (first from trending list)
+const featuredModel = modelSpotlights[0] || null;
+
+// DAIY: parse prompt data from DB post or use fallback
+const daiyPrompt = latestDaiy?.prompt_text || `I am a physician. Act as an empathetic Medical Communication Agent. Take the attached clinical note and transform it into:
+1) An ‘After Visit Summary’ written at a 5th-grade reading level (warm tone).
+2) A ‘Why This Matters’ section explaining the diagnosis without jargon.
+3) A visual ‘Home Care Checklist’ using emojis for easy scanning.`;
+
+const daiyKeyword = latestDaiy?.prompt_keyword || 'Patient Communication';
+const daiyPreview = latestDaiy?.prompt_output_preview || 'You\'ll receive a structured, doctor-vetted breakdown that transforms dense clinical language into clear, actionable takeaways — ready for your next consultation or social post.';
+const daiyLikes = latestDaiy?.community_likes || 0;
+const daiyPostId = latestDaiy?.id || '';
+
+// Comprehensive Classified Model & Space Arena (Exhaustive 2026 Directory)
+const DAIY_ARENA = {
+  categories: [
+    { id: 'logic', label: 'Clinical Logic (CoT)' },
+    { id: 'imaging', label: 'Imaging & Multimodal' },
+    { id: 'agents', label: 'Clinical Agents & Scribes' },
+    { id: 'research', label: 'Bio / Pharma / Labs' },
+    { id: 'spaces', label: 'Interactive HF Spaces' }
+  ],
+  models: {
+    logic: [
+      { name: 'DeepSeek-R1', url: 'https://chat.deepseek.com', desc: '671B MoE. State-of-the-art medical CoT.', trending: true, date: '2025-01' },
+      { name: 'Qwen 3.5-Max', url: 'https://chat.qwen.ai', desc: 'Doctoral-level scientific QA specialist.', trending: true, date: '2026-02' },
+      { name: 'OpenAI o1', url: 'https://chatgpt.com', desc: 'Reasoning-heavy medical diagnostics.', trending: false, date: '2024-11' },
+      { name: 'Claude 3.5 Sonnet', url: 'https://claude.ai', desc: 'Precision reasoning & medical ethics.', trending: false, date: '2024-10' },
+      { name: 'Kimi K2.5', url: 'https://kimi.moonshot.cn', desc: 'Ultra-long context clinical reasoning.', trending: true, date: '2026-01' },
+      { name: 'GLM-5', url: 'https://chatglm.cn', desc: 'Advanced multi-step clinical deduction.', trending: true, date: '2026-03' },
+      { name: 'Starling-LM-7B', url: 'https://huggingface.co/berkeley-nest/starling-lm-7b-alpha', desc: 'Top-tier open medical QA weights.', trending: false, date: '2024-05' },
+      { name: 'Hermes-3-Pro', url: 'https://huggingface.co/NousResearch/Hermes-3-Llama-3.1-405B', desc: 'Complex medical instruction following.', trending: true, date: '2025-08' },
+      { name: 'Meditron-V3', url: 'https://huggingface.co/medical-ai/meditron-v3-70b', desc: 'Llama-3 fine-tuned on PubMed v2.', trending: true, date: '2025-11' },
+      { name: 'Instruction-Med', url: 'https://huggingface.co/medicalai/instruction-med-13b', desc: 'Clinical guidelines alignment.', trending: false, date: '2024-12' },
+      { name: 'BioMistral-v2', url: 'https://huggingface.co/BioMistral/BioMistral-7B-v2', desc: 'Specialized biomedical MoE.', trending: false, date: '2025-03' }
+    ],
+    imaging: [
+      { name: 'Gemini 2.0 Pro', url: 'https://gemini.google.com', desc: 'Native multimodal EHR + Radiology.', trending: true, date: '2025-12' },
+      { name: 'MedImageInsight', url: 'https://azure.microsoft.com', desc: 'Microsoft foundation for 14 modalities.', trending: true, date: '2025-06' },
+      { name: 'MedGemma-2', url: 'https://huggingface.co/google/medgemma-2-27b', desc: 'Advanced open weights for imaging.', trending: true, date: '2026-01' },
+      { name: 'Merlin (3D VLM)', url: 'https://huggingface.co/stanford/merlin-3d-vlm', desc: 'Native 3D clinical vision for volumetric CT/MRI.', trending: true, date: '2026-03', spotlight: true },
+      { name: 'Rad-Dino-V2', url: 'https://huggingface.co/microsoft/Rad-DINO-V2', desc: 'Global radiology foundation leader.', trending: true, date: '2025-10' },
+      { name: 'GLM-Vision-5', url: 'https://github.com/THUDM/GLM-5', desc: '3D spatial reasoning for CT/MRI scans.', trending: true, date: '2026-03' },
+      { name: 'BioViL-L', url: 'https://huggingface.co/microsoft/BioViL-L', desc: 'Vision-language foundation for CXR.', trending: false, date: '2024-09' },
+      { name: 'LLaVA-Med-v2', url: 'https://huggingface.co/microsoft/llava-med-v2', desc: 'Visual clinical chat & instruction.', trending: false, date: '2025-02' },
+      { name: 'PathAI-Dino', url: 'https://www.pathai.com', desc: 'Digital pathology feature extractor.', trending: false, date: '2024-05' },
+      { name: 'Aidoc-Core', url: 'https://www.aidoc.com', desc: 'Real-time radiology prioritization.', trending: false, date: '2024-08' },
+      { name: 'MedImageParse-V2', url: 'https://github.com/microsoft/MedImageParse', desc: 'Volumetric medical image segmentation.', trending: true, date: '2025-11' }
+    ],
+    agents: [
+      { name: 'Polaris 4.0', url: 'https://www.hippocraticai.com', desc: 'Next-gen patient-facing nursing suite.', trending: true, date: '2026-03' },
+      { name: 'Glass Health', url: 'https://glass.health', desc: 'Precision diagnostic & treatment agent.', trending: false, date: '2024-05' },
+      { name: 'Amboss LiSA', url: 'https://www.amboss.com', desc: 'Evidence-based clinical decision suite.', trending: false, date: '2024-06' },
+      { name: 'JSL Clinical Assistant', url: 'https://www.johnsnowlabs.com', desc: 'Verified clinical notes & extraction.', trending: true, date: '2025-09' },
+      { name: 'Abridge-Med', url: 'https://www.abridge.com', desc: 'Real-time doctor-patient scribe.', trending: true, date: '2025-07' },
+      { name: 'Suki-AI', url: 'https://www.suki.ai', desc: 'Voice-enabled AI assistant for EHR.', trending: false, date: '2024-03' },
+      { name: 'Augmedix', url: 'https://augmedix.com', desc: 'Ambient automation for clinical visits.', trending: false, date: '2024-11' },
+      { name: 'Clinical-Copilot', url: 'https://github.com/microsoft/clinical-copilot', desc: 'EHR-integrated decision support.', trending: true, date: '2025-12' },
+      { name: 'Health-Scribe', url: 'https://aws.amazon.com/healthscribe', desc: 'AWS clinical note generator.', trending: false, date: '2024-01' },
+      { name: 'MedGPT-Scribe', url: 'https://huggingface.co/med-ai/medgpt-scribe', desc: 'Open-weights clinical transcription.', trending: false, date: '2025-04' }
+    ],
+    research: [
+      { name: 'AlphaFold 3', url: 'https://alphafoldserver.com', desc: 'Google DeepMind protein agent.', trending: true, date: '2024-05' },
+      { name: 'ESM-3 (Evolutionary)', url: 'https://www.evolutionaryscale.ai', desc: 'Next-gen biological foundation.', trending: true, date: '2024-07' },
+      { name: 'TamGen-V2', url: 'https://github.com/microsoft/TamGen', desc: 'Microsoft drug target design suite.', trending: true, date: '2026-01' },
+      { name: 'BioNeMo (NVIDIA)', url: 'https://www.nvidia.com/bionemo', desc: 'High-compute biology simulation.', trending: true, date: '2025-08' },
+      { name: 'BioGPT-Max', url: 'https://huggingface.co/microsoft/biogpt-large', desc: 'Microsoft generative biology.', trending: false, date: '2024-03' },
+      { name: 'Protein-LM', url: 'https://huggingface.co/facebook/esm2_t33_650M_UR50D', desc: 'Meta protein language expert.', trending: false, date: '2023-09' },
+      { name: 'Stanford Med-RAG', url: 'https://huggingface.co/med-ai', desc: 'Research-grounded medical RAG.', trending: true, date: '2025-11' },
+      { name: 'TamGen-SRE', url: 'https://github.com/microsoft/TamGen', desc: 'Tampering-resistant drug design.', trending: false, date: '2025-12' },
+      { name: 'OpenBioML', url: 'https://openbioml.org', desc: 'Decentralized biological research.', trending: true, date: '2026-02' }
+    ],
+    spaces: [
+      { name: 'Open Med-LLM Leaderboard', url: 'https://huggingface.co/spaces/open-medical-llm/leaderboard', desc: 'Real-time ranking of medical AI.', trending: true, date: '2026-03' },
+      { name: 'Radiology Explainer', url: 'https://huggingface.co/spaces/google/rad_explain', desc: 'AI-led imaging interpretations.', trending: true, date: '2024-11' },
+      { name: 'EHR Navigator Agent', url: 'https://huggingface.co/spaces/google/ehr-navigator-agent-with-medgemma', desc: 'Complex record search agent.', trending: true, date: '2024-12' },
+      { name: 'Path Foundation Demo', url: 'https://huggingface.co/spaces/google/path-foundation-demo', desc: 'Digital pathology classification.', trending: true, date: '2024-10' },
+      { name: 'Symptom Analyzer Pro', url: 'https://huggingface.co/spaces/gnumanth/MedGemma-Symptoms', desc: 'Interactive clinical reasoning.', trending: true, date: '2026-01' },
+      { name: 'Med-Flamingo-V2', url: 'https://huggingface.co/spaces/med-ai/med-flamingo-demo', desc: 'Medical Visual Chat (VQA).', trending: false, date: '2025-05' },
+      { name: 'Med-PaLM Benchmark', url: 'https://huggingface.co/spaces/medical-ai/med-benchmark', desc: 'Clinical evaluation arena.', trending: true, date: '2025-01' },
+      { name: 'BioBERT-NER-HF', url: 'https://huggingface.co/spaces/biomedical/biobert-ner', desc: 'PubMed entity extractor.', trending: false, date: '2023-04' },
+      { name: 'HealthSearch-Live', url: 'https://huggingface.co/spaces/google/healthsearch', desc: 'Verified clinical info search.', trending: true, date: '2026-02' },
+      { name: 'Med-PaLM 2 Playground', url: 'https://huggingface.co/spaces/medical-ai/Med-PaLM', desc: 'Google clinical trial arena.', trending: true, date: '2025-09' },
+      { name: 'Brain Seg Demo', url: 'https://huggingface.co/spaces/akhaliq/Brain_Tumor_Segmentation', desc: 'Interactive MRI segmentation.', trending: false, date: '2024-03' },
+      { name: 'Clinical-Note-Assist', url: 'https://huggingface.co/spaces/clinical-ai/note-assistant', desc: 'Automated note structuring demo.', trending: true, date: '2026-02' },
+      { name: 'Med-Summarizer-HF', url: 'https://huggingface.co/spaces/biomedical/summarizer', desc: 'Clinical literature summarizer.', trending: true, date: '2025-10' },
+      { name: 'Drug-Discovery-LM', url: 'https://huggingface.co/spaces/chem-ai/drug-discovery', desc: 'Molecular design interactive.', trending: true, date: '2026-03' }
+    ]
   }
 };
+
+// Selection logic for daily prompt (Optional: metadata-driven in future)
+const arenaRecommended = latestDaiy?.model_tag || 'logic';
+
+const SITE_ORIGIN = 'https://med.greybrain.ai';
+const daiyShareText = encodeURIComponent(`I just tried today's #DAIY prompt from @GreyBrainAcademy 🧠\n\nPrompt topic: "${daiyKeyword}"\n\nTry it yourself: ${SITE_ORIGIN} #AIForDoctors #ClinicalAI`);
+const daiyXUrl = `https://twitter.com/intent/tweet?text=${daiyShareText}`;
+const daiyLinkedInUrl = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(SITE_ORIGIN)}`;
 ---
 
 <BaseLayout
-  title="GreyBrain Academy | No-Code AI Courses for Doctors"
-  description="Learn AI for healthcare practice, research, and entrepreneurship. Explore cohort-based courses, practical tracks, and guided AI tutoring."
-  canonical={`${SITE_ORIGIN}/`}
+  title="DeepLearn AI | The Applied AI Incubator for Doctors"
+  description="Move from AI Hype to Clinical Evidence. The first applied AI incubator designed for doctors — with daily AI model spotlights, curated prompts (DAIY), and AI healthcare news."
+  canonical={SITE_ORIGIN}
 >
-  <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
-
-  <section class="relative mb-8 overflow-hidden rounded-[2rem] bg-slate-950 px-6 py-10 text-white shadow-2xl md:px-10 md:py-12">
-    <div class="absolute right-0 top-0 h-48 w-48 rounded-full bg-cyan-400/25 blur-3xl"></div>
-    <div class="absolute bottom-0 left-0 h-44 w-44 rounded-full bg-amber-300/25 blur-3xl"></div>
-
-    <div class="relative z-10 grid gap-6 lg:grid-cols-[1.3fr_0.7fr] lg:items-end">
-      <div>
-        <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
-          GreyBrain Academy
-        </p>
-        <h1 class="mb-4 text-3xl font-extrabold leading-tight md:text-5xl">
-          Become An AI-Enabled Doctor, Operator, or Founder
-        </h1>
-        <p class="max-w-2xl text-base text-slate-200 md:text-lg">
-          Cohort-based no-code AI learning for healthcare professionals. Learn with practical implementation workflows,
-          mentor guidance, and personalized AI tutoring.
-        </p>
-      </div>
-
-      <div class="grid gap-3 text-sm">
-        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Next Intake</p>
-          <p class="mt-1 text-lg font-semibold text-white">Enrollment Window Open</p>
-        </div>
-        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Learning Format</p>
-          <p class="mt-1 text-lg font-semibold text-white">Cohort + AI Tutor + Projects</p>
-        </div>
-        <div class="rounded-2xl border border-white/20 bg-white/5 px-4 py-3">
-          <p class="text-slate-300">Core Audience</p>
-          <p class="mt-1 text-lg font-semibold text-white">Doctors and Healthcare Teams</p>
-        </div>
+  <Fragment slot="head">
+    <script type="application/ld+json" set:html={JSON.stringify({
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "name": "GreyBrain Academy",
+      "url": SITE_ORIGIN,
+      "description": "The first applied AI incubator for doctors. Daily AI model spotlights, DAIY prompts, and AI healthcare news.",
+      "potentialAction": { "@type": "SearchAction", "target": `${SITE_ORIGIN}/briefs?q={search_term_string}`, "query-input": "required name=search_term_string" }
+    })} />
+  </Fragment>
+  <!-- 1. THE HOOK (Hero) -->
+  <section class="section-container">
+    <div class="max-w-4xl">
+      <p class="inline-flex rounded-full bg-teal-50 px-3 py-1 text-xs font-bold uppercase tracking-[0.14em] text-teal-700 mb-6">
+        Applied AI Academy for Healthcare
+      </p>
+      <h1 class="text-5xl md:text-7xl leading-[1.1] mb-8">
+        Move from AI Hype to <span class="text-teal-700">Clinical Evidence.</span>
+      </h1>
+      <p class="text-xl text-slate-600 leading-relaxed mb-10 max-w-2xl">
+        The first applied AI incubator designed for doctors. Launch ventures, publish rigorous research, and automate your practice through 8-week mentored cohorts.
+      </p>
+      <div class="flex flex-wrap gap-4">
+        <a href="/courses/ai-refresher-for-doctors" class="nav-btn !px-8 !py-4 !text-lg">Start AI Refresher</a>
+        <a href="#paths" class="inline-flex items-center gap-2 text-lg font-bold text-slate-800 hover:text-teal-700 transition">
+          View Learning Paths 
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </a>
       </div>
     </div>
   </section>
 
-  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Clinical AI Briefs</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Fresh Weekly Signals You Can Act On</h2>
-        <p class="mt-1 text-sm text-slate-600">
-          Keep your edge with high-frequency GreyBrain clinical AI updates. Learn first, then enroll before the next cohort closes.
+  <!-- DYNAMIC NEWS TICKER (admin-controlled via Homepage Control) -->
+  <div class="news-ticker-bar" aria-label="Clinical AI news ticker">
+    <div class="news-ticker-inner">
+      <span class="news-ticker-label">📡 LIVE</span>
+      <div class="news-ticker-scroll-outer">
+        <div class="news-ticker-scroll">
+          <span>{tickerText}</span>
+          <span aria-hidden="true">&nbsp;&nbsp;·&nbsp;&nbsp;{tickerText}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 2. THE INFRASTRUCTURE (How) -->
+  <section class="bg-slate-50 border-y border-slate-100 py-24">
+    <div class="section-container">
+      <div class="text-center mb-16">
+        <h2 class="text-3xl md:text-5xl mb-4">A Grounded Learning Loop</h2>
+        <p class="text-slate-600 text-lg max-w-2xl mx-auto">
+          We don't just teach prompt engineering. We provide the operational infrastructure for clinicians to build and lead.
         </p>
       </div>
-      <a
-        href="https://greybrain.ai/clinical-ai"
-        target="_blank"
-        rel="noreferrer"
-        class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-slate-400 hover:bg-slate-50"
-      >
-        Read Clinical AI Feed
-      </a>
-    </div>
 
-    <ClinicalFeedPanel client:load initialPosts={blogPosts} />
-  </section>
-
-  <section class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Choose Your Track</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Goal-Based Learning Paths</h2>
-        <p class="mt-1 text-sm text-slate-600">Pick a role outcome and follow a curated sequence of courses with practical execution focus.</p>
-      </div>
-      <a href="/tracks" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
-        Compare Tracks
-      </a>
-    </div>
-
-    <div class="grid gap-3 md:grid-cols-3">
-      {TRACKS.map((track) => (
-        <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-emerald-700">{track.duration}</p>
-          <h3 class="mt-2 text-xl font-bold text-slate-900">{track.title}</h3>
-          <p class="mt-2 text-sm text-slate-600">{track.tagline}</p>
-          <p class="mt-2 text-xs text-slate-500">Ideal for: {track.idealFor}</p>
-          <a href={`/tracks/${track.slug}`} class="mt-4 inline-flex rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-            View Track
-          </a>
-        </article>
-      ))}
-    </div>
-  </section>
-
-  <section id="courses" class="mb-8 rounded-3xl border border-slate-900/10 bg-white/75 p-5 shadow-lg backdrop-blur md:p-6">
-    <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div>
-        <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Ongoing Courses</p>
-        <h2 class="mt-1 text-2xl font-extrabold text-slate-900">Enroll In The Current Cohort Catalog</h2>
-        <p class="mt-1 text-sm text-slate-600">Course pages now follow a consistent conversion template with outcomes, syllabus signals, and enrollment actions.</p>
-      </div>
-      <a href="/courses" class="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800">
-        Browse All Courses
-      </a>
-    </div>
-
-    <div class="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-      {featuredCourses.map((course, index) => (
-        <article class="rounded-2xl border border-slate-200 bg-white p-4">
-          <p class="text-xs font-semibold uppercase tracking-[0.13em] text-amber-700">{urgencyLabels[index % urgencyLabels.length]}</p>
-          <h3 class="mt-2 text-lg font-bold text-slate-900 line-clamp-2">{course.name}</h3>
-          <p class="mt-2 text-sm text-slate-600 line-clamp-3">{course.shortDescription}</p>
-          <p class="mt-2 text-xs text-slate-500">
-            {course.lessonCount > 0 ? `${course.lessonCount} lessons` : 'Structured curriculum'}{course.rating > 0 ? ` • ${course.rating}/10 rating` : ''}
+      <div class="grid md:grid-cols-3 gap-8">
+        <!-- AI Tutor -->
+        <article class="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition">
+          <div class="w-12 h-12 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8"/><path d="M8 13h6"/></svg>
+          </div>
+          <h3 class="text-xl mb-3">Syllabus-Grounded AI Tutor</h3>
+          <p class="text-slate-600 text-sm leading-relaxed">
+            Study clinical concepts with an AI agent constrained to your specific course syllabus and medical protocols.
           </p>
-          <div class="mt-4 flex flex-wrap gap-2">
-            <a href={`/courses/${course.slug}`} class="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50">
-              View Details
-            </a>
-            <a
-              href={course.academyUrl}
-              target="_blank"
-              rel="noreferrer"
-              class="rounded-xl bg-slate-900 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+        </article>
+
+        <!-- Lab Studio -->
+        <article class="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition">
+          <div class="w-12 h-12 bg-teal-50 text-teal-600 rounded-xl flex items-center justify-center mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12V2h20v10"/><path d="m9 18 3 3 3-3"/><path d="M12 22V13"/><path d="M11 13H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h4"/><path d="M13 13h6a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-4"/></svg>
+          </div>
+          <h3 class="text-xl mb-3">The Experiment Lab Studio</h3>
+          <p class="text-slate-600 text-sm leading-relaxed">
+            Execute no-code experiments using open-source HuggingFace models for literature synthesis and predictive research.
+          </p>
+        </article>
+
+        <!-- Human Review -->
+        <article class="bg-white p-8 rounded-3xl border border-slate-200 shadow-sm hover:shadow-md transition">
+          <div class="w-12 h-12 bg-amber-50 text-amber-600 rounded-xl flex items-center justify-center mb-6">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </div>
+          <h3 class="text-xl mb-3">Human-in-the-Loop Review</h3>
+          <p class="text-slate-600 text-sm leading-relaxed">
+            Every experimental artifact and project is reviewed by clinical coordinators to ensure methodological rigor.
+          </p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. THE CORE TRACKS (Pathway Cinema Stage) -->
+  <section id="paths" class="py-24">
+    <div class="section-container">
+      <div class="pathway-cinema-shell">
+        <div class="pathway-cinema-stage">
+          
+          <!-- Content Evolution -->
+          <div class="cinema-evolution">
+            
+            <!-- Path 01: Practice -->
+            <div id="panel-practice" class="cinema-panel active">
+              <span class="cinema-kicker">Path 01: Practice</span>
+              <h2 class="cinema-title">Automate your <span class="text-teal-400">documentation</span>, not your judgment.</h2>
+              <p class="cinema-desc">Build personalized AI documentation templates, automate follow-up communication, and implement safe patient-facing AI boundaries.</p>
+              <div class="flex gap-4">
+                <a href="/tracks/clinical-ai-practitioner" class="nav-btn !px-8 !py-3 !bg-teal-500 hover:!bg-teal-400">View Prototype SOPs</a>
+                <a href="/courses/gen-ai-doctors-express" class="inline-flex items-center text-white/60 hover:text-white transition gap-2 font-bold text-sm">Express Track &rarr;</a>
+              </div>
+            </div>
+
+            <!-- Path 02: Publish -->
+            <div id="panel-publish" class="cinema-panel">
+              <span class="cinema-kicker">Path 02: Publish</span>
+              <h2 class="cinema-title">Accelerate <span class="text-blue-400">evidence synthesis</span> with AI rigour.</h2>
+              <p class="cinema-desc">Execute in-silico experiments using advanced open-source models. Move from hypothesis to publication-ready manuscript outline.</p>
+              <div class="flex gap-4">
+                <a href="/tracks/ai-research-accelerator" class="nav-btn !px-8 !py-3 !bg-blue-600 hover:!bg-blue-500">Enter Research Lab</a>
+                <a href="/app/research-lab" class="inline-flex items-center text-white/60 hover:text-white transition gap-2 font-bold text-sm">Open Laboratory &rarr;</a>
+              </div>
+            </div>
+
+            <!-- Path 03: Build -->
+            <div id="panel-build" class="cinema-panel">
+              <span class="cinema-kicker">Path 03: Build</span>
+              <h2 class="cinema-title">From clinical friction to <span class="text-amber-400">pilot-ready MVP.</span></h2>
+              <p class="cinema-desc">Designed for doctor-founders. Solve your own clinical friction by building AI-enabled services and validated product briefs.</p>
+              <div class="flex gap-4">
+                <a href="/tracks/doctor-ai-entrepreneurship" class="nav-btn !px-8 !py-3 !bg-amber-600 hover:!bg-amber-500">Build Your Venture</a>
+                <span class="inline-flex items-center text-white/40 gap-2 font-bold text-sm">Incubator Mode</span>
+              </div>
+            </div>
+
+            <!-- Sequence Tracker -->
+            <div class="sequence-tracker">
+              <div class="sequence-step active" data-target="practice">
+                <div class="step-bar"></div>
+                <span class="step-label">Practice</span>
+              </div>
+              <div class="sequence-step" data-target="publish">
+                <div class="step-bar"></div>
+                <span class="step-label">Publish</span>
+              </div>
+              <div class="sequence-step" data-target="build">
+                <div class="step-bar"></div>
+                <span class="step-label">Build</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Motion Node Visuals -->
+          <div class="cinema-visual-stage">
+            
+            <!-- Practice Node -->
+            <div id="node-practice" class="motion-node active">
+              <div class="node-pulse"></div>
+              <div class="relative z-10 w-64 h-80 bg-slate-800/50 rounded-3xl border border-white/10 backdrop-blur-xl p-6 flex flex-col justify-center items-center text-center">
+                 <div class="w-20 h-20 bg-teal-500/20 rounded-2xl flex items-center justify-center mb-6 text-teal-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M16 13H8"/><path d="M16 17H8"/><path d="m10 9-2 2 2 2"/></svg>
+                 </div>
+                 <p class="text-xs font-mono text-teal-400/60 mb-2">Automation Scanner</p>
+                 <div class="h-1 w-32 bg-teal-500/20 rounded-full overflow-hidden">
+                    <div class="h-full bg-teal-400 animate-[progressFill_2s_infinite]"></div>
+                 </div>
+              </div>
+            </div>
+
+            <!-- Publish Node -->
+            <div id="node-publish" class="motion-node">
+              <div class="node-grid-scan"></div>
+              <div class="relative z-10 w-72 h-72 bg-blue-900/40 rounded-full border border-blue-400/20 backdrop-blur-xl flex flex-col justify-center items-center text-center">
+                 <div class="w-16 h-16 bg-blue-400/20 rounded-full flex items-center justify-center mb-4 text-blue-300">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22.5V12"/></svg>
+                 </div>
+                 <p class="text-[10px] font-bold text-blue-300 uppercase tracking-widest">In-Silico Investigator</p>
+                 <p class="text-[8px] text-blue-300/60 mt-2 px-10">Synthesizing Evidence via HF Models...</p>
+              </div>
+            </div>
+
+            <!-- Build Node -->
+            <div id="node-build" class="motion-node">
+              <div class="absolute inset-0 bg-amber-500/5 blur-[80px] rounded-full"></div>
+              <div class="relative z-10 w-64 h-64 bg-slate-900/80 rounded-[2.5rem] border border-amber-500/30 overflow-hidden">
+                 <div class="p-6">
+                    <div class="flex justify-between items-start mb-10">
+                       <div class="w-8 h-8 bg-amber-500 rounded flex items-center justify-center text-slate-900">
+                          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20"/><path d="m17 7-5-5-5 5"/></svg>
+                       </div>
+                       <span class="text-[10px] font-mono text-amber-400">v0.1.0-alpha</span>
+                    </div>
+                    <div class="space-y-3">
+                       <div class="h-2 w-full bg-white/5 rounded"></div>
+                       <div class="h-2 w-4/5 bg-white/5 rounded"></div>
+                       <div class="h-10 w-full bg-amber-500/10 border border-amber-500/20 rounded-lg"></div>
+                    </div>
+                 </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. INTELLIGENCE FEED -->
+  <section class="bg-slate-50 border-y border-slate-100 py-24">
+    <div class="section-container">
+      <div class="flex flex-wrap items-end justify-between gap-6 mb-12">
+        <div class="max-w-2xl">
+          <h2 class="text-3xl md:text-5xl mb-4">Intelligence Feed</h2>
+          <p class="text-slate-600 text-lg">
+            Daily clinical AI briefs and model spotlights for the modern academic physician.
+          </p>
+        </div>
+        <a href="/briefs" class="nav-btn !bg-white !text-slate-900 border border-slate-200">View All Briefs</a>
+      </div>
+
+      <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {publishedBriefs.map((post) => (
+          <article class={`bg-white p-6 rounded-2xl border shadow-sm hover:shadow-md transition flex flex-col ${
+            spotlightedIds.has(post.id)
+              ? 'border-cyan-300 ring-2 ring-cyan-100 relative'
+              : 'border-slate-200'
+          }`}>
+            {spotlightedIds.has(post.id) && (
+              <div class="absolute -top-3 left-4 flex items-center gap-1.5 bg-cyan-500 text-white text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full shadow">
+                <span class="h-1.5 w-1.5 rounded-full bg-white animate-pulse"></span>
+                SPOTLIGHT
+              </div>
+            )}
+            <div class="flex items-center justify-between mb-4">
+               <span class="text-[10px] font-bold uppercase tracking-wider text-teal-600 bg-teal-50 px-2 py-0.5 rounded-full">
+                 {post.content_type || 'Deep Brief'}
+               </span>
+               <span class="text-[10px] font-medium text-slate-400">
+                 {formatDisplayDate(post.date)}
+               </span>
+            </div>
+            <h3 class="text-lg leading-snug mb-3 hover:text-teal-700 transition">
+              <a href={`/briefs/${post.slug}`} class="text-inherit no-underline">{post.title}</a>
+            </h3>
+            <p class="text-slate-600 text-sm line-clamp-2 mb-4">
+              {post.summary}
+            </p>
+            <div class="mt-auto pt-4 border-top border-slate-50 flex items-center gap-2">
+               <span class="w-1 h-1 rounded-full bg-teal-500"></span>
+               <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{post.path || 'Research'}</span>
+            </div>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. MODEL INTELLIGENCE TICKER -->
+  <section class="py-20 overflow-hidden" aria-label="AI Model Intelligence Feed">
+    <div class="section-container">
+      <div class="bg-slate-900 rounded-[3rem] p-10 md:p-16 text-white relative overflow-hidden">
+        <!-- Decorative glows -->
+        <div class="absolute -top-24 -right-24 w-96 h-96 bg-blue-600/30 blur-[100px] rounded-full"></div>
+        <div class="absolute -bottom-24 -left-24 w-96 h-96 bg-indigo-600/10 blur-[100px] rounded-full"></div>
+
+        <div class="relative z-10">
+          <!-- Header row -->
+          <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+            <div>
+              <div class="terminal-section-label terminal-section-label--blue">
+                <span class="live-dot"></span>
+                [01] MODEL_INTELLIGENCE // HUGGINGFACE: CONNECTED
+              </div>
+              <h2 class="text-white text-3xl md:text-4xl">Explore Clinical Open Source.</h2>
+            </div>
+            <div class="flex items-center gap-6">
+              <a href="/app/research-lab" class="nav-btn !bg-white !text-slate-900 hover:!bg-slate-100 !text-sm">Enter Lab</a>
+              <a href="https://huggingface.co/models?pipeline_tag=text-generation&sort=trending" target="_blank" rel="noreferrer" class="text-slate-500 hover:text-white transition text-xs font-mono font-bold">
+                [ALL_MODELS ↗]
+              </a>
+            </div>
+          </div>
+
+          <!-- Auto-scroll ticker -->
+          <div class="model-ticker-outer" aria-label="Trending AI Models">
+            <div class="model-ticker-track">
+              {/* Render twice for seamless loop */}
+              {[...modelSpotlights, ...modelSpotlights].map((model, i) => {
+                const modelId = (model.name || model.title || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+                return (
+                  <a
+                    href={`/models/${modelId}`}
+                    class={`model-ticker-card model-ticker-card--blue ${model.isSpotlight ? 'model-ticker-card--spotlight' : ''}`}
+                    aria-label={`View ${model.name || model.title} model details`}
+                  >
+                    <div class="flex items-center justify-between mb-2">
+                      <span class="model-ticker-card__index">[{String((i % modelSpotlights.length) + 1).padStart(2,'0')}]</span>
+                      {model.isSpotlight && <span class="spotlight-badge">SPOTLIGHT</span>}
+                    </div>
+                    <p class="model-ticker-card__author">{model.author || 'Open Source'}</p>
+                    <p class="model-ticker-card__name">{model.name || model.title}</p>
+                    <p class="model-ticker-card__pipeline">{model.pipeline || 'AI Model'}</p>
+                    <div class="model-ticker-card__stats">
+                      <span class="model-ticker-card__stat">LIKES: {model.likesFormatted || 'n/a'} // DL: {model.downloadsFormatted || 'n/a'}</span>
+                      <span class="model-ticker-card__cta">[DETAILS →]</span>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+  </section>
+
+  <!-- 5b. APPLIED AI LAB // INTERACTIVE SPACES -->
+  <section class="pb-24 overflow-hidden" aria-label="Interactive Medical AI Spaces Feed">
+    <div class="section-container">
+      <div class="bg-slate-950 rounded-[3rem] p-10 md:p-16 text-white relative overflow-hidden border border-white/5">
+        <!-- Interactive background effect -->
+        <div class="absolute inset-0 bg-[radial-gradient(circle_at_50%_-20%,rgba(245,158,11,0.08),transparent_70%)]"></div>
+        <div class="absolute -bottom-24 -right-24 w-80 h-80 bg-amber-600/10 blur-[100px] rounded-full"></div>
+
+        <div class="relative z-10">
+          <div class="flex flex-wrap items-end justify-between gap-4 mb-6">
+            <div>
+              <div class="terminal-section-label terminal-section-label--amber">
+                <span class="live-dot"></span>
+                [01b] APPLIED_AI_LAB // INTERACTIVE_SPACES: ONLINE
+              </div>
+              <h2 class="text-white text-3xl md:text-4xl">Applied clinical <span class="text-amber-400">playgrounds.</span></h2>
+            </div>
+            <div class="flex items-center gap-6">
+              <a href="/daiy" class="nav-btn !bg-amber-600 !text-white hover:!bg-amber-500 !text-sm border-none">Try Prompt</a>
+              <a href="https://huggingface.co/spaces?search=medical%20healthcare&sort=trending" target="_blank" rel="noreferrer" class="text-slate-500 hover:text-white transition text-xs font-mono font-bold">
+                [SEARCH_SPACES ↗]
+              </a>
+            </div>
+          </div>
+
+          <!-- Spaces ticker -->
+          <div class="model-ticker-outer" aria-label="Trending Medical Spaces">
+            <div class="model-ticker-track" style="animation-duration: 45s;">
+              {[...spacesSpotlights, ...spacesSpotlights].map((space, i) => {
+                return (
+                  <a
+                    href={space.hfUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    class={`model-ticker-card model-ticker-card--amber ${space.isSpotlight ? 'model-ticker-card--spotlight' : ''}`}
+                    aria-label={`Open ${space.name} interactive space`}
+                  >
+                    <div class="flex items-center justify-between mb-2">
+                       <span class="text-[8px] font-bold uppercase tracking-[0.2em] text-amber-500/80 bg-amber-950/50 px-2 py-0.5 rounded border border-amber-500/20">
+                         SPACE
+                       </span>
+                       {space.isSpotlight && <span class="spotlight-badge">TRENDING</span>}
+                       <span class="text-[8px] font-mono text-slate-500">{space.domain}</span>
+                    </div>
+                    <p class="model-ticker-card__author truncate">{space.author || 'HuggingFace'}</p>
+                    <p class="model-ticker-card__name text-amber-50 leading-tight mb-2">{space.name}</p>
+                    <p class="text-[9px] text-slate-400 leading-relaxed mb-4 line-clamp-2" style="font-family: inherit;">{space.clinicalBlurb}</p>
+                    <div class="model-ticker-card__stats mt-auto">
+                      <span class="model-ticker-card__stat">SDK: {space.sdk} // LIKES: {space.likesFormatted}</span>
+                      <span class="model-ticker-card__cta text-amber-400">[DEMO →]</span>
+                    </div>
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. DAIY — DO AI YOURSELF -->
+  <section class="daiy-section py-24 overflow-hidden relative" aria-label="Do AI Yourself — Daily Prompt for Doctors">
+    <!-- Background gradient -->
+    <div class="absolute inset-0 bg-gradient-to-br from-teal-950 via-slate-900 to-indigo-950"></div>
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(20,184,166,0.12),transparent_60%)]"></div>
+    <div class="absolute inset-0 bg-[radial-gradient(circle_at_80%_80%,rgba(99,102,241,0.10),transparent_60%)]"></div>
+    
+    <div class="section-container relative z-10">
+      <div class="max-w-4xl mx-auto">
+        <!-- Header -->
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-10">
+          <div>
+            <div class="terminal-section-label">
+              <span class="live-dot"></span>
+              [02] DAIY // DO_AI_YOURSELF // DAILY_PROMPT
+            </div>
+            <h2 class="text-white text-3xl md:text-5xl">Your prompt. Your model. <span class="text-teal-400">Your result.</span></h2>
+          </div>
+          <span class="daiy-keyword-chip">{daiyKeyword}</span>
+        </div>
+
+        <!-- Terminal Prompt Card -->
+        <div class="daiy-prompt-card">
+          <!-- macOS terminal header -->
+          <div class="daiy-terminal-header">
+            <span class="daiy-terminal-dot daiy-terminal-dot--red"></span>
+            <span class="daiy-terminal-dot daiy-terminal-dot--yellow"></span>
+            <span class="daiy-terminal-dot daiy-terminal-dot--green"></span>
+            <span class="daiy-terminal-title">daily-prompt.txt — GreyBrain DAIY</span>
+          </div>
+          <!-- Label + copy button -->
+          <div class="flex items-center justify-between mb-4">
+            <span style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:rgba(34,211,238,0.5);font-weight:700">&rsaquo;_ TODAY'S PROMPT</span>
+            <button
+              id="daiy-copy-btn"
+              class="daiy-copy-btn"
+              data-prompt={daiyPrompt}
+              aria-label="Copy prompt to clipboard"
             >
-              Enroll Now
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+              <span id="daiy-copy-label">[COPY_PROMPT]</span>
+            </button>
+          </div>
+          <pre class="daiy-prompt-text" id="daiy-prompt-text">{daiyPrompt}<span class="daiy-cursor"></span></pre>
+        </div>
+
+        <!-- Output Preview -->
+        <div class="daiy-preview-card">
+          <p class="text-xs font-bold text-indigo-400 uppercase tracking-widest mb-2" style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem">WHAT YOU'LL GET →</p>
+          <p class="text-slate-300 text-sm leading-relaxed">{daiyPreview}</p>
+        </div>
+
+        <!-- Authoritative AI Arena // Clinical Directory -->
+        <div class="mt-12">
+          <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+            <p style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;color:#475569;font-weight:700;letter-spacing:0.1em;text-transform:uppercase">
+              AUTHORITATIVE AI ARENA // CLINICAL DIRECTORY →
+            </p>
+            <!-- Category Tabs -->
+            <div class="flex flex-wrap gap-2 arena-tabs">
+              {DAIY_ARENA.categories.map((cat) => (
+                <button
+                  class={`arena-tab ${cat.id === arenaRecommended ? 'active' : ''}`}
+                  data-category={cat.id}
+                  aria-label={`View ${cat.label} models`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+            <!-- Spaces Filters (Hidden unless 'spaces' active) -->
+            <div id="arena-filters" class="hidden items-center gap-3 bg-slate-800/50 px-3 py-1.5 rounded-full border border-white/5 ml-auto">
+               <span class="text-[8px] font-bold text-slate-500 uppercase tracking-widest mr-1">Sort:</span>
+               <button class="arena-filter-btn active" data-sort="trending">Trend</button>
+               <button class="arena-filter-btn" data-sort="date">Date</button>
+            </div>
+          </div>
+
+          <!-- Arena Grid -->
+          <div id="arena-grid" class="arena-grid">
+            {Object.entries(DAIY_ARENA.models).map(([catId, models]) => (
+              <div class={`arena-category-panel ${catId === arenaRecommended ? 'active' : ''}`} data-panel={catId}>
+                <div class="daiy-model-links">
+                    {models.map((m) => (
+                      <a
+                        href={m.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        class="daiy-model-link-terminal"
+                        title={m.desc}
+                        data-trending={m.trending ? 'true' : 'false'}
+                        data-date={m.date}
+                        aria-label={`Try prompt in ${m.name}`}
+                      >
+                        <div class="flex items-center justify-between mb-1">
+                          <span class="block">[{m.name} ↗]</span>
+                          {m.trending && <span class="trending-tag">Trend</span>}
+                        </div>
+                        <span class="text-[9px] opacity-40 leading-none block font-normal whitespace-normal line-clamp-2">{m.desc}</span>
+                      </a>
+                    ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <!-- Engagement Bar -->
+        <div class="daiy-engage-bar">
+          <button
+            id="daiy-like-btn"
+            class="daiy-like-btn"
+            data-post-id={daiyPostId}
+            aria-label="Like this prompt"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+            <span id="daiy-like-count">{daiyLikes > 0 ? daiyLikes : ''}</span>
+            <span id="daiy-like-label">{daiyLikes > 0 ? `${daiyLikes} doctors liked this` : 'Like this prompt'}</span>
+          </button>
+
+          <div class="flex items-center gap-3">
+            <span class="text-slate-600 text-xs font-bold uppercase tracking-widest hidden sm:block" style="font-family:'IBM Plex Mono',monospace;font-size:0.6rem">SHARE YOUR RESULT:</span>
+            <a href={daiyXUrl} target="_blank" rel="noreferrer" class="daiy-share-btn daiy-share-x" aria-label="Share on X">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.745l7.73-8.835L1.254 2.25H8.08l4.261 5.636 5.903-5.636Zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+              Post on X
+            </a>
+            <a href={daiyLinkedInUrl} target="_blank" rel="noreferrer" class="daiy-share-btn daiy-share-li" aria-label="Share on LinkedIn">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z"/></svg>
+              Share on LinkedIn
             </a>
           </div>
-        </article>
-      ))}
+        </div>
+
+        <!-- Archive Links -->
+        <div class="flex items-center justify-center gap-6 mt-8">
+          <a href="/daiy" class="text-slate-500 hover:text-teal-400 transition text-sm font-mono font-bold">
+            [DAIY_ARCHIVE →]
+          </a>
+          {daiyPostId && (
+            <a href={`/daiy/${new Date().toISOString().slice(0,10)}`} class="text-slate-600 hover:text-teal-300 transition text-xs font-mono">
+              [PERMALINK]
+            </a>
+          )}
+        </div>
+      </div>
     </div>
   </section>
 
-  <section class="mb-8 grid gap-4 md:grid-cols-3">
-    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">AI-Native Delivery</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">Personalized Tutor Support</h3>
-      <p class="mt-1 text-sm text-slate-600">Every learner gets guided AI support aligned to syllabus context and assignments.</p>
-    </article>
-    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Healthcare Context</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">Built For Clinical Reality</h3>
-      <p class="mt-1 text-sm text-slate-600">Workflows are tuned to healthcare communication, research, compliance, and operations.</p>
-    </article>
-    <article class="rounded-2xl border border-slate-200/80 bg-white/80 p-4 backdrop-blur">
-      <p class="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500">Career Outcomes</p>
-      <h3 class="mt-2 text-xl font-bold text-slate-900">From AI-Curious to AI-Confident</h3>
-      <p class="mt-1 text-sm text-slate-600">Build implementation-ready AI capability, not just theory, with guided project execution.</p>
-    </article>
+  <!-- 7. AI HEALTH NEWS -->
+  <section class="bg-slate-50 border-t border-slate-100" aria-label="AI Healthcare News">
+    <!-- Marquee strip -->
+    <div class="news-marquee-outer">
+      <div class="news-marquee-track">
+        {/* Duplicate for seamless scroll */
+          (() => {
+            const items = latestHealthNews.length > 0 ? latestHealthNews : [
+              { title: 'AI Health Startups raise $2.1B in Q1 2026', slug: null, canonical_url: null },
+              { title: 'LLMs clear NHS pilot in radiology — 31% faster turnaround', slug: null, canonical_url: null },
+              { title: 'CDSCO releases draft AI Medical Device framework for India', slug: null, canonical_url: null },
+            ];
+            const doubled = [...items, ...items];
+            return doubled.map((post, i) => (
+              <a
+                href={post.canonical_url || (post.slug ? `/briefs/${post.slug}` : '/news')}
+                class="news-marquee-item"
+                target={post.canonical_url ? '_blank' : '_self'}
+                rel={post.canonical_url ? 'noreferrer' : ''}
+              >
+                <span class="news-marquee-item__tag">[NEWS]</span>
+                {post.title}
+              </a>
+            ));
+          })()
+        }
+      </div>
+    </div>
+
+    <div class="py-20">
+      <div class="section-container">
+        <div class="flex flex-wrap items-end justify-between gap-6 mb-12">
+          <div class="max-w-2xl">
+            <div class="terminal-section-label" style="color:#f59e0b">
+              <span class="live-dot" style="background:#f59e0b"></span>
+              [03] INTELLIGENCE_WIRE // AI HEALTHCARE // UPDATED DAILY
+            </div>
+            <h2 class="text-3xl md:text-5xl mb-3">What's Moving the Field</h2>
+            <p class="text-slate-600 text-lg">Curated daily intelligence on AI healthcare entrepreneurship, funding, and clinical innovation.</p>
+          </div>
+          <a href="/news" class="nav-btn !bg-white !text-slate-900 border border-slate-200">View All News</a>
+        </div>
+
+        {latestHealthNews.length > 0 ? (
+          <div class="grid md:grid-cols-3 gap-6">
+            {latestHealthNews.map((post, i) => (
+              <article class={`health-news-card ${i === 0 ? 'health-news-card--featured' : ''}`}>
+                <div class="flex items-center justify-between mb-3">
+                  <span class="text-[10px] font-bold uppercase tracking-widest text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+                    {post.content_type === 'health_news' ? 'AI Health News' : post.content_type || 'News'}
+                  </span>
+                  <span class="text-[10px] text-slate-400">{formatDisplayDate(post.date)}</span>
+                </div>
+                <h3 class="text-base font-bold leading-snug mb-2 hover:text-amber-700 transition">
+                  <a href={post.slug ? `/briefs/${post.slug}` : '/news'} class="text-inherit no-underline">{post.title}</a>
+                </h3>
+                <p class="text-slate-600 text-sm line-clamp-3 leading-relaxed">{post.summary}</p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div class="grid md:grid-cols-3 gap-6">
+            <div class="md:col-span-3 text-center py-12 bg-slate-50 rounded-2xl border border-dashed border-slate-300">
+              <p class="text-slate-500 italic">Synchronizing latest clinical intelligence from HF & arXiv...</p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   </section>
 
-  <CounselorChat client:load />
-  <WebinarLeadForm client:load siteKey={turnstileSiteKey} />
-  <ChatInterface client:load />
-
-  <section class="mt-8 rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-600">
-    Explore tracks on <a href="/tracks" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/tracks</a>, full catalog on
-    <a href="/courses" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/courses</a>, partner story on
-    <a href="/platform" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/platform</a>, and internal operations on
-    <a href="/console" class="ml-1 font-semibold text-sky-700 hover:text-sky-800">/console</a>.
+  <!-- 8. THE ACTION (Orientation & Cohorts) -->
+  <section class="section-container">
+    <div class="editorial-grid editorial-grid--2col">
+      <div>
+        <h2 class="text-4xl mb-6">Start your orientation today.</h2>
+        <p class="text-slate-600 mb-8 text-lg">
+          The AI Refresher for Doctors is a personalized orientation designed to unlock the right path for your specific medical specialty.
+        </p>
+        <a href="/courses/ai-refresher-for-doctors" class="nav-btn !px-10 !py-4 !text-xl inline-block">Begin Orientation</a>
+      </div>
+      <div class="bg-slate-50 p-10 rounded-[2.5rem] border border-slate-200">
+        <h3 class="text-xl mb-4">Admissions Timeline</h3>
+        <ul class="space-y-4">
+          <li class="flex items-center justify-between border-b border-slate-200 pb-4">
+            <div>
+              <p class="font-bold text-slate-800">Clinical AI Practitioner</p>
+              <p class="text-xs text-slate-500">Mentored 8-week track</p>
+            </div>
+            <span class="text-teal-700 font-bold text-sm">Admissions Open</span>
+          </li>
+          <li class="flex items-center justify-between border-b border-slate-200 pb-4">
+            <div>
+              <p class="font-bold text-slate-800">AI Research Accelerator</p>
+              <p class="text-xs text-slate-500">Mentored 10-week track</p>
+            </div>
+            <span class="text-teal-700 font-bold text-sm">Applications Live</span>
+          </li>
+          <li class="flex items-center justify-between">
+            <div>
+              <p class="font-bold text-slate-800">Doctor-Founder Build</p>
+              <p class="text-xs text-slate-500">Incubator track</p>
+            </div>
+            <span class="text-teal-700 font-bold text-sm">Reviewing Profiles</span>
+          </li>
+        </ul>
+      </div>
+    </div>
   </section>
+
+  <script>
+    // ─── Pathway Cinema Stage ───────────────────────────────────────────────
+    const steps = document.querySelectorAll('.sequence-step');
+    const panels = document.querySelectorAll('.cinema-panel');
+    const nodes = document.querySelectorAll('.motion-node');
+    let currentIndex = 0;
+    let autoCycleInterval;
+
+    function updateStage(index) {
+      currentIndex = index;
+      const target = steps[index].getAttribute('data-target');
+      steps.forEach((s, i) => s.classList.toggle('active', i === index));
+      panels.forEach(p => p.classList.remove('active'));
+      document.getElementById(`panel-${target}`).classList.add('active');
+      nodes.forEach(n => n.classList.remove('active'));
+      document.getElementById(`node-${target}`).classList.add('active');
+    }
+
+    function startAutoCycle() {
+      stopAutoCycle();
+      autoCycleInterval = setInterval(() => {
+        updateStage((currentIndex + 1) % steps.length);
+      }, 5000);
+    }
+
+    function stopAutoCycle() {
+      if (autoCycleInterval) clearInterval(autoCycleInterval);
+    }
+
+    steps.forEach((step, index) => {
+      step.addEventListener('click', () => {
+        updateStage(index);
+        startAutoCycle();
+      });
+    });
+    startAutoCycle();
+
+    // ─── DAIY Copy Button ───────────────────────────────────────────────────
+    const copyBtn = document.getElementById('daiy-copy-btn');
+    if (copyBtn) {
+      copyBtn.addEventListener('click', async () => {
+        const prompt = copyBtn.getAttribute('data-prompt') || '';
+        try {
+          await navigator.clipboard.writeText(prompt);
+          const label = document.getElementById('daiy-copy-label');
+          if (label) {
+            label.textContent = 'Copied!';
+            copyBtn.classList.add('daiy-copy-btn--success');
+            setTimeout(() => {
+              label.textContent = 'Copy Prompt';
+              copyBtn.classList.remove('daiy-copy-btn--success');
+            }, 2000);
+          }
+        } catch {
+          // Fallback for older browsers
+          const el = document.getElementById('daiy-prompt-text');
+          if (el) {
+            const range = document.createRange();
+            range.selectNode(el);
+            window.getSelection()?.removeAllRanges();
+            window.getSelection()?.addRange(range);
+            document.execCommand('copy');
+            window.getSelection()?.removeAllRanges();
+          }
+        }
+      });
+    }
+
+    // ─── DAIY Like Button ───────────────────────────────────────────────────
+    const likeBtn = document.getElementById('daiy-like-btn');
+    if (likeBtn) {
+      const postId = likeBtn.getAttribute('data-post-id') || '';
+      const likedKey = `daiy_liked_${postId}`;
+      
+      // Restore liked state from localStorage
+      if (localStorage.getItem(likedKey)) {
+        likeBtn.classList.add('daiy-like-btn--liked');
+      }
+
+      likeBtn.addEventListener('click', async () => {
+        if (!postId || localStorage.getItem(likedKey)) return;
+        
+        try {
+          const apiOrigin = document.documentElement.getAttribute('data-api-origin') || 'https://deeplearn-worker.satish-9f4.workers.dev';
+          const res = await fetch(`${apiOrigin}/api/content/posts/${encodeURIComponent(postId)}/like`, { method: 'POST' });
+          const data = await res.json();
+          
+          localStorage.setItem(likedKey, '1');
+          likeBtn.classList.add('daiy-like-btn--liked');
+          
+          const countEl = document.getElementById('daiy-like-count');
+          const labelEl = document.getElementById('daiy-like-label');
+          const likes = data?.community_likes ?? 0;
+          if (countEl) countEl.textContent = likes > 0 ? likes : '';
+          if (labelEl) labelEl.textContent = likes > 0 ? `${likes} doctors liked this` : 'Liked!';
+        } catch {
+          // Silently fail — don't block the user
+        }
+      });
+    }
+
+    // ─── AI Arena Tabs & Filters ──────────────────────────────────────────
+    const arenaTabs = document.querySelectorAll('.arena-tab');
+    const arenaPanels = document.querySelectorAll('.arena-category-panel');
+    const arenaFilters = document.getElementById('arena-filters');
+    const filterBtns = document.querySelectorAll('.arena-filter-btn');
+
+    function updateArenaFilters(category) {
+      if (category === 'spaces') {
+        arenaFilters?.classList.remove('hidden');
+        arenaFilters?.classList.add('flex');
+      } else {
+        arenaFilters?.classList.remove('flex');
+        arenaFilters?.classList.add('hidden');
+      }
+    }
+
+    arenaTabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        const category = tab.getAttribute('data-category');
+        arenaTabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        arenaPanels.forEach(panel => {
+          panel.classList.toggle('active', panel.getAttribute('data-panel') === category);
+        });
+        updateArenaFilters(category);
+      });
+    });
+
+    // Space Sorting Logic
+    filterBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const sortType = btn.getAttribute('data-sort');
+        filterBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        const spacesPanel = document.querySelector('[data-panel="spaces"]');
+        const grid = spacesPanel?.querySelector('.daiy-model-links');
+        const cards = Array.from(grid?.querySelectorAll('.daiy-model-link-terminal') || []);
+
+        cards.sort((a, b) => {
+          if (sortType === 'trending') {
+            const aTrend = a.getAttribute('data-trending') === 'true';
+            const bTrend = b.getAttribute('data-trending') === 'true';
+            return bTrend - aTrend;
+          } else {
+            const aDate = a.getAttribute('data-date') || '';
+            const bDate = b.getAttribute('data-date') || '';
+            return bDate.localeCompare(aDate);
+          }
+        });
+
+        cards.forEach(card => grid?.appendChild(card));
+      });
+    });
+
+    // Initialize state
+    const initialCat = document.querySelector('.arena-tab.active')?.getAttribute('data-category');
+    updateArenaFilters(initialCat);
+  </script>
+
 </BaseLayout>

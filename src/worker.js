@@ -1,29 +1,44 @@
 import { Hono } from 'hono';
+import { getEvergreenSeedEntries } from './lib/evergreenContent.js';
 
 const app = new Hono();
 
 const TUTOR_PROMPT = `You are a Socratic Teaching Assistant. Use only the provided context.
 If context is missing, reply exactly: "I cannot find that in the syllabus."`;
 const COUNSELOR_PROMPT = `You are the Course Coordinator for GreyBrain Academy.
-Your goal is to help prospective learners with course logistics and enrollment clarity.
-Use only provided logistics context. If asked deep technical questions, reply:
+Your goal is to help prospective learners with course logistics, path selection, and enrollment clarity.
+Use only provided logistics and FAQ context.
+Always keep replies practical, concise, and grounded in what is provided.
+When asked about path selection, briefly compare Path 1, Path 2, and Path 3 by audience + outcome.
+Highlight program USP when relevant: cohort-based learning, AI tutor support, assignment plus mentor review, and certificate issuance.
+If any logistics detail is missing, reply: "I do not have that logistics detail yet. Please check with the course coordinator."
+If asked deep technical questions, reply:
 "That is covered in detail in the course modules. You can access them after enrolling."
 Tone: professional, concise, helpful. End with a gentle enrollment nudge.`;
 
 const WEBINAR_EVENTS = new Set([
   'webinar_landing_view',
+  'cta_variant_assigned',
+  'audience_path_selected',
+  'webinar_scroll_25',
+  'webinar_scroll_50',
+  'webinar_scroll_75',
   'webinar_cta_click',
+  'webinar_sticky_cta_click',
   'webinar_schedule_click',
   'webinar_registration_started',
   'webinar_registration_submitted',
   'payment_page_opened',
-  'payment_completed'
+  'payment_completed',
+  'refresher_chapter_completed',
+  'refresher_path_saved'
 ]);
 
 const COURSE_STATUSES = new Set(['draft', 'published', 'live', 'completed', 'archived']);
-const STAFF_ROLES = new Set(['teacher', 'coordinator']);
+const STAFF_ROLES = new Set(['teacher', 'coordinator', 'content_editor']);
 const LEARNER_STATUSES = new Set(['active', 'completed', 'dropped']);
 const CONTENT_STATUSES = new Set(['draft', 'approved', 'published', 'rejected']);
+const CONTENT_TYPES = new Set(['daily_brief', 'workflow', 'wiki', 'model_watch']);
 const DAILY_PROMPT_VERSION = 'v1.0.0';
 const PATH_KEYS = new Set(['productivity', 'research', 'entrepreneurship']);
 const COHORT_MODES = new Set(['instructor-led', 'self-paced']);
@@ -43,9 +58,11 @@ app.get('/', (c) => {
     endpoints: [
       '/api/chat/tutor',
       '/api/chat/counselor',
+      '/api/counselor/faqs',
       '/api/track',
       '/api/lead/submit',
       '/api/funnel/register',
+      '/api/funnel/interest',
       '/api/funnel/payment/create-order',
       '/api/funnel/payment/status',
       '/api/funnel/payment/verify',
@@ -59,14 +76,22 @@ app.get('/', (c) => {
       '/api/admin/content/runs',
       '/api/admin/crm/leads',
       '/api/admin/crm/leads/:leadId',
+      '/api/admin/crm/audit',
+      '/api/admin/counselor/knowledge',
+      '/api/admin/counselor/knowledge/:itemId',
+      '/api/admin/counselor/knowledge/:itemId/delete',
       '/api/content/posts',
       '/api/admin/overview',
       '/api/admin/organizations',
       '/api/admin/courses',
       '/api/admin/courses/:courseId/modules',
+      '/api/admin/courses/:courseId/modules/:moduleId',
       '/api/admin/courses/:courseId/rubrics',
       '/api/admin/cohorts',
+      '/api/admin/cohorts/:cohortId',
       '/api/admin/cohorts/:cohortId/sessions',
+      '/api/admin/sessions/:sessionId',
+      '/api/admin/sessions/:sessionId/delete',
       '/api/admin/sessions/:sessionId/attendance',
       '/api/admin/cohorts/:cohortId/enroll',
       '/api/admin/cohorts/:cohortId/enrollments',
@@ -83,8 +108,11 @@ app.get('/', (c) => {
       '/api/learn/assignments/:submissionId/grade',
       '/api/admin/content/generate-daily',
       '/api/admin/content/posts',
+      '/api/admin/content/posts/:postId/update',
+      '/api/admin/content/auto-publish-expired',
       '/api/admin/alerts',
       '/api/admin/knowledge/ingest-logistics',
+      '/api/admin/knowledge/ingest-course-content',
       '/api/certificates/verify',
       '/health'
     ]
@@ -171,15 +199,22 @@ app.post('/api/chat/counselor', async (c) => {
   try {
     const { message, course_id: courseId, course_slug: courseSlug } = await c.req.json();
     const apiKey = (c.env.GROQ_API_KEY || '').trim();
+    const resolvedCourseId = clean(courseId, 64);
+    const resolvedCourseSlug = slugify(clean(courseSlug, 120));
 
     if (!message || !apiKey) {
       return c.json({ error: 'message and server GROQ_API_KEY are required.' }, 400);
     }
 
     const context = await queryLogisticsContext(c.env, message, {
-      courseId: clean(courseId, 64),
-      courseSlug: slugify(clean(courseSlug, 120))
+      courseId: resolvedCourseId,
+      courseSlug: resolvedCourseSlug
     });
+    const fallbackFaqs = await buildDefaultCounselorFaqs(c.env.DEEPLEARN_DB, {
+      limit: 6,
+      courseId: resolvedCourseId
+    });
+    const combinedContext = [context, buildCounselorGuidanceContext(fallbackFaqs)].filter(Boolean).join('\n\n');
     const baseUrl = resolveGroqBaseUrl(c.env);
     const model = resolveGroqModel(c.env, baseUrl);
 
@@ -195,7 +230,7 @@ app.post('/api/chat/counselor', async (c) => {
         messages: [
           {
             role: 'system',
-            content: `${COUNSELOR_PROMPT}\n\nLogistics Context:\n${context}`
+            content: `${COUNSELOR_PROMPT}\n\nLogistics Context:\n${combinedContext}`
           },
           { role: 'user', content: message }
         ]
@@ -219,7 +254,7 @@ app.post('/api/chat/counselor', async (c) => {
             messages: [
               {
                 role: 'system',
-                content: `${COUNSELOR_PROMPT}\n\nLogistics Context:\n${context}`
+                content: `${COUNSELOR_PROMPT}\n\nLogistics Context:\n${combinedContext}`
               },
               { role: 'user', content: message }
             ]
@@ -235,8 +270,10 @@ app.post('/api/chat/counselor', async (c) => {
     }
 
     const payload = await response.json();
-    const reply = payload?.choices?.[0]?.message?.content ?? 'Please share your course query in one line.';
-    return c.json({ reply, contextUsed: context });
+    const reply =
+      payload?.choices?.[0]?.message?.content ??
+      'I can help with course path selection, cohort format, fees, and enrollment flow. Please share your primary goal.';
+    return c.json({ reply, contextUsed: combinedContext });
   } catch (error) {
     await recordOpsAlert(c.env, {
       source: 'counselor_chat',
@@ -249,6 +286,184 @@ app.post('/api/chat/counselor', async (c) => {
     return c.json(
       {
         error: 'Failed to process counselor request.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/chat', async (c) => {
+  try {
+    const { message, history = [] } = await c.req.json();
+    
+    if (!message) {
+      return c.json({ error: 'message is required.' }, 400);
+    }
+
+    let contextStr = '';
+    if (c.env.AI && c.env.DEEPLEARN_INDEX && c.env.DEEPLEARN_DB) {
+      try {
+        const embedResponse = await c.env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [message] });
+        const embedding = embedResponse.data?.[0];
+        if (embedding) {
+          const vectorResponse = await c.env.DEEPLEARN_INDEX.query(embedding, { topK: 3 });
+          if (vectorResponse && vectorResponse.matches && vectorResponse.matches.length > 0) {
+            const matchIds = vectorResponse.matches.map((m) => m.id);
+            const placeholders = matchIds.map(() => '?').join(',');
+            const rows = await c.env.DEEPLEARN_DB.prepare(
+              `SELECT title, summary, canonical_url FROM content_posts WHERE id IN (${placeholders})`
+            ).bind(...matchIds).all();
+            
+            if (rows.success && rows.results.length > 0) {
+              contextStr = rows.results.map((r) => `Title: ${r.title}\nSummary: ${r.summary}\nLink: ${r.canonical_url}`).join('\n\n');
+            }
+          }
+        }
+      } catch (e) {
+        console.error('AutoRAG context failed:', e);
+      }
+    }
+
+    const systemPrompt = `You are a helpful assistant for GreyBrain. Answer user questions based on the Context below. If a user asks for more information, provide the markdown links given in the Context. If the answer is not in the context, just answer generally based on your knowledge but invite them to explore med.greybrain.ai.\n\nContext:\n${contextStr}`;
+
+    const baseUrl = resolveGroqBaseUrl(c.env);
+    const model = resolveGroqModel(c.env, baseUrl);
+    const apiKey = (c.env.GROQ_API_KEY || '').trim();
+
+    if (!apiKey) return c.json({ error: 'server GROQ_API_KEY is required.' }, 400);
+
+    const apiMessages = [
+      { role: 'system', content: systemPrompt },
+      ...history.slice(-4),
+      { role: 'user', content: message }
+    ];
+
+    let response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.3,
+        messages: apiMessages
+      })
+    });
+
+    if (!response.ok) {
+      const details = await response.text();
+      return c.json({ error: 'Chat completion failed', details }, 502);
+    }
+    
+    const payload = await response.json();
+    const reply = payload?.choices?.[0]?.message?.content ?? 'I apologize, but I cannot process that right now.';
+    return c.json({ reply, contextUsed: contextStr });
+    
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to process chat request.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+    );
+  }
+});
+
+app.get('/api/analytics/insights', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 not configured' }, 500);
+  }
+  try {
+    const rows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT tags_json FROM content_posts WHERE status = 'published' AND tags_json IS NOT NULL`
+    ).all();
+    
+    const tagCounts = {};
+    if (rows.success && rows.results) {
+      for (const row of rows.results) {
+        try {
+          const tags = JSON.parse(row.tags_json || '[]');
+          for (const t of tags) {
+            if (t) tagCounts[t] = (tagCounts[t] || 0) + 1;
+          }
+        } catch(e){}
+      }
+    }
+    
+    const sortedTags = Object.entries(tagCounts)
+      .sort((a,b) => b[1] - a[1])
+      .map(e => e[0])
+      .slice(0, 10);
+      
+    return c.json({
+       top_tags: sortedTags,
+       insight_message: sortedTags.length > 0 ? `Trending topics based on published content: ${sortedTags.slice(0, 5).join(', ')}.` : 'No trending topics found yet.'
+    });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.get('/api/counselor/faqs', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({
+      faqs: [],
+      source: 'unconfigured'
+    });
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.max(1, Math.min(30, Number(c.req.query('limit') || 5)));
+    const courseId = clean(c.req.query('course_id'), 64);
+
+    const result = courseId
+      ? await c.env.DEEPLEARN_DB.prepare(
+          `SELECT id, title, body
+           FROM counselor_knowledge_items
+           WHERE is_active = 1
+             AND kind = 'faq'
+             AND (scope = 'global' OR (scope = 'course' AND course_id = ?))
+           ORDER BY sort_order ASC, updated_at_ms DESC
+           LIMIT ?`
+        )
+          .bind(courseId, limit)
+          .all()
+      : await c.env.DEEPLEARN_DB.prepare(
+          `SELECT id, title, body
+           FROM counselor_knowledge_items
+           WHERE is_active = 1
+             AND kind = 'faq'
+             AND scope = 'global'
+           ORDER BY sort_order ASC, updated_at_ms DESC
+           LIMIT ?`
+        )
+          .bind(limit)
+          .all();
+
+    const adminFaqs = (result.results || []).map((row) => ({
+      id: clean(row.id || '', 64),
+      question: clean(row.title || '', 220),
+      answer: clean(row.body || '', 1000)
+    }));
+    if (adminFaqs.length > 0) {
+      return c.json({
+        faqs: adminFaqs,
+        source: 'admin-managed'
+      });
+    }
+
+    const fallbackFaqs = await buildDefaultCounselorFaqs(c.env.DEEPLEARN_DB, { limit, courseId });
+    return c.json({
+      faqs: fallbackFaqs,
+      source: 'platform-generated'
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load counselor FAQs.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -271,6 +486,11 @@ app.post('/api/track', async (c) => {
     const leadId = clean(payload?.lead_id, 64);
     const path = clean(payload?.path, 160) || new URL(c.req.url).pathname;
     const value = Number.isFinite(Number(payload?.value)) ? Number(payload.value) : 1;
+    const metadata = parseJsonObjectOrDefault(payload?.metadata, {});
+    const chapterId = clean(payload?.chapter_id, 64);
+    const recommendedPath = clean(payload?.recommended_path, 40).toLowerCase();
+    if (chapterId) metadata.chapter_id = chapterId;
+    if (recommendedPath) metadata.recommended_path = recommendedPath;
 
     await writeGrowthEvent(c.env, c.req.raw.cf, {
       eventName,
@@ -279,7 +499,8 @@ app.post('/api/track', async (c) => {
       leadId,
       sessionId,
       path,
-      value
+      value,
+      metadata
     });
 
     return c.json({ ok: true, session_id: sessionId });
@@ -486,8 +707,8 @@ app.post('/api/lead/submit', async (c) => {
 app.post('/api/funnel/register', async (c) => {
   try {
     const payload = await c.req.json();
-    const fullName = clean(payload?.full_name, 120);
-    const email = clean(payload?.email, 200).toLowerCase();
+    let fullName = clean(payload?.full_name, 120);
+    let email = clean(payload?.email, 200).toLowerCase();
     const phone = clean(payload?.phone, 24);
     const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
     const source = clean(payload?.source, 64) || 'landing';
@@ -496,10 +717,27 @@ app.post('/api/funnel/register', async (c) => {
     const courseSlugInput = slugify(clean(payload?.course_slug, 120));
     const cohortIdInput = clean(payload?.cohort_id, 64);
     const turnstileToken = clean(payload?.turnstile_token, 4096);
+    const firebaseIdToken = clean(payload?.firebase_id_token, 5000);
     const turnstileRequired = (c.env.TURNSTILE_REQUIRED || 'true').toLowerCase() !== 'false';
+    let verifiedIdentity = null;
 
-    if (!fullName || !email || !phone) {
-      return c.json({ error: 'full_name, email, and phone are required.' }, 400);
+    if (firebaseIdToken) {
+      verifiedIdentity = await verifyFirebaseIdentityToken(c.env, firebaseIdToken);
+      if (!verifiedIdentity?.ok) {
+        return c.json({ error: 'Google identity verification failed.' }, 401);
+      }
+      const verifiedEmail = clean(verifiedIdentity?.email || '', 200).toLowerCase();
+      if (verifiedEmail) {
+        email = verifiedEmail;
+      }
+    }
+
+    if (!fullName && email) {
+      fullName = clean(email.split('@')[0] || 'Learner', 120);
+    }
+
+    if (!fullName || !email) {
+      return c.json({ error: 'full_name and email are required.' }, 400);
     }
     if (!isValidEmail(email)) {
       return c.json({ error: 'Invalid email format.' }, 400);
@@ -511,7 +749,7 @@ app.post('/api/funnel/register', async (c) => {
       return c.json({ error: 'D1 is not configured.' }, 500);
     }
 
-    if (turnstileRequired) {
+    if (turnstileRequired && !verifiedIdentity?.ok) {
       if (!turnstileToken) {
         return c.json({ error: 'Turnstile token is required.' }, 400);
       }
@@ -630,6 +868,156 @@ app.post('/api/funnel/register', async (c) => {
     return c.json(
       {
         error: 'Failed to register funnel lead.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/funnel/interest', async (c) => {
+  try {
+    const payload = await c.req.json();
+    const channel = clean(payload?.channel, 32).toLowerCase();
+    const allowedChannels = new Set(['google', 'whatsapp', 'telegram', 'email']);
+    if (!allowedChannels.has(channel)) {
+      return c.json({ error: 'channel must be one of google, whatsapp, telegram, email.' }, 400);
+    }
+
+    if (!c.env.DEEPLEARN_DB) {
+      return c.json({ error: 'D1 is not configured.' }, 500);
+    }
+    if (!c.env.DEEPLEARN_LEADS) {
+      return c.json({ error: 'Lead storage is not configured.' }, 500);
+    }
+
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+
+    const webinarId = clean(payload?.webinar_id, 64) || 'deep-rag-live-webinar';
+    const sessionId = clean(payload?.session_id, 64) || crypto.randomUUID();
+    let fullName = clean(payload?.full_name, 120);
+    const email = clean(payload?.email, 200).toLowerCase();
+    const phone = clean(payload?.phone, 24);
+    const source = `${channel}_interest`;
+    const destination = clean(payload?.destination_url, 400);
+    const message = clean(payload?.message, 600);
+    const courseIdInput = clean(payload?.course_id, 64);
+    const courseSlugInput = slugify(clean(payload?.course_slug, 120));
+    const cohortIdInput = clean(payload?.cohort_id, 64);
+
+    if (email && !isValidEmail(email)) {
+      return c.json({ error: 'Invalid email format.' }, 400);
+    }
+    if (!fullName && email) {
+      fullName = clean(email.split('@')[0] || 'Interested learner', 120);
+    }
+
+    const target = await resolveLearningTargetByCourse(c.env.DEEPLEARN_DB, {
+      courseId: courseIdInput,
+      courseSlug: courseSlugInput,
+      cohortId: cohortIdInput
+    });
+
+    const leadId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const nowMs = Date.now();
+    const metadata = {
+      route: '/api/funnel/interest',
+      interest_only: true,
+      interest_channel: channel,
+      destination_url: destination,
+      note: message,
+      user_agent: c.req.header('user-agent') || '',
+      referrer: c.req.header('referer') || '',
+      crm_stage: 'new'
+    };
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO lead_registrations (
+         lead_id, full_name, email, phone, webinar_id, source, session_id,
+         course_id, course_slug, cohort_id, user_id, payment_status, payment_ref,
+         payment_provider, paid_at_ms, metadata_json, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 'registered', '', '', NULL, ?, ?, ?)`
+    )
+      .bind(
+        leadId,
+        fullName || '',
+        email || '',
+        phone || '',
+        webinarId,
+        source,
+        sessionId,
+        target.courseId || '',
+        target.courseSlug || '',
+        target.cohortId || '',
+        JSON.stringify(metadata),
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    const leadObject = {
+      lead_id: leadId,
+      created_at: createdAt,
+      full_name: fullName || '',
+      email: email || '',
+      phone: phone || '',
+      webinar_id: webinarId,
+      source,
+      session_id: sessionId,
+      course_id: target.courseId || '',
+      course_slug: target.courseSlug || '',
+      cohort_id: target.cohortId || '',
+      channel,
+      destination_url: destination,
+      message
+    };
+    const objectKey = `leads/${webinarId}/${createdAt.slice(0, 10)}/${leadId}.json`;
+    await c.env.DEEPLEARN_LEADS.put(objectKey, JSON.stringify(leadObject), {
+      httpMetadata: { contentType: 'application/json' }
+    });
+
+    await queueLeadDestination(c, 'channel_interest_captured', {
+      lead_id: leadId,
+      webinar_id: webinarId,
+      source,
+      session_id: sessionId,
+      full_name: fullName || '',
+      email: email || '',
+      phone: phone || '',
+      course_id: target.courseId || '',
+      course_slug: target.courseSlug || '',
+      cohort_id: target.cohortId || '',
+      payment_status: 'registered',
+      interest_channel: channel,
+      destination_url: destination
+    });
+
+    return c.json({
+      ok: true,
+      lead_id: leadId,
+      source,
+      channel,
+      registration: {
+        course_id: target.courseId || '',
+        course_slug: target.courseSlug || '',
+        course_title: target.courseTitle || '',
+        cohort_id: target.cohortId || '',
+        payment_status: 'registered'
+      }
+    });
+  } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'lead_capture',
+      severity: 'warning',
+      eventType: 'funnel_interest_failed',
+      message: 'Channel interest capture failed.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' },
+      dedupeKey: 'funnel_interest_failed'
+    });
+    return c.json(
+      {
+        error: 'Failed to capture channel interest.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -1253,6 +1641,103 @@ app.get('/api/analytics/funnel', async (c) => {
   }
 });
 
+app.get('/api/admin/assignments/pending', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const submissions = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         s.id, s.course_id, s.module_id, s.user_id, s.answer_text, s.artifacts_json,
+         s.ai_feedback_json, s.score, s.passed, s.submitted_at_ms, s.status,
+         crs.title AS course_title,
+         mod.title AS module_title
+       FROM assignment_submissions s
+       JOIN courses crs ON crs.id = s.course_id
+       JOIN course_modules mod ON mod.id = s.module_id
+       WHERE s.status IN ('submitted', 'ai_graded')
+       ORDER BY s.submitted_at_ms ASC`
+    ).all();
+
+    return c.json({ submissions: submissions.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load pending assignments.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/assignments/:id/finalize', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const submissionId = c.req.param('id');
+  if (!submissionId) return c.json({ error: 'Submission ID is required.' }, 400);
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json();
+    const finalScore = Number(payload?.score);
+    const finalPassed = payload?.passed ? 1 : 0;
+    const mentorNotes = clean(payload?.mentor_notes || '', 2000);
+    const nowMs = Date.now();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE assignment_submissions
+       SET score = ?, passed = ?, graded_at_ms = ?, grader_mode = 'human', status = 'final', ai_feedback_json = ?
+       WHERE id = ?`
+    )
+      .bind(finalScore, finalPassed, nowMs, JSON.stringify({ mentor_notes: mentorNotes }), submissionId)
+      .run();
+
+    // Certification Flow (Phase 3)
+    if (finalPassed) {
+      const submission = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT user_id, course_id FROM assignment_submissions WHERE id = ?'
+      ).bind(submissionId).first();
+
+      if (submission) {
+        const certId = crypto.randomUUID();
+        const serialNumber = `GB-${Date.now()}-${submissionId.slice(0, 4).toUpperCase()}`;
+        
+        await c.env.DEEPLEARN_DB.prepare(
+          `INSERT INTO certificates (id, user_id, course_id, submission_id, serial_number, issued_at_ms, metadata_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(certId, submission.user_id, submission.course_id, submissionId, serialNumber, nowMs, JSON.stringify({
+            mentor_notes: mentorNotes,
+            final_score: finalScore
+          }))
+          .run();
+          
+        return c.json({ ok: true, submission_id: submissionId, certified: true, certificate_id: certId });
+      }
+    }
+
+    return c.json({ ok: true, submission_id: submissionId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to finalize assignment grade.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/admin/schema/apply', async (c) => {
   const authError = await assertAdmin(c);
   if (authError) return authError;
@@ -1301,6 +1786,16 @@ app.get('/api/admin/overview', async (c) => {
       c.env.DEEPLEARN_DB,
       "SELECT COUNT(*) AS count FROM course_enrollments WHERE status = 'completed'"
     );
+    const refresherStartedRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT COUNT(DISTINCT COALESCE(NULLIF(lead_id, ''), NULLIF(session_id, ''))) AS count
+       FROM lead_events
+       WHERE event_name = 'refresher_chapter_completed'`
+    ).first();
+    const refresherCompletedRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT COUNT(DISTINCT COALESCE(NULLIF(lead_id, ''), NULLIF(session_id, ''))) AS count
+       FROM lead_events
+       WHERE event_name = 'refresher_path_saved'`
+    ).first();
 
     return c.json({
       courses: {
@@ -1315,6 +1810,10 @@ app.get('/api/admin/overview', async (c) => {
         total: totalLearners,
         completed: completedLearners,
         completion_rate_pct: totalLearners > 0 ? Number(((completedLearners / totalLearners) * 100).toFixed(2)) : 0
+      },
+      refresher: {
+        started: Number(refresherStartedRow?.count || 0),
+        recommended: Number(refresherCompletedRow?.count || 0)
       }
     });
   } catch (error) {
@@ -1346,7 +1845,8 @@ app.get('/api/admin/analytics/summary', async (c) => {
          COUNT(*) AS registrations,
          SUM(CASE WHEN payment_status = 'paid' THEN 1 ELSE 0 END) AS paid
        FROM lead_registrations
-       WHERE created_at_ms >= ?`
+       WHERE created_at_ms >= ?
+         AND COALESCE(json_extract(metadata_json, '$.interest_only'), 0) != 1`
     )
       .bind(sinceMs)
       .first();
@@ -1357,7 +1857,8 @@ app.get('/api/admin/analytics/summary', async (c) => {
          SUM(CASE WHEN payment_status = 'failed' THEN 1 ELSE 0 END) AS failed,
          SUM(CASE WHEN payment_status = 'refunded' THEN 1 ELSE 0 END) AS refunded
        FROM lead_registrations
-       WHERE updated_at_ms >= ?`
+       WHERE updated_at_ms >= ?
+         AND COALESCE(json_extract(metadata_json, '$.interest_only'), 0) != 1`
     )
       .bind(sinceMs)
       .first();
@@ -1391,6 +1892,55 @@ app.get('/api/admin/analytics/summary', async (c) => {
 
     const registrations = Number(registrationRow?.registrations || 0);
     const paid = Number(paymentRow?.paid || 0);
+    const refresherFunnelRow = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         COUNT(DISTINCT CASE WHEN event_name = 'refresher_chapter_completed' THEN COALESCE(NULLIF(lead_id, ''), NULLIF(session_id, '')) END) AS started,
+         COUNT(DISTINCT CASE WHEN event_name = 'refresher_path_saved' THEN COALESCE(NULLIF(lead_id, ''), NULLIF(session_id, '')) END) AS recommended
+       FROM lead_events
+       WHERE created_at_ms >= ?`
+    )
+      .bind(sinceMs)
+      .first();
+    const refresherPathRows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         COALESCE(json_extract(metadata_json, '$.recommended_path'), 'unknown') AS recommended_path,
+         COUNT(DISTINCT COALESCE(NULLIF(lead_id, ''), NULLIF(session_id, ''))) AS count
+       FROM lead_events
+       WHERE event_name = 'refresher_path_saved'
+         AND created_at_ms >= ?
+       GROUP BY COALESCE(json_extract(metadata_json, '$.recommended_path'), 'unknown')
+       ORDER BY count DESC`
+    )
+      .bind(sinceMs)
+      .all();
+    const refresherPaths = (refresherPathRows.results || []).map((row) => ({
+      recommended_path: clean(row?.recommended_path || 'unknown', 40) || 'unknown',
+      count: Number(row?.count || 0)
+    }));
+    const refresherChapterRows = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         COALESCE(json_extract(metadata_json, '$.chapter_id'), 'unknown') AS chapter_id,
+         COUNT(DISTINCT COALESCE(NULLIF(lead_id, ''), NULLIF(session_id, ''))) AS count
+       FROM lead_events
+       WHERE event_name = 'refresher_chapter_completed'
+         AND created_at_ms >= ?
+       GROUP BY COALESCE(json_extract(metadata_json, '$.chapter_id'), 'unknown')
+       ORDER BY chapter_id ASC`
+    )
+      .bind(sinceMs)
+      .all();
+    const refresherChapterCounts = new Map(
+      (refresherChapterRows.results || []).map((row) => [clean(row?.chapter_id || 'unknown', 64) || 'unknown', Number(row?.count || 0)])
+    );
+    const refresherChapterBreakdown = ['chapter-1', 'chapter-2', 'chapter-3', 'chapter-4', 'chapter-5', 'chapter-6'].map((chapterId) => {
+      const count = Number(refresherChapterCounts.get(chapterId) || 0);
+      const startedCount = Number(refresherFunnelRow?.started || 0);
+      return {
+        chapter_id: chapterId,
+        count,
+        dropoff_pct_from_start: startedCount > 0 ? Number((100 - (count / startedCount) * 100).toFixed(2)) : 0
+      };
+    });
 
     return c.json({
       days,
@@ -1412,6 +1962,16 @@ app.get('/api/admin/analytics/summary', async (c) => {
       },
       certificates: {
         issued_in_window: Number(certificateRow?.issued || 0)
+      },
+      refresher: {
+        started: Number(refresherFunnelRow?.started || 0),
+        recommended: Number(refresherFunnelRow?.recommended || 0),
+        recommendation_rate_pct:
+          Number(refresherFunnelRow?.started || 0) > 0
+            ? Number(((Number(refresherFunnelRow?.recommended || 0) / Number(refresherFunnelRow?.started || 0)) * 100).toFixed(2))
+            : 0,
+        recommendations_by_path: refresherPaths,
+        chapter_breakdown: refresherChapterBreakdown
       }
     });
   } catch (error) {
@@ -1459,13 +2019,14 @@ app.get('/api/admin/analytics/paths', async (c) => {
            COALESCE(cp.path_key, 'unmapped') AS path_key,
            COUNT(*) AS leads,
            SUM(CASE WHEN lr.payment_status = 'paid' THEN 1 ELSE 0 END) AS paid
-         FROM lead_registrations lr
-         LEFT JOIN courses c
-           ON c.id = lr.course_id
-            OR (lr.course_id = '' AND lr.course_slug <> '' AND c.slug = lr.course_slug)
-         LEFT JOIN course_path cp ON cp.course_id = c.id
-         WHERE lr.updated_at_ms >= ?
-         GROUP BY COALESCE(cp.path_key, 'unmapped')
+       FROM lead_registrations lr
+       LEFT JOIN courses c
+         ON c.id = lr.course_id
+          OR (lr.course_id = '' AND lr.course_slug <> '' AND c.slug = lr.course_slug)
+       LEFT JOIN course_path cp ON cp.course_id = c.id
+       WHERE lr.updated_at_ms >= ?
+         AND COALESCE(json_extract(lr.metadata_json, '$.interest_only'), 0) != 1
+       GROUP BY COALESCE(cp.path_key, 'unmapped')
        )
        SELECT
          p.path_key,
@@ -1512,6 +2073,112 @@ app.get('/api/admin/analytics/paths', async (c) => {
       },
       500
     );
+  }
+});
+
+// --- PUBLIC: Homepage configuration (ticker text, etc.) ---
+// Read-only, no auth required. Used by index.astro at build/SSR time.
+app.get('/api/homepage/config', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ config_json: '{}' });
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const config = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT config_json FROM homepage_config WHERE id = ?'
+    ).bind('global').first();
+    return c.json({ config_json: config?.config_json ?? '{}' });
+  } catch {
+    return c.json({ config_json: '{}' });
+  }
+});
+
+// --- PUBLIC: Fetch latest news & blogs (Replaces Medium RSS) ---
+app.get('/api/content/news', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ posts: [] });
+  const limit = Math.min(20, Math.max(1, parseInt(c.req.query('limit') || '6', 10)));
+  
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const { results } = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT slug, title, summary, published_at_ms, tags, type 
+       FROM content_posts 
+       WHERE type IN ('news', 'blog') AND status = 'published' 
+       ORDER BY published_at_ms DESC 
+       LIMIT ?`
+    ).bind(limit).all();
+    
+    // Format to match old getClinicalFeedPosts structure for simple integration
+    const posts = (results || []).map(r => {
+      let tags = [];
+      try { tags = JSON.parse(r.tags || '[]'); } catch { tags = []; }
+      return {
+        title: r.title || 'Untitled Update',
+        link: `/briefs/${r.slug}`,
+        date: r.published_at_ms > 0 ? new Date(r.published_at_ms).toISOString().slice(0, 10) : '',
+        summary: r.summary || 'Clinical AI update from GreyBrain.',
+        categories: tags
+      };
+    });
+    
+    return c.json({ posts });
+  } catch (error) {
+    return c.json({ posts: [], error: error.message });
+  }
+});
+
+app.get('/api/admin/homepage/config', async (c) => {
+
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured' }, 500);
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const config = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT config_json FROM homepage_config WHERE id = ?'
+    ).bind('global').first();
+    
+    return c.json({ config_json: config ? config.config_json : '{}' });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.post('/api/admin/homepage/config', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured' }, 500);
+
+  try {
+    const { config_json } = await c.req.json();
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO homepage_config (id, config_json, updated_at_ms)
+       VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         config_json = excluded.config_json,
+         updated_at_ms = excluded.updated_at_ms`
+    ).bind('global', config_json, Date.now()).run();
+
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
+  }
+});
+
+app.post('/api/admin/content/posts/:id/spotlight', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+  const id = c.req.param('id');
+  const { is_spotlight } = await c.req.json();
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured' }, 500);
+
+  try {
+    await c.env.DEEPLEARN_DB.prepare(
+      'UPDATE content_posts SET is_spotlight = ?, updated_at_ms = ? WHERE id = ?'
+    ).bind(is_spotlight ? 1 : 0, Date.now(), id).run();
+    return c.json({ ok: true });
+  } catch (err) {
+    return c.json({ error: err.message }, 500);
   }
 });
 
@@ -1683,6 +2350,7 @@ app.get('/api/admin/crm/leads', async (c) => {
     const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
     const paymentStatus = clean(c.req.query('payment_status'), 24).toLowerCase();
     const stageFilter = clean(c.req.query('stage'), 32).toLowerCase();
+    const sourceFilter = clean(c.req.query('source'), 64).toLowerCase();
     const q = clean(c.req.query('q'), 160).toLowerCase();
     const limit = Math.max(1, Math.min(300, Number(c.req.query('limit') || 120)));
     if (stageFilter && !normalizeCrmStage(stageFilter)) {
@@ -1694,7 +2362,23 @@ app.get('/api/admin/crm/leads', async (c) => {
         lr.course_id, lr.course_slug, lr.cohort_id, lr.user_id, lr.payment_status, lr.payment_ref,
         lr.payment_provider, lr.paid_at_ms, lr.metadata_json, lr.created_at_ms, lr.updated_at_ms,
         c.title AS course_title,
-        h.name AS cohort_name
+        h.name AS cohort_name,
+        (
+          SELECT COUNT(*)
+          FROM lead_events le
+          WHERE le.event_name = 'refresher_chapter_completed'
+            AND COALESCE(NULLIF(le.lead_id, ''), NULLIF(le.session_id, '')) =
+                COALESCE(NULLIF(lr.user_id, ''), NULLIF(lr.lead_id, ''), NULLIF(lr.session_id, ''))
+        ) AS refresher_chapter_events,
+        (
+          SELECT COALESCE(json_extract(le.metadata_json, '$.recommended_path'), '')
+          FROM lead_events le
+          WHERE le.event_name = 'refresher_path_saved'
+            AND COALESCE(NULLIF(le.lead_id, ''), NULLIF(le.session_id, '')) =
+                COALESCE(NULLIF(lr.user_id, ''), NULLIF(lr.lead_id, ''), NULLIF(lr.session_id, ''))
+          ORDER BY le.created_at_ms DESC
+          LIMIT 1
+        ) AS refresher_recommended_path
       FROM lead_registrations lr
       LEFT JOIN courses c ON c.id = lr.course_id OR (lr.course_id = '' AND lr.course_slug <> '' AND c.slug = lr.course_slug)
       LEFT JOIN cohorts h ON h.id = lr.cohort_id
@@ -1707,6 +2391,13 @@ app.get('/api/admin/crm/leads', async (c) => {
 
     const rows = (result.results || []).map((row) => {
       const metadata = parseJsonObjectOrDefault(row.metadata_json, {});
+      const interestOnly = metadata.interest_only === true || Number(metadata.interest_only || 0) === 1;
+      const sourceValue = clean(row.source || '', 64);
+      const channel =
+        clean(metadata.interest_channel || '', 32) ||
+        (sourceValue.startsWith('google') ? 'google' : '') ||
+        (sourceValue.startsWith('whatsapp') ? 'whatsapp' : '') ||
+        (sourceValue.startsWith('telegram') ? 'telegram' : '');
       const crmStage = normalizeCrmStage(metadata.crm_stage || deriveCrmStageFromPaymentStatus(row.payment_status));
       const crmOwner = clean(metadata.crm_owner_user_id || '', 120);
       const crmNotes = clean(metadata.crm_notes || '', 1000);
@@ -1718,7 +2409,9 @@ app.get('/api/admin/crm/leads', async (c) => {
         email: clean(row.email || '', 200),
         phone: clean(row.phone || '', 24),
         webinar_id: clean(row.webinar_id || '', 64),
-        source: clean(row.source || '', 64),
+        source: sourceValue,
+        kind: interestOnly ? 'interest' : 'registration',
+        channel,
         session_id: clean(row.session_id || '', 64),
         course_id: clean(row.course_id || '', 64),
         course_slug: clean(row.course_slug || '', 120),
@@ -1737,12 +2430,20 @@ app.get('/api/admin/crm/leads', async (c) => {
           owner_user_id: crmOwner,
           notes: crmNotes,
           next_action_at_ms: Number.isFinite(crmNextActionAtMs) ? crmNextActionAtMs : 0
+        },
+        refresher: {
+          started: Number(row.refresher_chapter_events || 0) > 0,
+          chapter_events: Number(row.refresher_chapter_events || 0),
+          recommended_path: clean(row.refresher_recommended_path || '', 40).toLowerCase()
         }
       };
     });
 
     const filtered = rows.filter((row) => {
       if (stageFilter && normalizeCrmStage(stageFilter) !== row.crm.stage) {
+        return false;
+      }
+      if (sourceFilter && row.source.toLowerCase() !== sourceFilter) {
         return false;
       }
       if (!q) return true;
@@ -1752,18 +2453,31 @@ app.get('/api/admin/crm/leads', async (c) => {
         row.phone.toLowerCase().includes(q) ||
         row.course_title.toLowerCase().includes(q) ||
         row.course_slug.toLowerCase().includes(q) ||
+        row.source.toLowerCase().includes(q) ||
+        row.channel.toLowerCase().includes(q) ||
         row.crm.owner_user_id.toLowerCase().includes(q)
       );
     });
 
     const summary = {
       total: filtered.length,
+      by_kind: {
+        registration: 0,
+        interest: 0
+      },
       by_payment_status: {
         registered: 0,
         paid: 0,
         failed: 0,
         refunded: 0
       },
+      by_channel: {
+        google: 0,
+        whatsapp: 0,
+        telegram: 0,
+        other: 0
+      },
+      by_source: {},
       by_stage: {
         new: 0,
         contacted: 0,
@@ -1774,10 +2488,16 @@ app.get('/api/admin/crm/leads', async (c) => {
       }
     };
     for (const row of filtered) {
+      if (summary.by_kind[row.kind] !== undefined) {
+        summary.by_kind[row.kind] += 1;
+      }
       const statusKey = clean(row.payment_status || '', 24).toLowerCase();
       if (summary.by_payment_status[statusKey] !== undefined) {
         summary.by_payment_status[statusKey] += 1;
       }
+      const channelKey = row.channel && summary.by_channel[row.channel] !== undefined ? row.channel : 'other';
+      summary.by_channel[channelKey] += 1;
+      summary.by_source[row.source] = Number(summary.by_source[row.source] || 0) + 1;
       if (summary.by_stage[row.crm.stage] !== undefined) {
         summary.by_stage[row.crm.stage] += 1;
       }
@@ -1788,6 +2508,7 @@ app.get('/api/admin/crm/leads', async (c) => {
       filters: {
         payment_status: paymentStatus || '',
         stage: normalizeCrmStage(stageFilter),
+        source: sourceFilter || '',
         q
       },
       summary,
@@ -1797,6 +2518,50 @@ app.get('/api/admin/crm/leads', async (c) => {
     return c.json(
       {
         error: 'Failed to load CRM leads.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.get('/api/admin/crm/audit', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.max(1, Math.min(100, Number(c.req.query('limit') || 30)));
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, lead_id, action_type, scope, actor_user_id, actor_email, segment_id, details_json, created_at_ms
+       FROM crm_action_audit
+       ORDER BY created_at_ms DESC
+       LIMIT ?`
+    )
+      .bind(limit)
+      .all();
+
+    return c.json({
+      audit: (result.results || []).map((row) => ({
+        id: Number(row.id || 0),
+        lead_id: clean(row.lead_id || '', 64),
+        action_type: clean(row.action_type || '', 80),
+        scope: clean(row.scope || '', 40),
+        actor_user_id: clean(row.actor_user_id || '', 120),
+        actor_email: clean(row.actor_email || '', 220),
+        segment_id: clean(row.segment_id || '', 80),
+        details: parseJsonObjectOrDefault(row.details_json, {}),
+        created_at_ms: Number(row.created_at_ms || 0)
+      }))
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load CRM audit.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -1814,6 +2579,7 @@ app.post('/api/admin/crm/leads/:leadId', async (c) => {
 
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: false });
     const leadId = clean(c.req.param('leadId'), 64);
     if (!leadId) return c.json({ error: 'leadId is required.' }, 400);
 
@@ -1821,6 +2587,9 @@ app.post('/api/admin/crm/leads/:leadId', async (c) => {
     const requestedStage = normalizeCrmStage(payload?.stage);
     const ownerUserId = clean(payload?.owner_user_id, 120);
     const notes = clean(payload?.notes, 1000);
+    const auditScope = clean(payload?.audit_scope, 40) || 'single';
+    const auditActionType = clean(payload?.audit_action_type, 80) || 'lead_update';
+    const auditSegmentId = clean(payload?.audit_segment_id, 80);
     const nextActionAtMsRaw = Number(payload?.next_action_at_ms);
     const nextActionAtMs = Number.isFinite(nextActionAtMsRaw) ? Math.max(0, Math.round(nextActionAtMsRaw)) : 0;
 
@@ -1837,6 +2606,12 @@ app.post('/api/admin/crm/leads/:leadId', async (c) => {
     }
 
     const metadata = parseJsonObjectOrDefault(existing.metadata_json, {});
+    const previousCrm = {
+      stage: normalizeCrmStage(metadata.crm_stage || deriveCrmStageFromPaymentStatus(existing.payment_status)),
+      owner_user_id: clean(metadata.crm_owner_user_id || '', 120),
+      notes: clean(metadata.crm_notes || '', 1000),
+      next_action_at_ms: Number(metadata.crm_next_action_at_ms || 0)
+    };
     const finalStage = requestedStage || normalizeCrmStage(metadata.crm_stage || deriveCrmStageFromPaymentStatus(existing.payment_status));
     if (requestedStage && !CRM_STAGES.has(requestedStage)) {
       return c.json({ error: 'Invalid CRM stage.' }, 400);
@@ -1858,6 +2633,24 @@ app.post('/api/admin/crm/leads/:leadId', async (c) => {
     )
       .bind(JSON.stringify(nextMetadata), Date.now(), leadId)
       .run();
+
+    await recordCrmAudit(c.env.DEEPLEARN_DB, {
+      leadId,
+      actionType: auditActionType,
+      scope: auditScope,
+      actorUserId: actor?.userId || '',
+      actorEmail: actor?.email || '',
+      segmentId: auditSegmentId,
+      details: {
+        previous: previousCrm,
+        next: {
+          stage: finalStage,
+          owner_user_id: clean(nextMetadata.crm_owner_user_id || '', 120),
+          notes: clean(nextMetadata.crm_notes || '', 1000),
+          next_action_at_ms: Number(nextMetadata.crm_next_action_at_ms || 0)
+        }
+      }
+    });
 
     return c.json({
       ok: true,
@@ -2287,6 +3080,13 @@ app.post('/api/admin/courses/:courseId/publish', async (c) => {
       .bind(status, Date.now(), courseId)
       .run();
 
+    if (status === 'published' || status === 'live') {
+      triggerAutoCourseContentIngestion(c, {
+        courseId,
+        reason: `course_status_${status}`
+      });
+    }
+
     return c.json({ ok: true, course_id: courseId, status });
   } catch (error) {
     return c.json(
@@ -2355,7 +3155,9 @@ app.get('/api/admin/courses/:courseId/modules', async (c) => {
     const result = await c.env.DEEPLEARN_DB.prepare(
       `SELECT
          id, course_id, path_key, module_key, title, description, sort_order,
-         content_markdown, lab_type, unlock_policy, estimated_minutes, is_published, updated_at_ms
+         content_markdown, lab_type, unlock_policy, estimated_minutes,
+         lesson_objectives_json, expected_artifact, assignment_prompt, review_checklist_json, tutor_prompts_json,
+         is_published, updated_at_ms
        FROM course_modules
        WHERE course_id = ?
        ORDER BY sort_order ASC, updated_at_ms DESC`
@@ -2398,6 +3200,11 @@ app.post('/api/admin/courses/:courseId/modules', async (c) => {
     const labType = clean(payload?.lab_type, 80);
     const unlockPolicy = clean(payload?.unlock_policy, 40) || 'cohort';
     const estimatedMinutes = Number.isFinite(Number(payload?.estimated_minutes)) ? Number(payload.estimated_minutes) : 30;
+    const lessonObjectives = normalizeStringArray(payload?.lesson_objectives, 8, 220);
+    const expectedArtifact = clean(payload?.expected_artifact, 320);
+    const assignmentPrompt = clean(payload?.assignment_prompt, 2400);
+    const reviewChecklist = normalizeStringArray(payload?.review_checklist, 8, 220);
+    const tutorPrompts = normalizeStringArray(payload?.tutor_prompts, 8, 220);
     const isPublished = payload?.is_published === true ? 1 : 0;
 
     if (!courseId || !title || !moduleKey) {
@@ -2422,8 +3229,10 @@ app.post('/api/admin/courses/:courseId/modules', async (c) => {
     await c.env.DEEPLEARN_DB.prepare(
       `INSERT INTO course_modules (
          id, course_id, path_key, module_key, title, description, sort_order,
-         content_markdown, lab_type, unlock_policy, estimated_minutes, is_published, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         content_markdown, lab_type, unlock_policy, estimated_minutes,
+         lesson_objectives_json, expected_artifact, assignment_prompt, review_checklist_json, tutor_prompts_json,
+         is_published, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
       .bind(
         moduleId,
@@ -2437,11 +3246,24 @@ app.post('/api/admin/courses/:courseId/modules', async (c) => {
         labType,
         unlockPolicy,
         estimatedMinutes,
+        JSON.stringify(lessonObjectives),
+        expectedArtifact,
+        assignmentPrompt,
+        JSON.stringify(reviewChecklist),
+        JSON.stringify(tutorPrompts),
         isPublished,
         nowMs,
         nowMs
       )
       .run();
+
+    if (isPublished === 1) {
+      triggerAutoCourseContentIngestion(c, {
+        courseId,
+        pathKey,
+        reason: 'module_created_published'
+      });
+    }
 
     return c.json({
       ok: true,
@@ -2456,6 +3278,11 @@ app.post('/api/admin/courses/:courseId/modules', async (c) => {
         lab_type: labType,
         unlock_policy: unlockPolicy,
         estimated_minutes: estimatedMinutes,
+        lesson_objectives: lessonObjectives,
+        expected_artifact: expectedArtifact,
+        assignment_prompt: assignmentPrompt,
+        review_checklist: reviewChecklist,
+        tutor_prompts: tutorPrompts,
         is_published: isPublished
       }
     });
@@ -2463,6 +3290,157 @@ app.post('/api/admin/courses/:courseId/modules', async (c) => {
     return c.json(
       {
         error: 'Failed to create module.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/courses/:courseId/modules/:moduleId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const courseId = clean(c.req.param('courseId'), 64);
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const payload = await c.req.json();
+
+    if (!courseId || !moduleId) {
+      return c.json({ error: 'courseId and moduleId are required.' }, 400);
+    }
+
+    const existing = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, course_id, path_key, module_key, title, description, sort_order,
+              content_markdown, lab_type, unlock_policy, estimated_minutes,
+              lesson_objectives_json, expected_artifact, assignment_prompt, review_checklist_json, tutor_prompts_json,
+              is_published
+       FROM course_modules
+       WHERE id = ? AND course_id = ?
+       LIMIT 1`
+    )
+      .bind(moduleId, courseId)
+      .first();
+
+    if (!existing) {
+      return c.json({ error: 'Module not found for this course.' }, 404);
+    }
+
+    const nextPathKey = clean(payload?.path_key, 40).toLowerCase() || clean(existing.path_key || 'productivity', 40).toLowerCase();
+    if (!PATH_KEYS.has(nextPathKey)) {
+      return c.json({ error: 'Invalid path_key.' }, 400);
+    }
+
+    const nextTitle = clean(payload?.title, 180) || clean(existing.title || '', 180);
+    const nextDescription =
+      payload?.description === undefined ? clean(existing.description || '', 1200) : clean(payload?.description, 1200);
+    const nextSortOrder = Number.isFinite(Number(payload?.sort_order)) ? Number(payload.sort_order) : Number(existing.sort_order || 0);
+    const nextContentMarkdown =
+      payload?.content_markdown === undefined
+        ? String(existing.content_markdown || '').slice(0, 20000)
+        : typeof payload?.content_markdown === 'string'
+          ? payload.content_markdown.slice(0, 20000)
+          : '';
+    const nextLabType = payload?.lab_type === undefined ? clean(existing.lab_type || '', 80) : clean(payload?.lab_type, 80);
+    const nextUnlockPolicy = payload?.unlock_policy === undefined ? clean(existing.unlock_policy || 'cohort', 40) : clean(payload?.unlock_policy, 40);
+    const nextEstimatedMinutes = Number.isFinite(Number(payload?.estimated_minutes))
+      ? Number(payload.estimated_minutes)
+      : Number(existing.estimated_minutes || 30);
+    const nextLessonObjectives =
+      payload?.lesson_objectives === undefined
+        ? parseJsonArray(existing.lesson_objectives_json)
+        : normalizeStringArray(payload?.lesson_objectives, 8, 220);
+    const nextExpectedArtifact =
+      payload?.expected_artifact === undefined ? clean(existing.expected_artifact || '', 320) : clean(payload?.expected_artifact, 320);
+    const nextAssignmentPrompt =
+      payload?.assignment_prompt === undefined ? clean(existing.assignment_prompt || '', 2400) : clean(payload?.assignment_prompt, 2400);
+    const nextReviewChecklist =
+      payload?.review_checklist === undefined
+        ? parseJsonArray(existing.review_checklist_json)
+        : normalizeStringArray(payload?.review_checklist, 8, 220);
+    const nextTutorPrompts =
+      payload?.tutor_prompts === undefined
+        ? parseJsonArray(existing.tutor_prompts_json)
+        : normalizeStringArray(payload?.tutor_prompts, 8, 220);
+    const nextIsPublished = payload?.is_published === undefined ? Number(existing.is_published || 0) : payload?.is_published === true ? 1 : 0;
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE course_modules
+       SET path_key = ?, title = ?, description = ?, sort_order = ?, content_markdown = ?,
+           lab_type = ?, unlock_policy = ?, estimated_minutes = ?, lesson_objectives_json = ?, expected_artifact = ?,
+           assignment_prompt = ?, review_checklist_json = ?, tutor_prompts_json = ?, is_published = ?, updated_at_ms = ?
+       WHERE id = ? AND course_id = ?`
+    )
+      .bind(
+        nextPathKey,
+        nextTitle,
+        nextDescription,
+        nextSortOrder,
+        nextContentMarkdown,
+        nextLabType,
+        nextUnlockPolicy,
+        nextEstimatedMinutes,
+        JSON.stringify(nextLessonObjectives),
+        nextExpectedArtifact,
+        nextAssignmentPrompt,
+        JSON.stringify(nextReviewChecklist),
+        JSON.stringify(nextTutorPrompts),
+        nextIsPublished,
+        Date.now(),
+        moduleId,
+        courseId
+      )
+      .run();
+
+    const shouldAutoIngest =
+      nextIsPublished === 1 &&
+      (
+        Number(existing.is_published || 0) !== 1 ||
+        nextPathKey !== clean(existing.path_key || '', 40).toLowerCase() ||
+        nextTitle !== clean(existing.title || '', 180) ||
+        nextDescription !== clean(existing.description || '', 1200) ||
+        nextContentMarkdown !== String(existing.content_markdown || '').slice(0, 20000)
+      );
+
+    if (shouldAutoIngest) {
+      triggerAutoCourseContentIngestion(c, {
+        courseId,
+        pathKey: nextPathKey,
+        reason: 'module_updated_published'
+      });
+    }
+
+    return c.json({
+      ok: true,
+      module: {
+        id: moduleId,
+        course_id: courseId,
+        path_key: nextPathKey,
+        module_key: clean(existing.module_key || '', 120),
+        title: nextTitle,
+        description: nextDescription,
+        sort_order: nextSortOrder,
+        content_markdown: nextContentMarkdown,
+        lab_type: nextLabType,
+        unlock_policy: nextUnlockPolicy,
+        estimated_minutes: nextEstimatedMinutes,
+        lesson_objectives: nextLessonObjectives,
+        expected_artifact: nextExpectedArtifact,
+        assignment_prompt: nextAssignmentPrompt,
+        review_checklist: nextReviewChecklist,
+        tutor_prompts: nextTutorPrompts,
+        is_published: nextIsPublished
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update module.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -2741,6 +3719,86 @@ app.post('/api/admin/cohorts', async (c) => {
   }
 });
 
+app.post('/api/admin/cohorts/:cohortId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohortId = clean(c.req.param('cohortId'), 64);
+    const payload = await c.req.json();
+    if (!cohortId) return c.json({ error: 'cohortId is required.' }, 400);
+
+    const existing = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, org_id, course_id, name, mode, start_date, end_date, instructor_user_id, fee_cents, status
+       FROM cohorts
+       WHERE id = ?
+       LIMIT 1`
+    )
+      .bind(cohortId)
+      .first();
+
+    if (!existing) {
+      return c.json({ error: 'Cohort not found.' }, 404);
+    }
+
+    const mode = clean(payload?.mode, 40).toLowerCase() || clean(existing.mode || 'instructor-led', 40).toLowerCase();
+    const status = clean(payload?.status, 32).toLowerCase() || clean(existing.status || 'draft', 32).toLowerCase();
+    if (!COHORT_MODES.has(mode)) {
+      return c.json({ error: 'Invalid cohort mode.' }, 400);
+    }
+    if (!COHORT_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid cohort status.' }, 400);
+    }
+
+    const orgId = clean(payload?.org_id, 64) || clean(existing.org_id || '', 64);
+    const courseId = clean(payload?.course_id, 64) || clean(existing.course_id || '', 64);
+    const name = clean(payload?.name, 180) || clean(existing.name || '', 180);
+    const startDate = clean(payload?.start_date, 24) || clean(existing.start_date || '', 24);
+    const endDate = clean(payload?.end_date, 24) || clean(existing.end_date || '', 24);
+    const instructorUserId = clean(payload?.instructor_user_id, 120) || clean(existing.instructor_user_id || '', 120);
+    const feeCentsRaw = payload?.fee_cents;
+    const feeCents = Number.isFinite(Number(feeCentsRaw)) ? Math.max(0, Math.round(Number(feeCentsRaw))) : Number(existing.fee_cents || 0);
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE cohorts
+       SET org_id = ?, course_id = ?, name = ?, mode = ?, start_date = ?, end_date = ?,
+           instructor_user_id = ?, fee_cents = ?, status = ?, updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(orgId, courseId, name, mode, startDate, endDate, instructorUserId, feeCents, status, Date.now(), cohortId)
+      .run();
+
+    return c.json({
+      ok: true,
+      cohort: {
+        id: cohortId,
+        org_id: orgId,
+        course_id: courseId,
+        name,
+        mode,
+        start_date: startDate,
+        end_date: endDate,
+        instructor_user_id: instructorUserId,
+        fee_cents: feeCents,
+        status
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update cohort.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/admin/cohorts/:cohortId/unlocks', async (c) => {
   const authError = await assertAdmin(c);
   if (authError) return authError;
@@ -2844,7 +3902,21 @@ app.get('/api/admin/cohorts/:cohortId/enrollments', async (c) => {
       `SELECT
          e.cohort_id, e.course_id, e.user_id, e.status, e.progress_pct, e.completion_state,
          e.completed_at_ms, e.certificate_url, e.updated_at_ms,
-         u.email, u.display_name
+         u.email, u.display_name,
+         (
+           SELECT COUNT(*)
+           FROM lead_events le
+           WHERE le.event_name = 'refresher_chapter_completed'
+             AND COALESCE(NULLIF(le.lead_id, ''), NULLIF(le.session_id, '')) = e.user_id
+         ) AS refresher_chapter_events,
+         (
+           SELECT COALESCE(json_extract(le.metadata_json, '$.recommended_path'), '')
+           FROM lead_events le
+           WHERE le.event_name = 'refresher_path_saved'
+             AND COALESCE(NULLIF(le.lead_id, ''), NULLIF(le.session_id, '')) = e.user_id
+           ORDER BY le.created_at_ms DESC
+           LIMIT 1
+         ) AS refresher_recommended_path
        FROM cohort_enrollments e
        LEFT JOIN platform_users u ON u.uid = e.user_id
        WHERE e.cohort_id = ?
@@ -2853,7 +3925,16 @@ app.get('/api/admin/cohorts/:cohortId/enrollments', async (c) => {
       .bind(cohortId)
       .all();
 
-    return c.json({ enrollments: result.results || [] });
+    return c.json({
+      enrollments: (result.results || []).map((row) => ({
+        ...row,
+        refresher: {
+          started: Number(row?.refresher_chapter_events || 0) > 0,
+          chapter_events: Number(row?.refresher_chapter_events || 0),
+          recommended_path: clean(row?.refresher_recommended_path || '', 40).toLowerCase()
+        }
+      }))
+    });
   } catch (error) {
     return c.json(
       {
@@ -3122,6 +4203,139 @@ app.post('/api/admin/cohorts/:cohortId/sessions', async (c) => {
     return c.json(
       {
         error: 'Failed to create cohort session.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/sessions/:sessionId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const sessionId = clean(c.req.param('sessionId'), 64);
+    const payload = await c.req.json();
+    if (!sessionId) return c.json({ error: 'sessionId is required.' }, 400);
+
+    const existing = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, cohort_id, course_id, title, description, starts_at_ms, ends_at_ms,
+              meeting_url, recording_url, resources_json, status
+       FROM course_sessions
+       WHERE id = ?
+       LIMIT 1`
+    )
+      .bind(sessionId)
+      .first();
+
+    if (!existing) {
+      return c.json({ error: 'Session not found.' }, 404);
+    }
+
+    const title = clean(payload?.title, 180) || clean(existing.title || '', 180);
+    const description = payload?.description === undefined ? clean(existing.description || '', 2000) : clean(payload?.description, 2000);
+    const startsAtMs = Number.isFinite(Number(payload?.starts_at_ms)) ? Math.round(Number(payload.starts_at_ms)) : Number(existing.starts_at_ms || 0);
+    const endsAtMs = Number.isFinite(Number(payload?.ends_at_ms))
+      ? Math.round(Number(payload.ends_at_ms))
+      : Number.isFinite(Number(existing.ends_at_ms))
+        ? Math.round(Number(existing.ends_at_ms))
+        : null;
+    const meetingUrl = payload?.meeting_url === undefined ? clean(existing.meeting_url || '', 500) : clean(payload?.meeting_url, 500);
+    const recordingUrl = payload?.recording_url === undefined ? clean(existing.recording_url || '', 500) : clean(payload?.recording_url, 500);
+    const status = clean(payload?.status, 32).toLowerCase() || clean(existing.status || 'scheduled', 32).toLowerCase();
+    const resources = payload?.resources && typeof payload.resources === 'object' && !Array.isArray(payload.resources)
+      ? payload.resources
+      : parseJsonObjectOrDefault(existing.resources_json, {});
+
+    if (!title || !Number.isFinite(startsAtMs) || startsAtMs <= 0) {
+      return c.json({ error: 'title and valid starts_at_ms are required.' }, 400);
+    }
+    if (!SESSION_STATUSES.has(status)) {
+      return c.json({ error: 'Invalid session status.' }, 400);
+    }
+    if (Number.isFinite(endsAtMs) && endsAtMs < startsAtMs) {
+      return c.json({ error: 'ends_at_ms must be greater than starts_at_ms.' }, 400);
+    }
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE course_sessions
+       SET title = ?, description = ?, starts_at_ms = ?, ends_at_ms = ?, meeting_url = ?,
+           recording_url = ?, resources_json = ?, status = ?, updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(
+        title,
+        description,
+        startsAtMs,
+        Number.isFinite(endsAtMs) ? endsAtMs : null,
+        meetingUrl,
+        recordingUrl,
+        JSON.stringify(resources),
+        status,
+        Date.now(),
+        sessionId
+      )
+      .run();
+
+    return c.json({
+      ok: true,
+      session: {
+        id: sessionId,
+        cohort_id: clean(existing.cohort_id || '', 64),
+        course_id: clean(existing.course_id || '', 64),
+        title,
+        description,
+        starts_at_ms: startsAtMs,
+        ends_at_ms: Number.isFinite(endsAtMs) ? endsAtMs : null,
+        meeting_url: meetingUrl,
+        recording_url: recordingUrl,
+        resources,
+        status
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update session.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/sessions/:sessionId/delete', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const sessionId = clean(c.req.param('sessionId'), 64);
+    if (!sessionId) return c.json({ error: 'sessionId is required.' }, 400);
+
+    const existing = await c.env.DEEPLEARN_DB.prepare('SELECT id FROM course_sessions WHERE id = ? LIMIT 1').bind(sessionId).first();
+    if (!existing) {
+      return c.json({ error: 'Session not found.' }, 404);
+    }
+
+    await c.env.DEEPLEARN_DB.prepare('DELETE FROM session_attendance WHERE session_id = ?').bind(sessionId).run();
+    await c.env.DEEPLEARN_DB.prepare('DELETE FROM course_sessions WHERE id = ?').bind(sessionId).run();
+
+    return c.json({ ok: true, session_id: sessionId, deleted: true });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to delete session.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -3552,6 +4766,129 @@ app.post('/api/learn/modules/:moduleId/progress', async (c) => {
   }
 });
 
+app.get('/api/funnel/cohorts', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const cohorts = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         ch.id AS cohort_id,
+         ch.course_id,
+         ch.name AS cohort_name,
+         ch.mode,
+         ch.status AS cohort_status,
+         ch.start_date,
+         ch.end_date,
+         ch.fee_cents,
+         crs.title AS course_title,
+         crs.slug AS course_slug,
+         crs.price_cents AS course_price_cents
+       FROM cohorts ch
+       JOIN courses crs ON crs.id = ch.course_id
+       WHERE ch.status IN ('active', 'published', 'open')
+       ORDER BY ch.start_date ASC`
+    ).all();
+
+    return c.json({ cohorts: cohorts.results || [] });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load funnel cohorts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/enroll', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+    const userId = actor.userId;
+
+    const payload = await c.req.json().catch(() => ({}));
+    const courseId = clean(payload?.course_id, 64);
+    let cohortId = clean(payload?.cohort_id, 64);
+
+    if (!courseId) {
+      return c.json({ error: 'course_id is required.' }, 400);
+    }
+
+    // Resolve cohort if not provided (pick latest open/active)
+    if (!cohortId) {
+      const bestCohort = await c.env.DEEPLEARN_DB.prepare(
+        `SELECT id FROM cohorts 
+         WHERE course_id = ? AND status IN ('active', 'open')
+         ORDER BY start_date ASC LIMIT 1`
+      )
+        .bind(courseId)
+        .first();
+      
+      if (bestCohort) {
+        cohortId = bestCohort.id;
+      }
+    }
+
+    const nowMs = Date.now();
+
+    // Insert course enrollment
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO course_enrollments (
+         course_id, user_id, status, progress_pct, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, 'active', 0, ?, ?)
+       ON CONFLICT(course_id, user_id) DO NOTHING`
+    )
+      .bind(courseId, userId, nowMs, nowMs)
+      .run();
+
+    // Insert cohort enrollment (if cohort identified)
+    if (cohortId) {
+      await c.env.DEEPLEARN_DB.prepare(
+        `INSERT INTO cohort_enrollments (
+           cohort_id, course_id, user_id, status, progress_pct, completion_state, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, 'enrolled', 0, 'in_progress', ?, ?)
+         ON CONFLICT(cohort_id, user_id) DO NOTHING`
+      )
+        .bind(cohortId, courseId, userId, nowMs, nowMs)
+        .run();
+    }
+
+    // Log event
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO learning_events (
+         org_id, course_id, cohort_id, user_id, event_name, event_value, created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind('', courseId, cohortId || '', userId, 'course_enrolled', 1, nowMs)
+      .run();
+
+    return c.json({ 
+      ok: true, 
+      message: 'Enrolled successfully.', 
+      courseId, 
+      cohortId,
+      workspaceUrl: '/learn'
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to enroll in course.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/learn/access', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -3593,7 +4930,10 @@ app.get('/api/learn/access', async (c) => {
       const cohortId = clean(cohortRow?.cohort_id || '', 64);
       const modules = await c.env.DEEPLEARN_DB.prepare(
         `SELECT
-           m.id, m.module_key, m.title, m.sort_order, m.is_published,
+           m.id, m.module_key, m.title, m.description, m.path_key, m.sort_order, m.is_published,
+           m.lab_type, m.unlock_policy, m.estimated_minutes,
+           m.lesson_objectives_json, m.expected_artifact, m.assignment_prompt, m.review_checklist_json, m.tutor_prompts_json,
+           mp.status AS progress_status, mp.score AS progress_score, mp.notes AS progress_notes,
            CASE
              WHEN ? = '' THEN 1
              WHEN EXISTS (
@@ -3603,10 +4943,14 @@ app.get('/api/learn/access', async (c) => {
              ELSE 0
            END AS is_unlocked
          FROM course_modules m
+         LEFT JOIN module_progress mp
+           ON mp.course_id = m.course_id
+          AND mp.module_id = m.id
+          AND mp.user_id = ?
          WHERE m.course_id = ?
          ORDER BY m.sort_order ASC, m.updated_at_ms DESC`
       )
-        .bind(cohortId, cohortId, clean(enrollment.course_id || '', 64))
+        .bind(cohortId, cohortId, userId, clean(enrollment.course_id || '', 64))
         .all();
 
       items.push({
@@ -3629,8 +4973,22 @@ app.get('/api/learn/access', async (c) => {
           id: module.id,
           module_key: module.module_key,
           title: module.title,
+          description: clean(module.description || '', 1200),
+          path_key: clean(module.path_key || '', 40),
           sort_order: module.sort_order,
+          lab_type: clean(module.lab_type || '', 80),
+          unlock_policy: clean(module.unlock_policy || '', 40),
+          estimated_minutes: Number(module.estimated_minutes || 0),
+          lesson_objectives: parseJsonArray(module.lesson_objectives_json),
+          expected_artifact: clean(module.expected_artifact || '', 320),
+          assignment_prompt: clean(module.assignment_prompt || '', 2400),
+          review_checklist: parseJsonArray(module.review_checklist_json),
+          tutor_prompts: parseJsonArray(module.tutor_prompts_json),
+          progress_status: clean(module.progress_status || '', 32),
+          progress_score: Number.isFinite(Number(module.progress_score)) ? Number(module.progress_score) : null,
+          progress_notes: clean(module.progress_notes || '', 2000),
           is_published: Number(module.is_published || 0) === 1,
+          is_spotlight: Number(module.is_spotlight || 0) === 1,
           is_unlocked: Number(module.is_unlocked || 0) === 1
         }))
       });
@@ -4081,6 +5439,20 @@ app.post('/api/learn/assignments/:moduleId/submit', async (c) => {
     if (actor.error) return actor.error;
     const actorAccessError = assertActorCanAccessUser(actor, userId, { allowPrivileged: true });
     if (actorAccessError) return actorAccessError;
+
+    // Phase 3: AI Guardrail Check
+    const quizPass = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT passed FROM learner_quiz_attempts WHERE user_id = ? AND module_id = ? AND passed = 1 LIMIT 1'
+    )
+      .bind(userId, moduleId)
+      .first();
+
+    if (!quizPass) {
+      return c.json({ 
+        error: 'Forbidden: You must pass the AI Knowledge Check (Quiz) before submitting this assignment.',
+        requires_quiz: true 
+      }, 403);
+    }
     const courseId = clean(payload?.course_id, 64);
     const rubricId = clean(payload?.rubric_id, 64);
     const answerText = typeof payload?.answer_text === 'string' ? payload.answer_text.slice(0, 15000) : '';
@@ -4360,31 +5732,57 @@ app.get('/api/content/posts', async (c) => {
 
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
-    const limit = Math.min(20, Math.max(1, Number(c.req.query('limit') || 6)));
-    const result = await c.env.DEEPLEARN_DB.prepare(
+    const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 6)));
+    const contentTypeFilter = clean(c.req.query('content_type') || '', 40).toLowerCase();
+    const whereClause = contentTypeFilter
+      ? `WHERE status = 'published' AND content_type = ?`
+      : `WHERE status = 'published'`;
+    const statement = c.env.DEEPLEARN_DB.prepare(
       `SELECT
-         id, slug, title, summary, path, tags_json, source_urls_json, published_at_ms, created_at_ms
+         id, slug, title, summary, path, content_type, tags_json, source_urls_json, canonical_url,
+         community_likes, prompt_text, prompt_output_preview, prompt_keyword, suggested_models_json,
+         hf_model_id, hf_model_author, hf_model_pipeline, hf_model_downloads, hf_model_likes,
+         is_spotlight, published_at_ms, created_at_ms
        FROM content_posts
-       WHERE status = 'published'
+       ${whereClause}
        ORDER BY COALESCE(published_at_ms, created_at_ms) DESC
        LIMIT ?`
-    )
-      .bind(limit)
-      .all();
+    );
+    const result = contentTypeFilter
+      ? await statement.bind(contentTypeFilter, limit).all()
+      : await statement.bind(limit).all();
 
     const posts = (result.results || []).map((row) => {
       const tags = parseJsonArray(row.tags_json);
       const sourceUrls = parseJsonArray(row.source_urls_json);
+      const canonicalUrl = clean(row.canonical_url || '', 400) || defaultContentCanonicalUrl(row.slug);
       return {
         id: row.id,
         slug: row.slug,
         title: row.title,
         summary: row.summary,
         path: row.path,
+        content_type: clean(row.content_type || 'daily_brief', 40) || 'daily_brief',
         tags,
         source_urls: sourceUrls,
-        link: sourceUrls[0] || 'https://greybrain.ai/clinical-ai',
-        date: msToIsoDate(row.published_at_ms || row.created_at_ms)
+        canonical_url: canonicalUrl,
+        link: canonicalUrl || sourceUrls[0] || 'https://greybrain.ai/clinical-ai',
+        date: msToIsoDate(row.published_at_ms || row.created_at_ms),
+        published_at_ms: row.published_at_ms,
+        created_at_ms: row.created_at_ms,
+        // Community & DAIY fields
+        community_likes: Number(row.community_likes || 0),
+        prompt_text: row.prompt_text || '',
+        prompt_output_preview: row.prompt_output_preview || '',
+        prompt_keyword: row.prompt_keyword || '',
+        suggested_models: parseJsonArray(row.suggested_models_json),
+        // Model spotlight fields
+        hf_model_id: row.hf_model_id || '',
+        hf_model_author: row.hf_model_author || '',
+        hf_model_pipeline: row.hf_model_pipeline || '',
+        hf_model_downloads: Number(row.hf_model_downloads || 0),
+        hf_model_likes: Number(row.hf_model_likes || 0),
+        is_spotlight: Boolean(row.is_spotlight)
       };
     });
 
@@ -4400,9 +5798,154 @@ app.get('/api/content/posts', async (c) => {
   }
 });
 
+
+app.get('/api/content/posts/:slug', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'Content database is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const slug = slugify(clean(c.req.param('slug'), 160));
+    if (!slug) {
+      return c.json({ error: 'slug is required.' }, 400);
+    }
+
+    const row = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT
+         id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, canonical_url,
+         model_name, prompt_version, published_at_ms, created_at_ms, updated_at_ms
+       FROM content_posts
+       WHERE status = 'published' AND slug = ?
+       LIMIT 1`
+    )
+      .bind(slug)
+      .first();
+
+    if (!row) {
+      return c.json({ error: 'Content post not found.' }, 404);
+    }
+
+    const sourceUrls = parseJsonArray(row.source_urls_json);
+    const canonicalUrl = clean(row.canonical_url || '', 400) || defaultContentCanonicalUrl(row.slug);
+    return c.json({
+      post: {
+        id: row.id,
+        slug: row.slug,
+        title: row.title,
+        summary: row.summary,
+        content_markdown: row.content_markdown,
+        path: row.path,
+        content_type: clean(row.content_type || 'daily_brief', 40) || 'daily_brief',
+        tags: parseJsonArray(row.tags_json),
+        source_urls: sourceUrls,
+        canonical_url: canonicalUrl,
+        model_name: row.model_name,
+        prompt_version: row.prompt_version,
+        published_at_ms: row.published_at_ms,
+        created_at_ms: row.created_at_ms,
+        updated_at_ms: row.updated_at_ms
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to load content post.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+// --- PUBLIC: Anonymous Like ---
+app.post('/api/content/posts/:id/like', async (c) => {
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'Content database is not configured.' }, 500);
+  }
+  const postId = clean(c.req.param('id'), 64);
+  if (!postId) return c.json({ error: 'id required' }, 400);
+
+  // Deduplicate by IP using a short-lived KV or just update (best-effort)
+  try {
+    await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE content_posts SET community_likes = COALESCE(community_likes, 0) + 1 WHERE id = ? AND status = 'published'`
+    ).bind(postId).run();
+    const row = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT community_likes FROM content_posts WHERE id = ?`
+    ).bind(postId).first();
+    return c.json({ ok: true, community_likes: Number(row?.community_likes || 0) });
+  } catch (error) {
+    return c.json({ error: 'Failed to record like.', details: error instanceof Error ? error.message : 'unknown' }, 500);
+  }
+});
+
+// --- ADMIN: Content Queue (drafts + published) ---
+app.get('/api/content/queue', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, slug, title, summary, status, content_type, path, generated_at_ms, published_at_ms, updated_at_ms,
+              prompt_text, prompt_keyword, hf_model_id, hf_model_author, community_likes
+       FROM content_posts
+       WHERE content_type IN ('model_spotlight', 'daiy_prompt', 'health_news', 'daily_brief')
+       ORDER BY updated_at_ms DESC
+       LIMIT 50`
+    ).all();
+    return c.json({ posts: result.results || [] });
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch content queue.', details: error instanceof Error ? error.message : 'unknown' }, 500);
+  }
+});
+
+// --- ADMIN: On-Demand Generate (BYOK, dispatches to correct generator) ---
+app.post('/api/content/generate', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+
+  let payload = {};
+  try { payload = await c.req.json(); } catch { payload = {}; }
+
+  const apiKey = clean(payload?.api_key || payload?.gemini_key || payload?.groq_key || '', 240);
+  const provider = resolveContentGenerationProvider(payload?.provider || 'gemini');
+  const contentType = clean(payload?.type || 'all', 32).toLowerCase();
+  const force = payload?.force === true;
+
+  if (!apiKey) return c.json({ error: 'api_key is required.' }, 400);
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const results = {};
+
+    if (contentType === 'all' || contentType === 'model_spotlight') {
+      results.model_spotlight = await generateModelSpotlightDraft(c.env, { apiKey, provider, force }).catch((e) => ({ error: e.message }));
+    }
+    if (contentType === 'all' || contentType === 'daiy_prompt') {
+      results.daiy_prompt = await generateDaiyDraft(c.env, { apiKey, provider, force }).catch((e) => ({ error: e.message }));
+    }
+    if (contentType === 'all' || contentType === 'health_news') {
+      // Health news always uses Gemini (search grounding)
+      const geminiKey = apiKey;
+      results.health_news = await generateHealthNewsDraft(c.env, { apiKey: geminiKey, force }).catch((e) => ({ error: e.message }));
+    }
+    if (contentType === 'all' || contentType === 'daily_brief') {
+      results.daily_brief = await generateDailyContentDraft(c.env, { mode: 'manual', force, apiKeyOverride: apiKey, providerOverride: provider, modelOverride: '' }).catch((e) => ({ error: e.message }));
+    }
+
+    return c.json({ ok: true, results });
+  } catch (error) {
+    return c.json({ error: 'Generate failed.', details: error instanceof Error ? error.message : 'unknown' }, 500);
+  }
+});
+
 app.get('/api/admin/content/posts', async (c) => {
-  const authError = await assertAdmin(c);
-  if (authError) return authError;
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
 
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -4410,6 +5953,8 @@ app.get('/api/admin/content/posts', async (c) => {
 
   try {
     await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const reviewWindowMs = resolveContentReviewWindowMs(c.env);
+    const nowMs = Date.now();
     const limit = Math.min(50, Math.max(1, Number(c.req.query('limit') || 20)));
     const requestedStatus = clean(c.req.query('status'), 32).toLowerCase();
     if (requestedStatus && requestedStatus !== 'all' && !CONTENT_STATUSES.has(requestedStatus)) {
@@ -4417,8 +5962,8 @@ app.get('/api/admin/content/posts', async (c) => {
     }
     const whereClause = requestedStatus && requestedStatus !== 'all' ? 'WHERE status = ?' : '';
     const query = `SELECT
-        id, slug, title, summary, status, path, tags_json, source_urls_json,
-        model_name, prompt_version, generated_at_ms, approved_at_ms, published_at_ms, updated_at_ms
+      id, slug, title, summary, content_markdown, status, path, content_type, tags_json, source_urls_json, canonical_url,
+        model_name, prompt_version, generated_at_ms, approved_at_ms, published_at_ms, updated_at_ms, is_spotlight
       FROM content_posts
       ${whereClause}
       ORDER BY updated_at_ms DESC
@@ -4433,19 +5978,35 @@ app.get('/api/admin/content/posts', async (c) => {
       slug: row.slug,
       title: row.title,
       summary: row.summary,
+      content_markdown: row.content_markdown,
       status: row.status,
       path: row.path,
+      content_type: clean(row.content_type || 'daily_brief', 40) || 'daily_brief',
       tags: parseJsonArray(row.tags_json),
       source_urls: parseJsonArray(row.source_urls_json),
+      canonical_url: clean(row.canonical_url || '', 400) || defaultContentCanonicalUrl(row.slug),
       model_name: row.model_name,
       prompt_version: row.prompt_version,
       generated_at_ms: row.generated_at_ms,
+      review_deadline_ms: Number(row.generated_at_ms || 0) > 0 ? Number(row.generated_at_ms || 0) + reviewWindowMs : null,
+      auto_publish_pending:
+        row.status === 'draft' &&
+        Number(row.generated_at_ms || 0) > 0 &&
+        Number(row.generated_at_ms || 0) + reviewWindowMs <= nowMs,
       approved_at_ms: row.approved_at_ms,
       published_at_ms: row.published_at_ms,
-      updated_at_ms: row.updated_at_ms
+      updated_at_ms: row.updated_at_ms,
+      is_spotlight: Boolean(row.is_spotlight)
     }));
 
-    return c.json({ posts });
+    return c.json({
+      posts,
+      review_policy: {
+        window_minutes: Math.round(reviewWindowMs / 60000),
+        auto_publish_enabled: isContentAutoPublishEnabled(c.env),
+        auto_publish_on_approval: isContentAutoPublishOnApproval(c.env)
+      }
+    });
   } catch (error) {
     return c.json(
       {
@@ -4458,8 +6019,8 @@ app.get('/api/admin/content/posts', async (c) => {
 });
 
 app.post('/api/admin/content/generate-daily', async (c) => {
-  const authError = await assertAdmin(c);
-  if (authError) return authError;
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
 
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -4473,18 +6034,27 @@ app.post('/api/admin/content/generate-daily', async (c) => {
     } catch {
       payload = {};
     }
-    const groqKey = clean(payload?.groq_key, 240);
+    const apiKey = clean(payload?.api_key || payload?.groq_key || payload?.gemini_key || payload?.claude_key || payload?.grok_key, 240);
+    const provider = resolveContentGenerationProvider(payload?.provider || '');
+    const model = clean(payload?.model, 120);
     const force = payload?.force === true;
 
     const generated = await generateDailyContentDraft(c.env, {
       mode: 'manual',
       force,
-      apiKeyOverride: groqKey || ''
+      apiKeyOverride: apiKey || '',
+      providerOverride: provider,
+      modelOverride: model || ''
     });
 
     return c.json({
       ok: true,
-      generated
+      generated,
+      review_policy: {
+        window_minutes: Math.round(resolveContentReviewWindowMs(c.env) / 60000),
+        auto_publish_enabled: isContentAutoPublishEnabled(c.env),
+        auto_publish_on_approval: isContentAutoPublishOnApproval(c.env)
+      }
     });
   } catch (error) {
     return c.json(
@@ -4497,9 +6067,83 @@ app.post('/api/admin/content/generate-daily', async (c) => {
   }
 });
 
+app.post('/api/admin/content/embed', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+
+  if (!c.env.DEEPLEARN_INDEX) {
+    return c.json({ error: 'Vectorize index DEEPLEARN_INDEX is not configured.' }, 500);
+  }
+
+  if (!c.env.AI) {
+    return c.json({ error: 'AI binding is not configured.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json();
+    const text = clean(payload?.text || '', 50000);
+    const metadata = payload?.metadata || {};
+
+    if (!text) {
+      return c.json({ error: 'Text is required for embedding.' }, 400);
+    }
+
+    // Generate embedding using Cloudflare Workers AI
+    const embeddingResponse = await c.env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [text] });
+    const vector = embeddingResponse.data[0];
+    const id = crypto.randomUUID();
+
+    await c.env.DEEPLEARN_INDEX.upsert([
+      {
+        id,
+        values: vector,
+        metadata: {
+          ...metadata,
+          timestamp: Date.now()
+        }
+      }
+    ]);
+
+    return c.json({ ok: true, id, vector_length: vector.length });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to generate embedding and store in Vectorize.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/content/auto-publish-expired', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const result = await autoPublishExpiredDrafts(c.env, {
+      runType: 'manual:auto-publish-expired'
+    });
+    return c.json({ ok: true, result });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to auto publish expired drafts.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.post('/api/admin/content/posts/:postId/status', async (c) => {
-  const authError = await assertAdmin(c);
-  if (authError) return authError;
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
 
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -4515,15 +6159,18 @@ app.post('/api/admin/content/posts/:postId/status', async (c) => {
     if (!CONTENT_STATUSES.has(status)) return c.json({ error: 'Invalid content status.' }, 400);
 
     const nowMs = Date.now();
+    const nextStatus = status === 'approved' && isContentAutoPublishOnApproval(c.env) ? 'published' : status;
+    const approvedAtMs = status === 'approved' || nextStatus === 'published' ? nowMs : null;
+    const publishedAtMs = nextStatus === 'published' ? nowMs : null;
     const result = await c.env.DEEPLEARN_DB.prepare(
       `UPDATE content_posts
        SET status = ?,
-           approved_at_ms = CASE WHEN ? = 'approved' THEN ? ELSE approved_at_ms END,
-           published_at_ms = CASE WHEN ? = 'published' THEN ? ELSE published_at_ms END,
+           approved_at_ms = ?,
+           published_at_ms = ?,
            updated_at_ms = ?
        WHERE id = ?`
     )
-      .bind(status, status, nowMs, status, nowMs, nowMs, postId)
+      .bind(nextStatus, approvedAtMs, publishedAtMs, nowMs, postId)
       .run();
 
     if (!result.success || Number(result.meta?.changes || 0) === 0) {
@@ -4533,15 +6180,324 @@ app.post('/api/admin/content/posts/:postId/status', async (c) => {
     await recordContentRun(c.env.DEEPLEARN_DB, {
       runType: 'status-update',
       status: 'success',
-      message: `content status updated to ${status}`,
+      message: `content status updated from ${status} to ${nextStatus}`,
       postId
     });
 
-    return c.json({ ok: true, post_id: postId, status });
+    if (nextStatus === 'published') {
+      c.executionCtx.waitUntil((async () => {
+        try {
+          await triggerPagesDeployHookIfConfigured(c.env, `publish:${postId}`);
+          await triggerOmnichannelDistribution(c.env, postId);
+        } catch (e) {
+          console.error('Pages webhook or omnichannel distribution failed:', e);
+        }
+      })());
+    }
+
+    return c.json({
+      ok: true,
+      post_id: postId,
+      requested_status: status,
+      status: nextStatus,
+      approved_at_ms: approvedAtMs,
+      published_at_ms: publishedAtMs
+    });
   } catch (error) {
     return c.json(
       {
         error: 'Failed to update content status.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/content/posts/:postId/update', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const postId = clean(c.req.param('postId'), 64);
+    const payload = await c.req.json();
+    if (!postId) return c.json({ error: 'postId is required.' }, 400);
+
+    const existing = await c.env.DEEPLEARN_DB.prepare(
+      `SELECT id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, canonical_url, status
+       FROM content_posts
+       WHERE id = ? LIMIT 1`
+    )
+      .bind(postId)
+      .first();
+
+    if (!existing) {
+      return c.json({ error: 'Content post not found.' }, 404);
+    }
+
+    const title = clean(payload?.title ?? existing.title ?? '', 200);
+    const summary = clean(payload?.summary ?? existing.summary ?? '', 240);
+    const path = clean(payload?.path ?? existing.path ?? '', 40).toLowerCase();
+    const contentType = clean(payload?.content_type ?? existing.content_type ?? '', 40).toLowerCase() || 'daily_brief';
+    const contentMarkdown =
+      typeof payload?.content_markdown === 'string'
+        ? payload.content_markdown.slice(0, 48000).trim()
+        : String(existing.content_markdown || '').slice(0, 48000);
+    const tags = Array.isArray(payload?.tags)
+      ? payload.tags.map((tag) => clean(String(tag), 32).toLowerCase()).filter(Boolean).slice(0, 12)
+      : parseJsonArray(existing.tags_json);
+    const sourceUrls = Array.isArray(payload?.source_urls)
+      ? payload.source_urls.map((url) => clean(String(url), 400)).filter(Boolean).slice(0, 12)
+      : parseJsonArray(existing.source_urls_json).map((url) => clean(String(url), 400)).filter(Boolean).slice(0, 12);
+    const canonicalUrl = clean(payload?.canonical_url ?? existing.canonical_url ?? '', 400) || defaultContentCanonicalUrl(existing.slug);
+
+    if (!title || !summary || !contentMarkdown) {
+      return c.json({ error: 'title, summary, and content_markdown are required.' }, 400);
+    }
+    if (!['productivity', 'research', 'entrepreneurship'].includes(path)) {
+      return c.json({ error: 'Invalid content path.' }, 400);
+    }
+    if (!CONTENT_TYPES.has(contentType)) {
+      return c.json({ error: 'Invalid content type.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE content_posts
+       SET title = ?, summary = ?, content_markdown = ?, path = ?, content_type = ?, tags_json = ?, source_urls_json = ?, canonical_url = ?, updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(title, summary, contentMarkdown, path, contentType, JSON.stringify(tags), JSON.stringify(sourceUrls), canonicalUrl, nowMs, postId)
+      .run();
+
+    if (!result.success || Number(result.meta?.changes || 0) === 0) {
+      return c.json({ error: 'Failed to update content post.' }, 500);
+    }
+
+    await recordContentRun(c.env.DEEPLEARN_DB, {
+      runType: 'editor-update',
+      status: 'success',
+      message: `content draft updated by reviewer`,
+      postId
+    });
+
+    return c.json({
+      ok: true,
+      post: {
+        id: postId,
+        slug: existing.slug,
+        title,
+        summary,
+        content_markdown: contentMarkdown,
+        path,
+        content_type: contentType,
+        tags,
+        source_urls: sourceUrls,
+        canonical_url: canonicalUrl,
+        status: existing.status,
+        updated_at_ms: nowMs
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update content draft.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/content/posts', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+    const title = clean(payload?.title ?? '', 200) || 'Untitled Draft';
+    const summary = clean(payload?.summary ?? '', 240) || 'No summary provided.';
+    const path = clean(payload?.path ?? '', 40).toLowerCase() || 'productivity';
+    const contentType = clean(payload?.content_type ?? '', 40).toLowerCase() || 'daily_brief';
+    const contentMarkdown = typeof payload?.content_markdown === 'string' && payload.content_markdown.trim() !== '' 
+      ? payload.content_markdown.slice(0, 48000).trim() 
+      : '# New Draft\n\nWrite your content here.';
+    const tags = Array.isArray(payload?.tags)
+      ? payload.tags.map((tag) => clean(String(tag), 32).toLowerCase()).filter(Boolean).slice(0, 12)
+      : [];
+    const sourceUrls = Array.isArray(payload?.source_urls)
+      ? payload.source_urls.map((url) => clean(String(url), 400)).filter(Boolean).slice(0, 12)
+      : [];
+    const canonicalUrlInput = clean(payload?.canonical_url ?? '', 400);
+
+    if (!['productivity', 'research', 'entrepreneurship'].includes(path)) {
+      return c.json({ error: 'Invalid content path.' }, 400);
+    }
+    if (!CONTENT_TYPES.has(contentType)) {
+      return c.json({ error: 'Invalid content type.' }, 400);
+    }
+
+    const nowMs = Date.now();
+    const dateSlug = isoDateInTimezone(nowMs, 'Asia/Kolkata').replace(/-/g, '');
+    const postId = crypto.randomUUID();
+    const slugBase = slugify(`${path}-${dateSlug}-${title}`) || `manual-${path}-${dateSlug}`;
+    const existingSlug = await c.env.DEEPLEARN_DB.prepare('SELECT id FROM content_posts WHERE slug = ? LIMIT 1')
+      .bind(slugBase)
+      .first();
+    const slug = existingSlug ? `${slugBase}-${postId.slice(0, 8)}` : slugBase;
+    const canonicalUrl = canonicalUrlInput || defaultContentCanonicalUrl(slug);
+
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO content_posts (
+        id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, canonical_url, model_name,
+        prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?, ?)`
+    )
+      .bind(
+        postId,
+        slug,
+        title,
+        summary,
+        contentMarkdown,
+        path,
+        contentType,
+        JSON.stringify(tags),
+        JSON.stringify(sourceUrls),
+        canonicalUrl,
+        'manual-editor',
+        `${DAILY_PROMPT_VERSION}:manual`,
+        nowMs,
+        nowMs,
+        nowMs
+      )
+      .run();
+
+    if (!result.success) {
+      return c.json({ error: 'Failed to create content draft.' }, 500);
+    }
+
+    await recordContentRun(c.env.DEEPLEARN_DB, {
+      runType: 'editor-create',
+      status: 'success',
+      message: 'manual content draft created by reviewer',
+      postId
+    });
+
+    return c.json({
+      ok: true,
+      post: {
+        id: postId,
+        slug,
+        title,
+        summary,
+        content_markdown: contentMarkdown,
+        path,
+        content_type: contentType,
+        tags,
+        source_urls: sourceUrls,
+        canonical_url: canonicalUrl,
+        model_name: 'manual-editor',
+        prompt_version: `${DAILY_PROMPT_VERSION}:manual`,
+        status: 'draft',
+        generated_at_ms: nowMs,
+        approved_at_ms: null,
+        published_at_ms: null,
+        updated_at_ms: nowMs
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create content draft.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/content/seed-evergreen', async (c) => {
+  const reviewerAccess = await assertContentReviewAccess(c);
+  if (reviewerAccess.error) return reviewerAccess.error;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const seeded = [];
+    const nowMs = Date.now();
+    const seedEntries = buildEvergreenSeedEntries();
+
+    for (const entry of seedEntries) {
+      const existing = await c.env.DEEPLEARN_DB.prepare('SELECT id FROM content_posts WHERE slug = ? LIMIT 1')
+        .bind(entry.slug)
+        .first();
+      if (existing?.id) continue;
+
+      const postId = crypto.randomUUID();
+      const canonicalUrl = defaultContentCanonicalUrl(entry.slug);
+      const result = await c.env.DEEPLEARN_DB.prepare(
+        `INSERT INTO content_posts (
+          id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, canonical_url, model_name,
+          prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          postId,
+          entry.slug,
+          entry.title,
+          entry.summary,
+          entry.content_markdown,
+          entry.path,
+          entry.content_type,
+          JSON.stringify(entry.tags),
+          JSON.stringify(entry.source_urls),
+          canonicalUrl,
+          'manual-seed',
+          `${DAILY_PROMPT_VERSION}:seed`,
+          nowMs,
+          nowMs,
+          nowMs,
+          nowMs,
+          nowMs
+        )
+        .run();
+
+      if (result.success) {
+        seeded.push({
+          id: postId,
+          slug: entry.slug,
+          title: entry.title,
+          path: entry.path,
+          content_type: entry.content_type
+        });
+      }
+    }
+
+    await recordContentRun(c.env.DEEPLEARN_DB, {
+      runType: 'seed-evergreen',
+      status: 'success',
+      message: `seeded ${seeded.length} evergreen content post(s)`,
+      postId: ''
+    });
+
+    return c.json({ ok: true, seeded });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to seed evergreen content.',
         details: error instanceof Error ? error.message : 'Unknown error'
       },
       500
@@ -4670,6 +6626,631 @@ app.post('/api/admin/knowledge/ingest-logistics', async (c) => {
   }
 });
 
+app.post('/api/admin/knowledge/ingest-course-content', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB || !c.env.DEEPLEARN_INDEX || !c.env.AI) {
+    return c.json({ error: 'D1, Vectorize, and AI bindings are required.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json().catch(() => ({}));
+    let courseId = clean(payload?.course_id, 64);
+    const courseSlug = slugify(clean(payload?.course_slug, 120));
+    const pathKeyRaw = clean(payload?.path_key, 40).toLowerCase();
+    const pathKey = PATH_KEYS.has(pathKeyRaw) ? pathKeyRaw : '';
+
+    if (!courseId && courseSlug) {
+      const course = await c.env.DEEPLEARN_DB.prepare('SELECT id FROM courses WHERE slug = ? LIMIT 1').bind(courseSlug).first();
+      courseId = clean(course?.id || '', 64);
+      if (!courseId) {
+        return c.json({ error: 'course_slug did not match any course.' }, 404);
+      }
+    }
+
+    const docs = await buildCourseContentKnowledgeDocs(c.env.DEEPLEARN_DB, { courseId, pathKey });
+    if (docs.length === 0) {
+      return c.json({
+        ok: true,
+        documents: 0,
+        chunks: 0,
+        upserted: 0,
+        note: 'No course content docs found for the provided filters.'
+      });
+    }
+
+    const ingestion = await upsertKnowledgeDocuments(c.env, docs);
+    return c.json({
+      ok: true,
+      filter: {
+        course_id: courseId || '',
+        course_slug: courseSlug || '',
+        path_key: pathKey || ''
+      },
+      documents: docs.length,
+      chunks: ingestion.chunkCount,
+      upserted: ingestion.upserted
+    });
+  } catch (error) {
+    await recordOpsAlert(c.env, {
+      source: 'knowledge_ingestion',
+      severity: 'warning',
+      eventType: 'ingest_course_content_failed',
+      message: 'Failed to ingest course content context.',
+      details: { error: error instanceof Error ? error.message : 'Unknown error' }
+    });
+    return c.json(
+      {
+        error: 'Failed to ingest course content context.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/knowledge/ingest-research', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB || !c.env.DEEPLEARN_INDEX || !c.env.AI) {
+    return c.json({ error: 'D1, Vectorize, and AI bindings are required.' }, 500);
+  }
+
+  try {
+    const payload = await c.req.json().catch(() => ({}));
+    const courseId = clean(payload?.course_id, 64);
+
+    if (!courseId) return c.json({ error: 'course_id is required.' }, 400);
+
+    const docs = await buildResearchKnowledgeDocs(c.env.DEEPLEARN_DB, { courseId });
+    if (docs.length === 0) {
+      return c.json({ ok: true, documents: 0, note: 'No research/presentation items found.' });
+    }
+
+    const ingestion = await upsertKnowledgeDocuments(c.env, docs);
+    return c.json({
+      ok: true,
+      course_id: courseId,
+      documents: docs.length,
+      chunks: ingestion.chunkCount,
+      upserted: ingestion.upserted
+    });
+  } catch (error) {
+    return c.json({ error: 'Failed to ingest research.', details: error.message }, 500);
+  }
+});
+
+app.get('/api/admin/learner/spotlight/:userId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const db = c.env.DEEPLEARN_DB;
+  if (!db) return c.json({ error: 'D1 not configured.' }, 500);
+
+  const userId = c.req.param('userId');
+  if (!userId) return c.json({ error: 'userId is required.' }, 400);
+
+  try {
+    // 1. Lead / CRM data
+    const lead = await db.prepare('SELECT * FROM leads WHERE email = ? OR user_id = ? LIMIT 1').bind(userId, userId).first();
+    
+    // 2. Enrollment / Cohort data
+    const enrollments = await db.prepare(`
+      SELECT e.*, c.title as course_title, co.name as cohort_name
+      FROM enrollments e
+      LEFT JOIN courses c ON c.id = e.course_id
+      LEFT JOIN cohorts co ON co.id = e.cohort_id
+      WHERE e.user_id = ?
+    `).bind(userId).all();
+
+    // 3. Payment history
+    const payments = await db.prepare('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at_ms DESC').bind(userId).all();
+
+    // 4. Progress history
+    const progress = await db.prepare(`
+      SELECT p.*, m.title as module_title
+      FROM learner_progress p
+      LEFT JOIN course_modules m ON m.id = p.module_id
+      WHERE p.user_id = ?
+      ORDER BY p.updated_at_ms DESC
+    `).bind(userId).all();
+
+    // 5. Assignments
+    const assignments = await db.prepare(`
+      SELECT a.*, m.title as module_title
+      FROM assignment_submissions a
+      LEFT JOIN course_modules m ON m.id = a.module_id
+      WHERE a.user_id = ?
+      ORDER BY a.submitted_at_ms DESC
+    `).bind(userId).all();
+
+    // 6. Audit Trail
+    const audits = await db.prepare('SELECT * FROM crm_action_audit WHERE lead_id = ? OR details_json LIKE ? ORDER BY created_at_ms DESC LIMIT 50')
+      .bind(lead?.id || '', `%${userId}%`)
+      .all();
+
+    return c.json({
+      ok: true,
+      learner: {
+        userId,
+        lead,
+        enrollments: enrollments.results || [],
+        payments: payments.results || [],
+        progress: progress.results || [],
+        assignments: assignments.results || [],
+        audits: audits.results || []
+      }
+    });
+  } catch (error) {
+    return c.json({ error: 'Spotlight failed.', details: error.message }, 500);
+  }
+});
+
+// --- LIVE TEACHING (CLOUDFLARE CALLS) ---
+
+app.get('/api/learn/quiz/:moduleId', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+  try {
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    // 1. Check if quiz already exists
+    const questions = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT id, question, options_json, correct_index, explanation FROM module_quizzes WHERE module_id = ?'
+    )
+      .bind(moduleId)
+      .all();
+
+    let finalQuestions = questions.results || [];
+
+    // 2. If not, generate it
+    if (finalQuestions.length === 0) {
+      const moduleMeta = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT title, description FROM course_modules WHERE id = ?'
+      )
+        .bind(moduleId)
+        .first();
+
+      if (!moduleMeta) return c.json({ error: 'Module not found.' }, 404);
+
+      // Generate 3 MCQs via Gemini
+      const geminiKey = c.env.GEMINI_API_KEY || ''; 
+      if (!geminiKey) return c.json({ error: 'AI generation key missing.' }, 500);
+
+      const prompt = `Generate a 3-question Multiple Choice Quiz (MCQ) for a clinical AI module titled "${moduleMeta.title}".
+Context: ${moduleMeta.description}
+Requirements:
+1. Return strictly JSON: [{"question": "...", "options": ["A", "B", "C", "D"], "correct_index": 0, "explanation": "..."}]
+2. Questions should be challenging but relevant for a doctor.
+3. No preamble.`;
+
+      const gen = await callGeminiForDailyContent({ apiKey: geminiKey, model: 'gemini-1.5-flash', prompt });
+      
+      let quizData;
+      try {
+        const payloadStr = typeof gen.payload === 'string' ? gen.payload : JSON.stringify(gen.payload);
+        // Stripping markdown code blocks if necessary
+        const cleanJson = payloadStr.replace(/```json/g, '').replace(/```/g, '').trim();
+        quizData = JSON.parse(cleanJson);
+      } catch (pe) {
+        console.error('Quiz JSON Parse Error:', pe, gen.payload);
+        return c.json({ error: 'AI generated invalid quiz format.', details: pe.message }, 500);
+      }
+
+      if (Array.isArray(quizData)) {
+        for (const q of quizData) {
+          const qId = crypto.randomUUID();
+          await c.env.DEEPLEARN_DB.prepare(
+            'INSERT INTO module_quizzes (id, module_id, question, options_json, correct_index, explanation) VALUES (?, ?, ?, ?, ?, ?)'
+          )
+            .bind(qId, moduleId, q.question, JSON.stringify(q.options), q.correct_index, q.explanation)
+            .run();
+        }
+      }
+
+      const refreshed = await c.env.DEEPLEARN_DB.prepare(
+        'SELECT id, question, options_json, correct_index, explanation FROM module_quizzes WHERE module_id = ?'
+      )
+        .bind(moduleId)
+        .all();
+      finalQuestions = refreshed.results || [];
+    }
+
+    // 3. Check if user already passed
+    const passStatus = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT score, passed, attempted_at_ms FROM learner_quiz_attempts WHERE user_id = ? AND module_id = ? ORDER BY attempted_at_ms DESC LIMIT 1'
+    )
+      .bind(actor.user.uid, moduleId)
+      .first();
+
+    return c.json({
+      ok: true,
+      questions: finalQuestions.map(q => ({ ...q, options: JSON.parse(q.options_json) })),
+      status: passStatus || { score: 0, passed: false }
+    });
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch quiz.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/learn/quiz/:moduleId/submit', async (c) => {
+  if (!c.env.DEEPLEARN_DB) return c.json({ error: 'D1 not configured.' }, 500);
+  try {
+    const moduleId = clean(c.req.param('moduleId'), 64);
+    const payload = await c.req.json();
+    const answers = payload.answers || {}; // { questionId: selectedIndex }
+    const actor = await resolveActorContext(c, { requireUser: true });
+    if (actor.error) return actor.error;
+
+    const questions = await c.env.DEEPLEARN_DB.prepare(
+      'SELECT id, correct_index FROM module_quizzes WHERE module_id = ?'
+    )
+      .bind(moduleId)
+      .all();
+
+    let correctCount = 0;
+    const details = [];
+    for (const q of questions.results) {
+      const isCorrect = answers[q.id] === q.correct_index;
+      if (isCorrect) correctCount++;
+      details.push({ question_id: q.id, correct: isCorrect });
+    }
+
+    const totalQuestions = questions.results.length || 1;
+    const score = Math.round((correctCount / totalQuestions) * 100);
+    const passed = score >= 80;
+
+    const attemptId = crypto.randomUUID();
+    const nowMs = Date.now();
+    await c.env.DEEPLEARN_DB.prepare(
+      'INSERT INTO learner_quiz_attempts (id, user_id, module_id, score, passed, attempted_at_ms) VALUES (?, ?, ?, ?, ?, ?)'
+    )
+      .bind(attemptId, actor.user.uid, moduleId, score, passed ? 1 : 0, nowMs)
+      .run();
+
+    if (passed) {
+      await c.env.DEEPLEARN_DB.prepare(
+        'INSERT INTO learning_events (org_id, course_id, module_id, cohort_id, user_id, event_name, event_value, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      )
+        .bind('', '', moduleId, '', actor.user.uid, 'quiz_passed', score, nowMs)
+        .run();
+    }
+
+    return c.json({ ok: true, score, passed, correctCount, total: totalQuestions });
+  } catch (error) {
+    return c.json({ error: 'Failed to submit quiz.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/admin/live/sessions', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const db = c.env.DEEPLEARN_DB;
+  const { cohort_id, title, metadata } = await c.req.json();
+
+  if (!cohort_id || !title) return c.json({ error: 'cohort_id and title are required.' }, 400);
+
+  try {
+    const id = `live-${Date.now()}`;
+    const now = Date.now();
+    
+    // In a real implementation, we would call Cloudflare Calls API here to get a session_id
+    // For now, we generate a mock session_id or use the one provided if available
+    const session_id = `cf-sess-${Math.random().toString(36).slice(2, 10)}`;
+
+    await db.prepare(`
+      INSERT INTO cohort_live_sessions (id, cohort_id, session_id, title, status, started_at_ms, created_at_ms, updated_at_ms, metadata_json)
+      VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)
+    `).bind(id, cohort_id, session_id, title, now, now, now, JSON.stringify(metadata || {})).run();
+
+    return c.json({ ok: true, session: { id, session_id, title, cohort_id } });
+  } catch (error) {
+    return c.json({ error: 'Failed to create live session.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/admin/live/sessions/:id/end', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  const db = c.env.DEEPLEARN_DB;
+  const id = c.req.param('id');
+  const now = Date.now();
+
+  try {
+    await db.prepare(`
+      UPDATE cohort_live_sessions 
+      SET status = 'ended', ended_at_ms = ?, updated_at_ms = ?
+      WHERE id = ?
+    `).bind(now, now, id).run();
+
+    return c.json({ ok: true, message: 'Session ended.' });
+  } catch (error) {
+    return c.json({ error: 'Failed to end session.', details: error.message }, 500);
+  }
+});
+
+app.get('/api/learner/live/session/:cohortId', async (c) => {
+  // Add authentication check here (ensure user is enrolled in cohort)
+  const db = c.env.DEEPLEARN_DB;
+  const cohortId = c.req.param('cohortId');
+
+  try {
+    const session = await db.prepare(`
+      SELECT * FROM cohort_live_sessions 
+      WHERE cohort_id = ? AND status = 'active'
+      ORDER BY started_at_ms DESC LIMIT 1
+    `).bind(cohortId).first();
+
+    if (!session) return c.json({ active: false });
+
+    return c.json({ active: true, session });
+  } catch (error) {
+    return c.json({ error: 'Failed to fetch active session.', details: error.message }, 500);
+  }
+});
+
+app.post('/api/learner/live/attendance', async (c) => {
+  // Add authentication check here
+  const db = c.env.DEEPLEARN_DB;
+  const { session_id, user_id, device_info } = await c.req.json();
+  const now = Date.now();
+
+  if (!session_id || !user_id) return c.json({ error: 'session_id and user_id are required.' }, 400);
+
+  try {
+    await db.prepare(`
+      INSERT INTO live_session_attendance (session_id, user_id, joined_at_ms, device_info_json)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(session_id, user_id) DO UPDATE SET updated_at_ms = excluded.updated_at_ms -- if we had updated_at
+    `).bind(session_id, user_id, now, JSON.stringify(device_info || {})).run();
+
+    // Log to audit trail
+    await db.prepare(`
+      INSERT INTO crm_action_audit (id, lead_id, action, details_json, created_at_ms)
+      VALUES (?, ?, ?, ?, ?)
+    `).bind(`audit-${Date.now()}`, user_id, 'live_session_joined', JSON.stringify({ session_id }), now).run();
+
+    return c.json({ ok: true });
+  } catch (error) {
+    return c.json({ error: 'Failed to log attendance.', details: error.message }, 500);
+  }
+});
+
+app.get('/api/admin/counselor/knowledge', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const limit = Math.max(1, Math.min(250, Number(c.req.query('limit') || 100)));
+    const kind = clean(c.req.query('kind'), 16).toLowerCase();
+    const scope = clean(c.req.query('scope'), 16).toLowerCase();
+    const courseId = clean(c.req.query('course_id'), 64);
+
+    const filters = [];
+    const bindValues = [];
+    if (kind) {
+      filters.push('k.kind = ?');
+      bindValues.push(kind);
+    }
+    if (scope) {
+      filters.push('k.scope = ?');
+      bindValues.push(scope);
+    }
+    if (courseId) {
+      filters.push('k.course_id = ?');
+      bindValues.push(courseId);
+    }
+
+    const where = filters.length > 0 ? `WHERE ${filters.join(' AND ')}` : '';
+    const sql = `
+      SELECT
+        k.id, k.kind, k.scope, k.course_id, k.title, k.body, k.sort_order, k.is_active,
+        k.created_by, k.created_at_ms, k.updated_at_ms,
+        c.title AS course_title
+      FROM counselor_knowledge_items k
+      LEFT JOIN courses c ON c.id = k.course_id
+      ${where}
+      ORDER BY k.is_active DESC, k.sort_order ASC, k.updated_at_ms DESC
+      LIMIT ?
+    `;
+
+    const result = await c.env.DEEPLEARN_DB.prepare(sql)
+      .bind(...bindValues, limit)
+      .all();
+
+    return c.json({
+      items: (result.results || []).map((row) => ({
+        id: clean(row.id || '', 64),
+        kind: clean(row.kind || '', 16),
+        scope: clean(row.scope || '', 16),
+        course_id: clean(row.course_id || '', 64),
+        course_title: clean(row.course_title || '', 180),
+        title: clean(row.title || '', 220),
+        body: clean(row.body || '', 4000),
+        sort_order: Number(row.sort_order || 100),
+        is_active: Number(row.is_active || 0) === 1,
+        created_by: clean(row.created_by || '', 120),
+        created_at_ms: Number(row.created_at_ms || 0),
+        updated_at_ms: Number(row.updated_at_ms || 0)
+      }))
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to list counselor knowledge.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/counselor/knowledge', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const payload = await c.req.json();
+    const kind = clean(payload?.kind, 16).toLowerCase();
+    const scope = clean(payload?.scope, 16).toLowerCase();
+    const courseId = clean(payload?.course_id, 64);
+    const title = clean(payload?.title, 220);
+    const body = clean(payload?.body, 4000);
+    const sortOrder = Number.isFinite(Number(payload?.sort_order)) ? Math.round(Number(payload.sort_order)) : 100;
+    const isActive = payload?.is_active === false ? 0 : 1;
+    const createdBy = clean(payload?.created_by || c.req.header('x-user-id') || 'coordinator', 120);
+
+    if (!['faq', 'rule', 'research', 'presentation'].includes(kind)) return c.json({ error: 'kind must be faq, rule, research or presentation.' }, 400);
+    if (!['global', 'course'].includes(scope)) return c.json({ error: 'scope must be global or course.' }, 400);
+    if (!title) return c.json({ error: 'title is required.' }, 400);
+    if (!body) return c.json({ error: 'body is required.' }, 400);
+    if (scope === 'course' && !courseId) return c.json({ error: 'course_id is required for course scope.' }, 400);
+
+    const itemId = crypto.randomUUID();
+    const nowMs = Date.now();
+
+    await c.env.DEEPLEARN_DB.prepare(
+      `INSERT INTO counselor_knowledge_items (
+         id, kind, scope, course_id, title, body, sort_order, is_active, created_by, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+      .bind(itemId, kind, scope, scope === 'course' ? courseId : '', title, body, sortOrder, isActive, createdBy, nowMs, nowMs)
+      .run();
+
+    return c.json({
+      ok: true,
+      item: {
+        id: itemId,
+        kind,
+        scope,
+        course_id: scope === 'course' ? courseId : '',
+        title,
+        body,
+        sort_order: sortOrder,
+        is_active: isActive === 1
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to create counselor knowledge item.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/counselor/knowledge/:itemId', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const itemId = clean(c.req.param('itemId'), 64);
+    if (!itemId) return c.json({ error: 'itemId is required.' }, 400);
+
+    const payload = await c.req.json();
+    const kind = clean(payload?.kind, 16).toLowerCase();
+    const scope = clean(payload?.scope, 16).toLowerCase();
+    const courseId = clean(payload?.course_id, 64);
+    const title = clean(payload?.title, 220);
+    const body = clean(payload?.body, 4000);
+    const sortOrder = Number.isFinite(Number(payload?.sort_order)) ? Math.round(Number(payload.sort_order)) : 100;
+    const isActive = payload?.is_active === false ? 0 : 1;
+
+    if (!['faq', 'rule'].includes(kind)) return c.json({ error: 'kind must be faq or rule.' }, 400);
+    if (!['global', 'course'].includes(scope)) return c.json({ error: 'scope must be global or course.' }, 400);
+    if (!title) return c.json({ error: 'title is required.' }, 400);
+    if (!body) return c.json({ error: 'body is required.' }, 400);
+    if (scope === 'course' && !courseId) return c.json({ error: 'course_id is required for course scope.' }, 400);
+
+    const nowMs = Date.now();
+    const result = await c.env.DEEPLEARN_DB.prepare(
+      `UPDATE counselor_knowledge_items
+       SET kind = ?, scope = ?, course_id = ?, title = ?, body = ?, sort_order = ?, is_active = ?, updated_at_ms = ?
+       WHERE id = ?`
+    )
+      .bind(kind, scope, scope === 'course' ? courseId : '', title, body, sortOrder, isActive, nowMs, itemId)
+      .run();
+
+    if (!result.success || Number(result.meta?.changes || 0) === 0) {
+      return c.json({ error: 'Knowledge item not found.' }, 404);
+    }
+
+    return c.json({
+      ok: true,
+      item: {
+        id: itemId,
+        kind,
+        scope,
+        course_id: scope === 'course' ? courseId : '',
+        title,
+        body,
+        sort_order: sortOrder,
+        is_active: isActive === 1
+      }
+    });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to update counselor knowledge item.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
+app.post('/api/admin/counselor/knowledge/:itemId/delete', async (c) => {
+  const authError = await assertAdmin(c);
+  if (authError) return authError;
+
+  if (!c.env.DEEPLEARN_DB) {
+    return c.json({ error: 'D1 is not configured.' }, 500);
+  }
+
+  try {
+    await ensureOpsSchema(c.env.DEEPLEARN_DB);
+    const itemId = clean(c.req.param('itemId'), 64);
+    if (!itemId) return c.json({ error: 'itemId is required.' }, 400);
+
+    const result = await c.env.DEEPLEARN_DB.prepare('DELETE FROM counselor_knowledge_items WHERE id = ?').bind(itemId).run();
+    if (!result.success || Number(result.meta?.changes || 0) === 0) {
+      return c.json({ error: 'Knowledge item not found.' }, 404);
+    }
+
+    return c.json({ ok: true, deleted: itemId });
+  } catch (error) {
+    return c.json(
+      {
+        error: 'Failed to delete counselor knowledge item.',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      },
+      500
+    );
+  }
+});
+
 app.get('/api/certificates/verify', async (c) => {
   if (!c.env.DEEPLEARN_DB) {
     return c.json({ error: 'D1 is not configured.' }, 500);
@@ -4778,19 +7359,154 @@ app.get('/api/certificates/verify', async (c) => {
   }
 });
 
-async function assertAdmin(c) {
-  const allowOpenAdmin = (c.env.ALLOW_OPEN_ADMIN || 'false').toLowerCase() === 'true';
-  const configuredToken = (c.env.ADMIN_API_TOKEN || '').trim();
-  if (!configuredToken) {
-    if (allowOpenAdmin) {
-      return null;
-    }
-    return c.json({ error: 'ADMIN_API_TOKEN is not configured.' }, 503);
+function parseCsvSet(value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    return new Set();
   }
 
+  return new Set(
+    value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+}
+
+function resolveContentReviewWindowMs(env) {
+  const mins = Number(env.CONTENT_REVIEW_WINDOW_MINUTES || 180);
+  return mins * 60 * 1000;
+}
+
+function isContentAutoPublishEnabled(env) {
+  return (env.CONTENT_REVIEW_AUTO_PUBLISH || 'true').toLowerCase() !== 'false';
+}
+
+function isContentAutoPublishOnApproval(env) {
+  return (env.CONTENT_APPROVED_AUTO_PUBLISH || 'true').toLowerCase() !== 'false';
+}
+
+function resolveContentReviewerRoles(env) {
+  const configured = parseCsvSet(env.CONTENT_REVIEWER_ROLES || 'coordinator,content_editor,counselor,cto');
+  const normalized = new Set();
+  for (const role of configured) {
+    const value = normalizeRole(role);
+    if (value) normalized.add(value);
+  }
+  return normalized;
+}
+
+function resolveContentReviewerEmails(env) {
+  const configured = parseCsvSet(env.CONTENT_REVIEWER_EMAILS || 'satish@skids.health');
+  return new Set(
+    Array.from(configured)
+      .map((entry) => clean(entry, 220).toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function resolveAdminRoles(env) {
+  const configured = parseCsvSet(env.ADMIN_REQUIRED_ROLES || 'coordinator,counselor,cto');
+  const normalized = new Set();
+  for (const role of configured) {
+    const value = normalizeRole(role);
+    if (value) normalized.add(value);
+  }
+  return normalized;
+}
+
+function resolveAdminEmails(env) {
+  const configured = parseCsvSet(env.ADMIN_EMAIL_ALLOWLIST || '');
+  return new Set(
+    Array.from(configured)
+      .map((entry) => clean(entry, 220).toLowerCase())
+      .filter(Boolean)
+  );
+}
+
+function hasValidAdminToken(c) {
+  const configuredToken = (c.env.ADMIN_API_TOKEN || '').trim();
+  if (!configuredToken) return false;
   const requestToken = (c.req.header('x-admin-token') || '').trim();
-  if (!requestToken || requestToken !== configuredToken) {
-    return c.json({ error: 'Unauthorized admin request.' }, 401);
+  return Boolean(requestToken && requestToken === configuredToken);
+}
+
+async function assertContentReviewAccess(c) {
+  if (hasValidAdminToken(c)) {
+    return { ok: true, method: 'admin-token' };
+  }
+
+  const actor = await resolveActorContext(c, { requireUser: true });
+  if (actor.error) {
+    return { ok: false, error: actor.error };
+  }
+
+  const allowedRoles = resolveContentReviewerRoles(c.env);
+  const allowedEmails = resolveContentReviewerEmails(c.env);
+  const actorRoles = new Set((actor.roles || []).map((role) => normalizeRole(role)).filter(Boolean));
+  const email = clean(actor.email || '', 220).toLowerCase();
+  const roleAllowed = Array.from(actorRoles).some((role) => allowedRoles.has(role));
+  const emailAllowed = Boolean(email && allowedEmails.has(email));
+
+  if (!roleAllowed && !emailAllowed) {
+    return {
+      ok: false,
+      error: c.json(
+        {
+          error: 'Reviewer access denied for content moderation.',
+          required_roles: Array.from(allowedRoles),
+          actor_roles: Array.from(actorRoles),
+          actor_email: email || null
+        },
+        403
+      )
+    };
+  }
+
+  return { ok: true, method: roleAllowed ? 'role' : 'email-allowlist', actor };
+}
+
+function resolveContentGenerationProvider(rawValue) {
+  const value = clean(String(rawValue || ''), 40).toLowerCase();
+  if (!value || value === 'groq') return 'groq';
+  if (value === 'grok' || value === 'xai' || value === 'x.ai') return 'xai';
+  if (value === 'gemini' || value === 'google') return 'gemini';
+  if (value === 'claude' || value === 'anthropic') return 'anthropic';
+  return 'groq';
+}
+
+async function assertAdmin(c) {
+  if (hasValidAdminToken(c)) {
+    return null;
+  }
+
+  const allowOpenAdmin = (c.env.ALLOW_OPEN_ADMIN || 'false').toLowerCase() === 'true';
+  const configuredToken = (c.env.ADMIN_API_TOKEN || '').trim();
+  if (allowOpenAdmin && !configuredToken) {
+    return null;
+  }
+
+  const actor = await resolveActorContext(c, { requireUser: true });
+  if (actor.error) {
+    return actor.error;
+  }
+
+  const allowedRoles = resolveAdminRoles(c.env);
+  const allowedEmails = resolveAdminEmails(c.env);
+  const actorRoles = new Set((actor.roles || []).map((role) => normalizeRole(role)).filter(Boolean));
+  const actorEmail = clean(actor.email || '', 220).toLowerCase();
+  const roleAllowed = Array.from(actorRoles).some((role) => allowedRoles.has(role));
+  const emailAllowed = Boolean(actorEmail && allowedEmails.has(actorEmail));
+
+  if (!roleAllowed && !emailAllowed) {
+    return c.json(
+      {
+        error: 'Admin access denied.',
+        required_roles: Array.from(allowedRoles),
+        actor_roles: Array.from(actorRoles),
+        actor_email: actorEmail || null
+      },
+      403
+    );
   }
 
   return null;
@@ -4812,6 +7528,7 @@ async function ensureOpsSchema(db) {
       value REAL NOT NULL DEFAULT 1,
       bot_score REAL,
       asn INTEGER,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
       created_at_ms INTEGER NOT NULL
     )`,
     `CREATE INDEX IF NOT EXISTS idx_lead_events_webinar_created
@@ -4897,8 +7614,10 @@ async function ensureOpsSchema(db) {
       summary TEXT NOT NULL,
       content_markdown TEXT NOT NULL,
       path TEXT NOT NULL,
+      content_type TEXT NOT NULL DEFAULT 'daily_brief',
       tags_json TEXT NOT NULL,
       source_urls_json TEXT NOT NULL,
+      canonical_url TEXT NOT NULL DEFAULT '',
       model_name TEXT NOT NULL,
       prompt_version TEXT NOT NULL,
       status TEXT NOT NULL,
@@ -4954,6 +7673,11 @@ async function ensureOpsSchema(db) {
       lab_type TEXT NOT NULL DEFAULT '',
       unlock_policy TEXT NOT NULL DEFAULT 'cohort',
       estimated_minutes INTEGER NOT NULL DEFAULT 30,
+      lesson_objectives_json TEXT NOT NULL DEFAULT '[]',
+      expected_artifact TEXT NOT NULL DEFAULT '',
+      assignment_prompt TEXT NOT NULL DEFAULT '',
+      review_checklist_json TEXT NOT NULL DEFAULT '[]',
+      tutor_prompts_json TEXT NOT NULL DEFAULT '[]',
       is_published INTEGER NOT NULL DEFAULT 0,
       created_at_ms INTEGER NOT NULL,
       updated_at_ms INTEGER NOT NULL,
@@ -5190,11 +7914,191 @@ async function ensureOpsSchema(db) {
     `CREATE INDEX IF NOT EXISTS idx_ops_alerts_source_created
       ON ops_alerts(source, created_at_ms)`,
     `CREATE INDEX IF NOT EXISTS idx_ops_alerts_dedupe_created
-      ON ops_alerts(dedupe_key, created_at_ms)`
+      ON ops_alerts(dedupe_key, created_at_ms)`,
+    `CREATE TABLE IF NOT EXISTS counselor_knowledge_items (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'faq',
+      scope TEXT NOT NULL DEFAULT 'global',
+      course_id TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      body TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 100,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_counselor_knowledge_scope_active
+      ON counselor_knowledge_items(scope, is_active, sort_order, updated_at_ms)`,
+    `CREATE INDEX IF NOT EXISTS idx_counselor_knowledge_course
+      ON counselor_knowledge_items(course_id, kind, is_active, sort_order)`
+    ,
+    `CREATE TABLE IF NOT EXISTS homepage_config (
+      id TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL DEFAULT '{}',
+      updated_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS crm_action_audit (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      lead_id TEXT NOT NULL DEFAULT '',
+      action_type TEXT NOT NULL DEFAULT 'lead_update',
+      scope TEXT NOT NULL DEFAULT 'single',
+      actor_user_id TEXT NOT NULL DEFAULT '',
+      actor_email TEXT NOT NULL DEFAULT '',
+      segment_id TEXT NOT NULL DEFAULT '',
+      details_json TEXT NOT NULL DEFAULT '{}',
+      created_at_ms INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_crm_action_audit_created
+      ON crm_action_audit(created_at_ms DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_crm_action_audit_lead
+      ON crm_action_audit(lead_id, created_at_ms DESC)`
   ];
 
   for (const statement of ddl) {
     await db.prepare(statement).run();
+  }
+  await db.prepare(`ALTER TABLE lead_events ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN canonical_url TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN content_type TEXT NOT NULL DEFAULT 'daily_brief'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN is_spotlight INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_id TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_author TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_pipeline TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_downloads INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_model_likes INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN prompt_text TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN prompt_output_preview TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN prompt_keyword TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN suggested_models_json TEXT NOT NULL DEFAULT '[]'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN community_likes INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_id TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_author TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_sdk TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_likes INTEGER NOT NULL DEFAULT 0`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN hf_space_domain TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE content_posts ADD COLUMN social_media_markdown TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE course_modules ADD COLUMN lesson_objectives_json TEXT NOT NULL DEFAULT '[]'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE course_modules ADD COLUMN expected_artifact TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE course_modules ADD COLUMN assignment_prompt TEXT NOT NULL DEFAULT ''`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE course_modules ADD COLUMN review_checklist_json TEXT NOT NULL DEFAULT '[]'`).run().catch(() => {});
+  await db.prepare(`ALTER TABLE course_modules ADD COLUMN tutor_prompts_json TEXT NOT NULL DEFAULT '[]'`).run().catch(() => {});
+}
+
+async function recordCrmAudit(db, entry = {}) {
+  if (!db) return;
+  const details = entry.details && typeof entry.details === 'object' && !Array.isArray(entry.details) ? entry.details : {};
+  await db.prepare(
+    `INSERT INTO crm_action_audit (
+      lead_id, action_type, scope, actor_user_id, actor_email, segment_id, details_json, created_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      clean(entry.leadId || '', 64),
+      clean(entry.actionType || 'lead_update', 80),
+      clean(entry.scope || 'single', 40),
+      clean(entry.actorUserId || '', 120),
+      clean(entry.actorEmail || '', 220).toLowerCase(),
+      clean(entry.segmentId || '', 80),
+      JSON.stringify(details),
+      Number(entry.createdAtMs || Date.now())
+    )
+    .run();
+}
+
+function defaultContentCanonicalUrl(slug) {
+  const cleanSlug = slugify(clean(slug || '', 180));
+  return cleanSlug ? `https://med.greybrain.ai/briefs/${cleanSlug}` : 'https://med.greybrain.ai/briefs';
+}
+
+function buildEvergreenSeedEntries() {
+  return getEvergreenSeedEntries();
+}
+
+async function triggerOmnichannelDistribution(env, postId) {
+  try {
+    if (!env.DEEPLEARN_DB) return { ok: false, reason: 'no_db' };
+    
+    const post = await env.DEEPLEARN_DB.prepare(
+      `SELECT id, title, content_markdown, social_thread_text, video_script, source_urls_json
+       FROM content_posts WHERE id = ? LIMIT 1`
+    ).bind(postId).first();
+    
+    if (!post) return { ok: false, reason: 'post_not_found' };
+
+    const promises = [];
+    const sourceUrls = JSON.parse(post.source_urls_json || '[]');
+
+    // Blog Webhook (e.g. Medium API via Make/Zapier)
+    if (env.BLOG_WEBHOOK_URL && post.content_markdown) {
+      promises.push(
+        fetch(env.BLOG_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            post_id: post.id,
+            title: post.title,
+            content_markdown: post.content_markdown,
+            source_urls: sourceUrls
+          })
+        }).catch(err => console.error('Blog webhook failed:', err))
+      );
+    }
+
+    // Social Webhook (e.g. LinkedIn/X API via Make/Zapier)
+    if (env.SOCIAL_WEBHOOK_URL && post.social_thread_text) {
+      promises.push(
+        fetch(env.SOCIAL_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            post_id: post.id,
+            social_thread_text: post.social_thread_text,
+            title: post.title,
+            source_urls: sourceUrls
+          })
+        }).catch(err => console.error('Social webhook failed:', err))
+      );
+    }
+
+    if (promises.length > 0) {
+      await Promise.allSettled(promises);
+    }
+    
+    return { ok: true };
+  } catch (error) {
+    console.error('Omnichannel distribution failed:', error);
+    return { ok: false, reason: error.message };
+  }
+}
+
+async function triggerPagesDeployHookIfConfigured(env, reason = 'content-publish') {
+  const hookUrl = clean(env.PAGES_DEPLOY_HOOK_URL || '', 1000);
+  if (!hookUrl) {
+    return { ok: false, skipped: true, reason: 'missing_pages_deploy_hook_url' };
+  }
+
+  try {
+    const response = await fetch(hookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason, source: 'deeplearn-worker' })
+    });
+    if (!response.ok) {
+      const details = await response.text();
+      throw new Error(clean(details || `deploy hook failed (${response.status})`, 280));
+    }
+    return { ok: true };
+  } catch (error) {
+    if (env.DEEPLEARN_DB) {
+      await recordContentRun(env.DEEPLEARN_DB, {
+        runType: 'pages-deploy-hook',
+        status: 'error',
+        message: error instanceof Error ? error.message : 'pages deploy hook failed',
+        postId: ''
+      }).catch(() => {});
+    }
+    return { ok: false, skipped: false, reason: error instanceof Error ? error.message : 'pages deploy hook failed' };
   }
 }
 
@@ -5335,6 +8239,7 @@ function normalizeRole(role) {
   if (value === 'admin') return 'coordinator';
   if (value === 'trainer') return 'teacher';
   if (value === 'student') return 'learner';
+  if (value === 'editor' || value === 'content-editor' || value === 'content editor') return 'content_editor';
   return value;
 }
 
@@ -5393,6 +8298,7 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
     return {
       userId: '',
       roles: [],
+      email: '',
       isAdmin,
       verified: false,
       error: c.json({ error: 'Invalid Firebase session token.' }, 401)
@@ -5403,6 +8309,7 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
     return {
       userId: '',
       roles: [],
+      email: '',
       isAdmin,
       verified: false,
       error: c.json({ error: 'Actor user mismatch for verified token.' }, 401)
@@ -5410,6 +8317,7 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
   }
 
   const userId = tokenVerification.userId || headerUserId;
+  const email = tokenVerification.email || clean(c.req.header('x-user-email') || '', 220).toLowerCase();
   const roles = new Set();
   for (const role of tokenVerification.roles || []) {
     roles.add(normalizeRole(role));
@@ -5455,6 +8363,7 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
     return {
       userId: '',
       roles: [],
+      email: '',
       isAdmin,
       verified: false,
       error: c.json({ error: 'Missing actor identity. Pass x-user-id header or valid admin token.' }, 401)
@@ -5465,6 +8374,7 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
     return {
       userId: '',
       roles: [],
+      email: '',
       isAdmin,
       verified: false,
       error: c.json({ error: 'Firebase auth token is required.' }, 401)
@@ -5474,6 +8384,7 @@ async function resolveActorContext(c, { requireUser = false } = {}) {
   return {
     userId,
     roles: Array.from(roles),
+    email,
     isAdmin,
     verified: tokenVerification.ok,
     error: null
@@ -5635,26 +8546,50 @@ async function queryKnowledgeContext(env, { message, type, moduleId, courseId, f
     return fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
   }
 
+  const fallbackMessage = fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
   try {
     const embedding = await embedQuery(env, message);
-    const result = await env.DEEPLEARN_INDEX.query(embedding, {
-      topK: 6,
-      returnMetadata: 'all',
-      filter
-    });
+    const extractChunks = (matches) => {
+      const selected = selectBestKnowledgeMatches(matches, 6);
+      return selected.map((match) => match?.metadata?.chunk_text).filter(Boolean);
+    };
 
-    const chunks = (result?.matches ?? [])
-      .map((match) => match.metadata?.chunk_text)
-      .filter(Boolean)
-      .slice(0, 6);
-
-    if (chunks.length === 0) {
-      return fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
+    try {
+      const directResult = await env.DEEPLEARN_INDEX.query(embedding, {
+        topK: 8,
+        returnMetadata: 'all',
+        filter
+      });
+      const directChunks = extractChunks(directResult?.matches);
+      if (directChunks.length > 0) {
+        return directChunks.join('\n\n');
+      }
+    } catch {
+      // Fall through to compatibility query without filter.
     }
 
-    return chunks.join('\n\n');
+    // Compatibility fallback for Vectorize filter semantics:
+    // query broader and apply metadata filtering in worker code.
+    const broadResult = await env.DEEPLEARN_INDEX.query(embedding, {
+      topK: 28,
+      returnMetadata: 'all'
+    });
+    const filteredMatches = (broadResult?.matches || []).filter((match) => {
+      const metadata = match?.metadata || {};
+      const typeOk = clean(metadata.type || '', 32) === filter.type;
+      if (!typeOk) return false;
+      if (filter.module_id && clean(metadata.module_id || '', 64) !== filter.module_id) return false;
+      if (filter.course_id && clean(metadata.course_id || '', 64) !== filter.course_id) return false;
+      return true;
+    });
+    const filteredChunks = extractChunks(filteredMatches);
+    if (filteredChunks.length > 0) {
+      return filteredChunks.join('\n\n');
+    }
+
+    return fallbackMessage;
   } catch {
-    return fallbackText || (filter.type === 'logistics' ? 'No relevant logistics context found.' : 'No relevant syllabus chunks found.');
+    return fallbackMessage;
   }
 }
 
@@ -5675,7 +8610,7 @@ async function embedQuery(env, text) {
 async function buildLogisticsKnowledgeDocs(db) {
   if (!db) return [];
 
-  const [courseRows, cohortRows] = await Promise.all([
+  const [courseRows, cohortRows, manualRows] = await Promise.all([
     db
       .prepare(
         `SELECT
@@ -5701,6 +8636,16 @@ async function buildLogisticsKnowledgeDocs(db) {
          LIMIT 250`
       )
       .all()
+      ,
+    db
+      .prepare(
+        `SELECT id, kind, scope, course_id, title, body, sort_order, is_active
+         FROM counselor_knowledge_items
+         WHERE is_active = 1
+         ORDER BY sort_order ASC, updated_at_ms DESC
+         LIMIT 300`
+      )
+      .all()
   ]);
 
   const docs = [];
@@ -5720,6 +8665,31 @@ async function buildLogisticsKnowledgeDocs(db) {
       `- Snapshot date: ${generatedAt}.`
     ].join('\n')
   });
+
+  for (const row of manualRows.results || []) {
+    const itemId = clean(row.id, 64);
+    const kind = clean(row.kind || 'faq', 16).toLowerCase();
+    const scope = clean(row.scope || 'global', 16).toLowerCase();
+    const courseId = clean(row.course_id || '', 64);
+    const title = clean(row.title || '', 220);
+    const body = clean(row.body || '', 4000);
+    if (!itemId || !title || !body) continue;
+
+    const scopeText = scope === 'course' && courseId ? `course(${courseId})` : 'global';
+    const heading = kind === 'rule' ? 'Counselor rule' : 'Counselor FAQ';
+
+    docs.push({
+      document_id: `logistics-admin-${itemId}`,
+      type: 'logistics',
+      course_id: scope === 'course' ? courseId : '',
+      module_id: '',
+      chunk_text: [
+        `${heading}: ${title}`,
+        `Scope: ${scopeText}.`,
+        kind === 'rule' ? `Instruction: ${body}` : `Answer: ${body}`
+      ].join('\n')
+    });
+  }
 
   for (const row of courseRows.results || []) {
     const courseId = clean(row.id, 64);
@@ -5838,6 +8808,287 @@ async function buildLogisticsSnapshotContext(db, { courseId } = {}) {
   }
 }
 
+async function buildCourseContentKnowledgeDocs(db, { courseId = '', pathKey = '' } = {}) {
+  if (!db) return [];
+
+  const filters = [];
+  const bindValues = [];
+  const cleanCourseId = clean(courseId || '', 64);
+  if (cleanCourseId) {
+    filters.push('m.course_id = ?');
+    bindValues.push(cleanCourseId);
+  }
+  const cleanPath = clean(pathKey || '', 40).toLowerCase();
+  if (cleanPath && PATH_KEYS.has(cleanPath)) {
+    filters.push('m.path_key = ?');
+    bindValues.push(cleanPath);
+  }
+
+  const whereClause = filters.length > 0 ? `AND ${filters.join(' AND ')}` : '';
+  const result = await db.prepare(
+    `SELECT
+       m.id, m.course_id, m.path_key, m.module_key, m.title, m.description, m.content_markdown,
+       c.slug AS course_slug, c.title AS course_title, c.status AS course_status
+     FROM course_modules m
+     LEFT JOIN courses c ON c.id = m.course_id
+     WHERE m.is_published = 1
+       ${whereClause}
+     ORDER BY c.updated_at_ms DESC, m.sort_order ASC, m.updated_at_ms DESC
+     LIMIT 600`
+  )
+    .bind(...bindValues)
+    .all();
+
+  const docs = [];
+  for (const row of result.results || []) {
+    const moduleId = clean(row.id || '', 64);
+    const moduleTitle = clean(row.title || '', 220);
+    if (!moduleId || !moduleTitle) continue;
+
+    const contentMarkdown = typeof row.content_markdown === 'string' ? row.content_markdown.slice(0, 18000) : '';
+    const description = clean(row.description || '', 2000);
+    const moduleKey = clean(row.module_key || '', 120);
+    const courseSlug = clean(row.course_slug || '', 120);
+    const courseTitle = clean(row.course_title || '', 220);
+    const modulePath = clean(row.path_key || '', 40);
+    const courseStatus = clean(row.course_status || '', 24);
+
+    docs.push({
+      document_id: `content-module-${moduleId}`,
+      type: 'content',
+      course_id: clean(row.course_id || '', 64),
+      module_id: moduleId,
+      chunk_text: [
+        `Course: ${courseTitle} (${courseSlug})`,
+        `Course status: ${courseStatus || 'published'}`,
+        `Path: ${modulePath || 'general'}`,
+        `Module: ${moduleTitle} (${moduleKey || moduleId})`,
+        description ? `Description: ${description}` : '',
+        contentMarkdown ? `Module content:\n${contentMarkdown}` : ''
+      ]
+        .filter(Boolean)
+        .join('\n')
+    });
+  }
+
+  return docs;
+}
+
+function triggerAutoCourseContentIngestion(c, { courseId = '', pathKey = '', reason = '' } = {}) {
+  const task = autoIngestCourseContentKnowledge(c.env, { courseId, pathKey, reason });
+  if (c.executionCtx?.waitUntil) {
+    c.executionCtx.waitUntil(task);
+    return;
+  }
+  void task;
+}
+
+async function buildResearchKnowledgeDocs(db, { courseId = '' } = {}) {
+  if (!db) return [];
+
+  const cleanCourseId = clean(courseId || '', 64);
+  const result = await db.prepare(
+    `SELECT id, kind, title, body, course_id, updated_at_ms
+     FROM counselor_knowledge_items
+     WHERE kind IN ('research', 'presentation')
+       AND is_active = 1
+       ${cleanCourseId ? 'AND course_id = ?' : ''}
+     ORDER BY updated_at_ms DESC`
+  )
+    .bind(...(cleanCourseId ? [cleanCourseId] : []))
+    .all();
+
+  const docs = [];
+  for (const row of result.results || []) {
+    const docId = clean(row.id || '', 64);
+    if (!docId) continue;
+
+    const chunkText = `Title: ${clean(row.title || '', 220)}\nKind: ${clean(row.kind, 16)}\nBody: ${clean(row.body, 4000)}`;
+    docs.push({
+      document_id: docId,
+      chunk_text: chunkText,
+      type: 'research',
+      course_id: clean(row.course_id || '', 64),
+      module_id: ''
+    });
+  }
+  return docs;
+}
+
+async function autoIngestCourseContentKnowledge(env, { courseId = '', pathKey = '', reason = '' } = {}) {
+  if (!env.DEEPLEARN_DB || !env.DEEPLEARN_INDEX || !env.AI) {
+    return {
+      ok: false,
+      skipped: 'missing_bindings'
+    };
+  }
+
+  try {
+    await ensureOpsSchema(env.DEEPLEARN_DB);
+    const docs = await buildCourseContentKnowledgeDocs(env.DEEPLEARN_DB, {
+      courseId: clean(courseId || '', 64),
+      pathKey: clean(pathKey || '', 40).toLowerCase()
+    });
+    if (docs.length === 0) {
+      return {
+        ok: true,
+        reason: clean(reason || 'auto', 80),
+        documents: 0,
+        chunks: 0,
+        upserted: 0
+      };
+    }
+    const ingestion = await upsertKnowledgeDocuments(env, docs);
+    return {
+      ok: true,
+      reason: clean(reason || 'auto', 80),
+      documents: docs.length,
+      chunks: ingestion.chunkCount,
+      upserted: ingestion.upserted
+    };
+  } catch (error) {
+    await recordOpsAlert(env, {
+      source: 'knowledge_ingestion',
+      severity: 'warning',
+      eventType: 'auto_ingest_course_content_failed',
+      message: 'Auto-ingestion after module/course update failed.',
+      details: {
+        course_id: clean(courseId || '', 64),
+        path_key: clean(pathKey || '', 40).toLowerCase(),
+        reason: clean(reason || 'auto', 80),
+        error: error instanceof Error ? error.message : 'Unknown error'
+      },
+      dedupeKey: `auto_ingest_${clean(courseId || '', 64)}_${clean(pathKey || '', 40).toLowerCase()}_${clean(reason || 'auto', 80)}`
+    });
+    return {
+      ok: false,
+      reason: clean(reason || 'auto', 80),
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+}
+
+async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) {
+  if (!db) return [];
+
+  const cleanCourseId = clean(courseId || '', 64);
+  const courseFilterSql = cleanCourseId ? 'AND c.id = ?' : '';
+  const bindValues = cleanCourseId ? [cleanCourseId] : [];
+  const courses = await db.prepare(
+    `SELECT
+       c.id, c.slug, c.title, c.status, c.price_cents,
+       (SELECT MIN(h.start_date) FROM cohorts h WHERE h.course_id = c.id AND h.status IN ('open','live','draft')) AS next_cohort_start
+     FROM courses c
+     WHERE c.status IN ('published', 'live', 'draft')
+       ${courseFilterSql}
+     ORDER BY
+       CASE c.status WHEN 'live' THEN 0 WHEN 'published' THEN 1 ELSE 2 END,
+       c.updated_at_ms DESC
+     LIMIT 12`
+  )
+    .bind(...bindValues)
+    .all();
+
+  const items = [];
+  const rows = courses.results || [];
+  const pickBySlug = (slug) => rows.find((row) => clean(row.slug || '', 120) === slug);
+  const path2 = pickBySlug('in-silico-investigator-research');
+  const path3 = pickBySlug('doctor-ai-venture-builder');
+
+  if (path2) {
+    const feeText = Number(path2.price_cents || 0) > 0 ? `${(Number(path2.price_cents || 0) / 100).toFixed(2)} USD` : 'Contact coordinator';
+    items.push({
+      id: 'default-path2-overview',
+      question: 'What does Path 2 (AI Research Accelerator) cover?',
+      answer: `Path 2 (${clean(path2.title || 'AI Research Accelerator', 220)}) teaches hypothesis-to-conclusion research workflows with AI support for literature synthesis, study design, evidence mapping, manuscript structuring, and reviewer-response readiness. Delivery is cohort-based with mentor review and AI tutor support between sessions. Status: Rolling Admissions.`
+    });
+  }
+
+  if (path3) {
+    const feeText = Number(path3.price_cents || 0) > 0 ? `${(Number(path3.price_cents || 0) / 100).toFixed(2)} USD` : 'Contact coordinator';
+    items.push({
+      id: 'default-path3-overview',
+      question: 'What does Path 3 (Doctor AI Entrepreneurship) cover?',
+      answer: `Path 3 (${clean(path3.title || 'Doctor AI Entrepreneurship', 220)}) focuses on venture execution: problem validation, no-code MVP build, pilot metrics, compliance packaging, and capstone investment-readiness. Delivery includes cohort sprints, AI tutor support, and mentor feedback on capstone artifacts. Status: Enrollment Open.`
+    });
+  }
+
+  const path1 = pickBySlug('ai-productivity-clinical-practice');
+  if (path1) {
+    const feeText = Number(path1.price_cents || 0) > 0 ? `${(Number(path1.price_cents || 0) / 100).toFixed(2)} USD` : 'Contact coordinator';
+    items.push({
+      id: 'default-path1-overview',
+      question: 'What does Path 1 (Clinical Productivity) cover?',
+      answer: `Path 1 (${clean(path1.title || 'Clinical AI Practitioner', 220)}) is designed for doctors who want immediate AI leverage in day-to-day clinical work. It covers prompting, notes, summaries, patient communication, workflow implementation, and safe adoption habits. Delivery is cohort-based with AI tutor support and mentor review. Status: Applications Active.`
+    });
+  }
+
+  const topCourses = rows
+    .slice(0, 3)
+    .map((row) => `${clean(row.title || '', 220)} (${clean(row.slug || '', 120)})`)
+    .filter(Boolean);
+  if (topCourses.length > 0) {
+    items.push({
+      id: 'default-course-list',
+      question: 'Which courses are currently active or open?',
+      answer: `Current focus includes: ${topCourses.join('; ')}. Ask the counselor for fee, dates, and prerequisites by course slug.`
+    });
+  }
+
+  items.push({
+    id: 'default-workflow',
+    question: 'How does enrollment to certificate flow work?',
+    answer:
+      'Flow: register -> payment confirmation -> learner access unlock -> cohort sessions + AI tutor support -> assignments and mentor reviews -> progress completion -> certificate issuance and verification.'
+  });
+
+  items.push({
+    id: 'default-refresher',
+    question: 'Is there a beginner or refresher course before the full cohorts?',
+    answer:
+      'Yes. GreyBrain offers an AI Refresher for Doctors as a short interactive orientation for clinicians and medical colleges. It unlocks after registration, explains prompt, context, model behavior, review, and output, and then helps learners choose the right full pathway: Practice, Publish, or Build.'
+  });
+
+  items.push({
+    id: 'default-certificate',
+    question: 'Is GreyBrain Academy certified by IIHMRB?',
+    answer:
+      'GreyBrain Academy publicly states IIHMRB certification recognition for eligible program completion. Learners complete modules and assignments, pass mentor review, and then receive certificate issuance and verification.'
+  });
+
+  items.push({
+    id: 'default-which-path',
+    question: 'Which path should I choose based on outcomes?',
+    answer:
+      'Path 1 is best for clinical productivity in daily practice, Path 2 is best for research and publication acceleration, and Path 3 is best for venture-building and implementation. All tracks follow the same cohort + AI tutor + assignment + mentor-review structure.'
+  });
+
+  return items.slice(0, Math.max(1, Math.min(10, Number(limit || 5))));
+}
+
+function buildCounselorGuidanceContext(faqs = []) {
+  const base = [
+    'Program USP: cohort-based learning with live mentor guidance.',
+    'Program USP: AI tutor support is available between sessions for study and assignment help.',
+    'Program USP: completion requires assignments and mentor review before certificate issuance.',
+    'Program trust signal: GreyBrain Academy includes IIHMRB certification recognition for eligible program completion.',
+    'Path 1 outcome: better clinical productivity across notes, communication, and workflow execution.',
+    'Path 2 outcome: stronger research execution from hypothesis to manuscript.',
+    'Path 3 outcome: venture readiness from problem validation to pilot and capstone.'
+  ];
+  const faqLines = Array.isArray(faqs)
+    ? faqs
+        .map((item) => {
+          const question = clean(item?.question || '', 220);
+          const answer = clean(item?.answer || '', 700);
+          if (!question || !answer) return '';
+          return `FAQ: ${question}\nAnswer: ${answer}`;
+        })
+        .filter(Boolean)
+    : [];
+  return [...base, ...faqLines].join('\n');
+}
+
 async function upsertKnowledgeDocuments(env, docs) {
   if (!env.DEEPLEARN_INDEX || !env.AI || !Array.isArray(docs) || docs.length === 0) {
     return { chunkCount: 0, upserted: 0 };
@@ -5849,14 +9100,14 @@ async function upsertKnowledgeDocuments(env, docs) {
     for (let idx = 0; idx < chunkTexts.length; idx += 1) {
       const chunkText = clean(chunkTexts[idx], 2000);
       if (!chunkText) continue;
-      const rawId = `${doc.document_id || 'doc'}:${idx}:${chunkText}`;
-      const hash = await sha256Hex(rawId);
+      const stableHash = await sha256Hex(`${doc.document_id || 'doc'}:${idx}`);
       chunks.push({
-        vector_id: `kb_${hash.slice(0, 40)}`,
+        vector_id: `kb_${stableHash.slice(0, 40)}`,
         document_id: clean(doc.document_id || '', 120),
         type: clean(doc.type || 'content', 32),
         course_id: clean(doc.course_id || '', 64),
         module_id: clean(doc.module_id || '', 64),
+        chunk_index: idx,
         chunk_text: chunkText
       });
     }
@@ -5881,6 +9132,7 @@ async function upsertKnowledgeDocuments(env, docs) {
         type: chunk.type,
         course_id: chunk.course_id,
         module_id: chunk.module_id,
+        chunk_index: chunk.chunk_index,
         chunk_text: chunk.chunk_text,
         document_id: chunk.document_id,
         ingested_at_ms: Date.now()
@@ -5892,6 +9144,42 @@ async function upsertKnowledgeDocuments(env, docs) {
   }
 
   return { chunkCount: chunks.length, upserted };
+}
+
+function selectBestKnowledgeMatches(matches, limit = 6) {
+  const bestByChunk = new Map();
+  for (const match of matches || []) {
+    const metadata = match?.metadata || {};
+    const chunkText = clean(metadata.chunk_text || '', 2000);
+    if (!chunkText) continue;
+
+    const docId = clean(metadata.document_id || '', 120);
+    const chunkIndex = Number.isFinite(Number(metadata.chunk_index)) ? Number(metadata.chunk_index) : 0;
+    const fallbackKeySeed = clean(String(match?.id || ''), 120) || chunkText.slice(0, 120);
+    const key = docId ? `${docId}:${chunkIndex}` : fallbackKeySeed;
+    const score = Number(match?.score || 0);
+    const ingestedAt = Number(metadata.ingested_at_ms || 0);
+    const existing = bestByChunk.get(key);
+    if (!existing) {
+      bestByChunk.set(key, match);
+      continue;
+    }
+
+    const existingScore = Number(existing?.score || 0);
+    const existingIngestedAt = Number(existing?.metadata?.ingested_at_ms || 0);
+    // For the same logical doc chunk, prefer newest ingestion first to avoid stale content.
+    if (ingestedAt > existingIngestedAt || (ingestedAt === existingIngestedAt && score > existingScore)) {
+      bestByChunk.set(key, match);
+    }
+  }
+
+  return Array.from(bestByChunk.values())
+    .sort((a, b) => {
+      const scoreDelta = Number(b?.score || 0) - Number(a?.score || 0);
+      if (scoreDelta !== 0) return scoreDelta;
+      return Number(b?.metadata?.ingested_at_ms || 0) - Number(a?.metadata?.ingested_at_ms || 0);
+    })
+    .slice(0, Math.max(1, limit));
 }
 
 function chunkTextForEmbedding(text, maxChars = 900) {
@@ -5935,12 +9223,14 @@ async function writeGrowthEvent(env, cf, event) {
   const isLikelyBot = botScore >= 0 && botScore < 30 ? 1 : 0;
   const nowMs = Date.now();
 
+  const metadataJson = JSON.stringify(parseJsonObjectOrDefault(event.metadata || {}, {}));
+
   if (env.DEEPLEARN_DB) {
     const insertStmt = env.DEEPLEARN_DB.prepare(
       `INSERT INTO lead_events (
         event_name, webinar_id, source, country, is_likely_bot, lead_id, session_id,
-        path, email_hash, value, bot_score, asn, created_at_ms
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        path, email_hash, value, bot_score, asn, metadata_json, created_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       event.eventName,
       event.webinarId,
@@ -5954,6 +9244,7 @@ async function writeGrowthEvent(env, cf, event) {
       event.value ?? 1,
       botScore,
       asn,
+      metadataJson,
       nowMs
     );
 
@@ -5969,7 +9260,7 @@ async function writeGrowthEvent(env, cf, event) {
   if (env.LEAD_ANALYTICS?.writeDataPoint) {
     env.LEAD_ANALYTICS.writeDataPoint({
       indexes: [event.eventName, event.webinarId, event.source, country, String(isLikelyBot)],
-      blobs: [event.leadId || '', event.sessionId || '', event.path || '', event.emailHash || ''],
+      blobs: [event.leadId || '', event.sessionId || '', event.path || '', event.emailHash || '', metadataJson],
       doubles: [nowMs, event.value ?? 1, botScore, asn]
     });
   }
@@ -6105,6 +9396,16 @@ async function recordOpsAlert(
 }
 
 async function sendAlertNotification(env, alertPayload) {
+  const tasks = [
+    sendAlertWebhookNotification(env, alertPayload),
+    sendAlertTelegramNotification(env, alertPayload),
+    sendAlertEmailNotification(env, alertPayload)
+  ];
+
+  await Promise.allSettled(tasks);
+}
+
+async function sendAlertWebhookNotification(env, alertPayload) {
   const webhookUrl = clean(env.ALERT_WEBHOOK_URL || '', 600);
   if (!webhookUrl) return;
 
@@ -6134,6 +9435,107 @@ async function sendAlertNotification(env, alertPayload) {
     });
   } catch {
     // Do not recurse by alerting failures in the alert channel itself.
+  }
+}
+
+async function sendAlertTelegramNotification(env, alertPayload) {
+  const botToken = clean(env.ALERT_TELEGRAM_BOT_TOKEN || '', 300);
+  const chatId = clean(env.ALERT_TELEGRAM_CHAT_ID || '', 80);
+  if (!botToken || !chatId) return;
+
+  const threadIdRaw = Number(clean(env.ALERT_TELEGRAM_TOPIC_ID || '', 20));
+  const threadId = Number.isFinite(threadIdRaw) && threadIdRaw > 0 ? Math.floor(threadIdRaw) : 0;
+  const detailsSnippet = clean(JSON.stringify(alertPayload?.details || {}), 1200);
+  const lines = [
+    `[DeepLearn Alert] ${String(alertPayload?.severity || 'warning').toUpperCase()}`,
+    `source: ${clean(alertPayload?.source || 'worker', 80)}`,
+    `event: ${clean(alertPayload?.event_type || 'unknown', 80)}`,
+    `message: ${clean(alertPayload?.message || '', 240)}`,
+    `id: ${clean(alertPayload?.id || '', 80)}`
+  ];
+  if (detailsSnippet) {
+    lines.push(`details: ${detailsSnippet}`);
+  }
+  const text = clean(lines.join('\n'), 3900);
+
+  const payload = {
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: true
+  };
+  if (threadId > 0) {
+    payload.message_thread_id = threadId;
+  }
+
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+  } catch {
+    // Swallow notification errors to avoid cascading failures.
+  }
+}
+
+async function sendAlertEmailNotification(env, alertPayload) {
+  const recipients = Array.from(parseCsvSet(env.ALERT_EMAIL_TO || ''))
+    .map((entry) => clean(entry, 220).toLowerCase())
+    .filter((entry) => isValidEmail(entry));
+  if (recipients.length === 0) return;
+
+  const fromEmail = clean(env.ALERT_EMAIL_FROM || 'alerts@med.greybrain.ai', 220).toLowerCase();
+  if (!isValidEmail(fromEmail)) return;
+  const fromName = clean(env.ALERT_EMAIL_FROM_NAME || 'DeepLearn Ops Alerts', 120) || 'DeepLearn Ops Alerts';
+  const subjectPrefix = clean(env.ALERT_EMAIL_SUBJECT_PREFIX || '[DeepLearn Alert]', 80) || '[DeepLearn Alert]';
+  const severity = String(alertPayload?.severity || 'warning').toUpperCase();
+  const eventType = clean(alertPayload?.event_type || 'unknown', 80);
+  const subject = `${subjectPrefix} ${severity} ${eventType}`.slice(0, 180);
+
+  const textBody = [
+    `Alert ID: ${clean(alertPayload?.id || '', 80)}`,
+    `Severity: ${severity}`,
+    `Source: ${clean(alertPayload?.source || 'worker', 80)}`,
+    `Event: ${eventType}`,
+    `Message: ${clean(alertPayload?.message || '', 500)}`,
+    '',
+    'Details:',
+    clean(JSON.stringify(alertPayload?.details || {}, null, 2), 6000),
+    '',
+    `Generated at: ${new Date().toISOString()}`
+  ].join('\n');
+
+  const body = {
+    personalizations: [
+      {
+        to: recipients.map((email) => ({ email }))
+      }
+    ],
+    from: {
+      email: fromEmail,
+      name: fromName
+    },
+    subject,
+    content: [
+      {
+        type: 'text/plain',
+        value: textBody
+      }
+    ]
+  };
+
+  try {
+    await fetch('https://api.mailchannels.net/tx/v1/send', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+  } catch {
+    // Swallow notification errors to avoid cascading failures.
   }
 }
 
@@ -6419,6 +9821,26 @@ async function activatePaymentRegistration(c, payload, { sourcePath }) {
         nowMs
       });
       await ensureCohortBootstrapUnlock(c.env.DEEPLEARN_DB, target.cohortId, target.courseId, nowMs);
+
+      // Enqueue onboarding email
+      try {
+        const cohortRow = await c.env.DEEPLEARN_DB.prepare('SELECT name FROM cohorts WHERE id = ?').bind(target.cohortId).first();
+        const cohortName = clean(cohortRow?.name || 'Upcoming Batch', 120);
+
+        if (c.env.ONBOARDING_QUEUE) {
+          await c.env.ONBOARDING_QUEUE.send({
+            email,
+            fullName,
+            userId,
+            courseId: target.courseId,
+            courseTitle: target.courseTitle,
+            cohortId: target.cohortId,
+            cohortName
+          });
+        }
+      } catch (err) {
+        console.error('Failed to enqueue onboarding email:', err);
+      }
     }
   }
 
@@ -6826,6 +10248,445 @@ function generateLabRunOutput({ pathKey, toolType, modelName, input }) {
     }
   };
 }
+// =============================================================================
+// DAIY KEYWORD ROTATION — for daily variety of doctor-focused prompts
+// =============================================================================
+const DAIY_KEYWORDS = [
+  'Systematic Review',
+  'Patient Education Letter',
+  'Clinical Audit',
+  'Conference Poster Abstract',
+  'LinkedIn Post for Doctors',
+  'Research Protocol Outline',
+  'Patient FAQ Sheet',
+  'Grand Rounds Slide Deck Outline',
+  'RCT Methodology Summary',
+  'Startup Pitch for Clinician-Founders',
+  'Literature Review',
+  'Case Report Draft',
+  'Meta-Analysis Summary',
+  'Social Media Thread on Clinical AI',
+];
+
+// =============================================================================
+// generateModelSpotlightDraft — HuggingFace trending → AI revolution paragraph
+// =============================================================================
+async function generateModelSpotlightDraft(env, { apiKey, provider = 'gemini', force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `model-spotlight-${dateSlug}`;
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `Model spotlight already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Fetch top HuggingFace trending models
+  let models = [];
+  try {
+    const hfUrl = env.HUGGINGFACE_TRENDING_URL || 'https://huggingface.co/api/models?sort=trending&limit=10&full=true';
+    const hfResp = await fetch(hfUrl, { headers: { 'Accept': 'application/json' } });
+    if (hfResp.ok) models = await hfResp.json();
+  } catch { models = []; }
+  if (!Array.isArray(models) || models.length === 0) {
+    throw new Error('Failed to fetch HuggingFace trending models.');
+  }
+  const topModels = models.slice(0, 5).map((m) => ({
+    id: m?.id || m?.modelId || '',
+    pipeline: m?.pipeline_tag || 'general',
+    downloads: Number(m?.downloads || 0),
+    likes: Number(m?.likes || 0),
+  })).filter((m) => m.id);
+
+  if (topModels.length === 0) throw new Error('No valid HuggingFace models found.');
+
+  const modelList = topModels.map((m, i) => `${i + 1}. ${m.id} (task: ${m.pipeline}, downloads: ${m.downloads}, likes: ${m.likes})`).join('\n');
+
+  const prompt = `You are the Editor of GreyBrain Academy, writing for doctors who are new to AI.
+Today's date: ${publishDate}
+
+Here are today's top trending models on HuggingFace:
+${modelList}
+
+Choose the SINGLE most clinically interesting or surprising model from this list.
+Write a 160–200 word paragraph in "AI Revolution" style — think: "this is what's changing medicine right now."
+Tone: Optimistic but precise. No hype. No emojis. Doctor-to-doctor.
+Explain: what it does, why it matters clinically, what doctors should watch for.
+
+Return strict JSON only (no markdown) with keys:
+{
+  "hf_model_id": string,        // The model id, e.g. "google/gemma-2-27b-it"
+  "hf_model_author": string,    // The author part
+  "hf_model_pipeline": string,  // pipeline_tag value
+  "title": string,              // e.g. "Model Spotlight: Gemma 2 27B — Reasoning at the Bedside"
+  "summary": string,            // Under 220 chars
+  "content_markdown": string,   // The 160-200 word AI revolution paragraph
+  "social_media_markdown": string, // A crisp, hook-heavy social media post (300-400 chars, bullet points, emoji-friendly)
+  "tags": string[]              // 3-5 lowercase tags
+} `;
+
+  let result;
+  try {
+    const resolved = resolveContentGenerationProvider(provider);
+    result = await callContentModelWithFallback({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+  } catch (e) {
+    throw new Error(`Model Spotlight AI call failed: ${e.message}`);
+  }
+
+  const p = result?.payload || {};
+  if (!p.title || !p.content_markdown || !p.hf_model_id) {
+    throw new Error('Model Spotlight AI response missing required fields.');
+  }
+
+  const postId = existing?.id || crypto.randomUUID();
+  const hfResolvedAuthor = p.hf_model_author || (p.hf_model_id.includes('/') ? p.hf_model_id.split('/')[0] : '');
+  const hfModelDownloads = topModels.find((m) => m.id === p.hf_model_id)?.downloads || 0;
+  const hfModelLikes = topModels.find((m) => m.id === p.hf_model_id)?.likes || 0;
+
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, social_media_markdown, path, content_type, tags_json, status,
+      hf_model_id, hf_model_author, hf_model_pipeline, hf_model_downloads, hf_model_likes,
+      model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, 'productivity', 'news', ?, 'draft', ?, ?, ?, ?, ?, ?, 'ms-v2', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary, content_markdown=excluded.content_markdown,
+      social_media_markdown=excluded.social_media_markdown, hf_model_id=excluded.hf_model_id, hf_model_author=excluded.hf_model_author,
+      hf_model_pipeline=excluded.hf_model_pipeline, hf_model_downloads=excluded.hf_model_downloads,
+      hf_model_likes=excluded.hf_model_likes, status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary, 240), clean(p.content_markdown, 8000), clean(p.social_media_markdown || '', 2000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
+    clean(p.hf_model_id, 160), clean(hfResolvedAuthor, 80),
+    clean(p.hf_model_pipeline || topModels[0]?.pipeline || 'general', 80),
+    hfModelDownloads, hfModelLikes,
+    result.model || 'unknown', nowMs, nowMs, nowMs
+  ).run();
+  await recordContentRun(db, { runType: 'model_spotlight', status: 'success', message: `Model spotlight for ${publishDate}`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title, hf_model_id: p.hf_model_id };
+}
+
+// =============================================================================
+// generateSpacesSpotlightDraft — Trending HF Spaces for Healthcare
+// =============================================================================
+async function generateSpacesSpotlightDraft(env, { apiKey, provider = 'gemini', force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `space-spotlight-${dateSlug}`;
+
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `Spaces spotlight already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Fetch trending spaces with "medical" or "healthcare" from HF
+  const hfUrl = 'https://huggingface.co/api/spaces?search=medical%20healthcare&sort=trendingScore&direction=-1&limit=10';
+  let topSpaces = [];
+  try {
+    const resp = await fetch(hfUrl);
+    if (resp.ok) {
+      const data = await resp.json();
+      topSpaces = data.map(s => ({
+        id: s.id,
+        author: s.author,
+        sdk: s.sdk,
+        likes: s.likes,
+        subdomain: s.subdomain
+      })).filter(s => s.id);
+    }
+  } catch (e) {}
+
+  if (topSpaces.length === 0) {
+    // Try a broader search if medical is empty
+    const altUrl = 'https://huggingface.co/api/spaces?sort=trendingScore&direction=-1&limit=5';
+    try {
+      const resp = await fetch(altUrl);
+      if (resp.ok) {
+        const data = await resp.json();
+        topSpaces = data.map(s => ({ id: s.id, author: s.author, sdk: s.sdk, likes: s.likes, subdomain: s.subdomain }));
+      }
+    } catch (e) {}
+  }
+
+  if (topSpaces.length === 0) throw new Error('No valid HuggingFace spaces found.');
+
+  const spacesList = topSpaces.map((s, i) => `${i + 1}. ${s.id} (sdk: ${s.sdk}, likes: ${s.likes})`).join('\n');
+
+  const prompt = `You are the Lab Director at GreyBrain Academy, curating interactive AI tools (Spaces) for doctors.
+Today's date: ${publishDate}
+
+Here are today's trending interactive apps (Spaces) on HuggingFace:
+${spacesList}
+
+Choose the SINGLE most interactive or useful space for a doctor to play with.
+Write a 160–200 word paragraph in "AI Revolution" style — explain how this specific interactive tool helps a doctor understand AI capabilities.
+Tone: Curious, technical, encouraging. No emojis. Doctor-to-doctor.
+
+Return strict JSON only (no markdown):
+{
+  "hf_space_id": string,         // e.g. "HuggingFaceH4/zephyr-chat"
+  "hf_space_author": string,
+  "hf_space_sdk": string,
+  "title": string,               // e.g. "Spaces Spotlight: Interactive Radiology Assistant"
+  "summary": string,             // Hook sentence
+  "content_markdown": string,    // The 160-200 word paragraph
+  "social_media_markdown": string, // A crisp social media post with a link to the space (300-400 chars)
+  "tags": string[]
+}`;
+
+  let result;
+  try {
+    const resolved = resolveContentGenerationProvider(provider);
+    result = await callContentModelWithFallback({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+  } catch (e) {
+    throw new Error(`Spaces Spotlight AI call failed: ${e.message}`);
+  }
+
+  const p = result?.payload || {};
+  if (!p.title || !p.content_markdown || !p.hf_space_id) throw new Error('Spaces Spotlight AI response missing required fields.');
+
+  const postId = existing?.id || crypto.randomUUID();
+  const spaceInfo = topSpaces.find(s => s.id === p.hf_space_id) || {};
+
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, social_media_markdown, path, content_type, tags_json, status,
+      hf_space_id, hf_space_author, hf_space_sdk, hf_space_likes, hf_space_domain,
+      model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, 'productivity', 'news', ?, 'draft', ?, ?, ?, ?, ?, ?, 'ss-v1', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary, content_markdown=excluded.content_markdown,
+      social_media_markdown=excluded.social_media_markdown, hf_space_id=excluded.hf_space_id,
+      status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary, 240), clean(p.content_markdown, 8000), clean(p.social_media_markdown || '', 2000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
+    clean(p.hf_space_id, 160), clean(p.hf_space_author || spaceInfo.author || '', 80),
+    clean(p.hf_space_sdk || spaceInfo.sdk || '', 80), spaceInfo.likes || 0, clean(spaceInfo.subdomain || '', 160),
+    result.model || 'unknown', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'space_spotlight', status: 'success', message: `Spaces spotlight for ${publishDate}`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title, hf_space_id: p.hf_space_id };
+}
+
+// =============================================================================
+// generateDaiyDraft — Doctor keywords → copiable prompt + preview + model links
+// =============================================================================
+const DAIY_SUGGESTED_MODELS = [
+  { name: 'Claude', url: 'https://claude.ai', note: 'Excellent for long documents' },
+  { name: 'Gemini', url: 'https://gemini.google.com', note: 'Google Search grounded' },
+  { name: 'Perplexity', url: 'https://perplexity.ai', note: 'Real-time web search' },
+  { name: 'Qwen', url: 'https://chat.qwen.ai', note: 'Open source, strong reasoning' },
+  { name: 'MiniMax', url: 'https://chat.minimax.io', note: 'Long context specialist' },
+];
+
+async function generateDaiyDraft(env, { apiKey, provider = 'gemini', force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `daiy-${dateSlug}`;
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `DAIY draft already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Rotate keyword by day-of-year
+  const dayOfYear = Math.floor((nowMs - new Date(`${publishDate.slice(0, 4)}-01-01`).getTime()) / 86400000);
+  const keyword = DAIY_KEYWORDS[dayOfYear % DAIY_KEYWORDS.length];
+
+  const prompt = `You are the Prompt Curator at GreyBrain Academy, creating daily AI prompts for busy doctors.
+Today's topic: "${keyword}"
+Today's date: ${publishDate}
+
+Write one exceptional, copy-paste-ready prompt that:
+- Is 50–80 words long
+- Results in a highly useful clinical output (not generic)
+- Any doctor can use immediately by pasting into Claude, Gemini, Perplexity, Qwen, or MiniMax
+- Assumes the doctor has a clinical document/paper/case to work with
+
+Return strict JSON only (no markdown):
+{
+  "title": string,             // e.g. "Today's DAIY Prompt: Systematic Review"
+  "summary": string,           // Under 180 chars, hook sentence
+  "prompt_text": string,       // The 50-80 word prompt doctors should copy
+  "prompt_output_preview": string,  // 2-3 sentences describing what kind of answer they'll get
+  "tags": string[]
+}`;
+
+  let result;
+  try {
+    const resolved = resolveContentGenerationProvider(provider);
+    result = await callContentModelWithFallback({ env, provider: resolved, apiKey, modelOverride: '', prompt });
+  } catch (e) {
+    throw new Error(`DAIY AI call failed: ${e.message}`);
+  }
+
+  const p = result?.payload || {};
+  if (!p.prompt_text || !p.title) throw new Error('DAIY AI response missing required fields.');
+
+  const postId = existing?.id || crypto.randomUUID();
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, path, content_type, tags_json,
+      prompt_text, prompt_output_preview, prompt_keyword, suggested_models_json,
+      status, model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, 'productivity', 'daiy_prompt', ?, ?, ?, ?, ?, 'draft', ?, 'daiy-v1', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary,
+      content_markdown=excluded.content_markdown,
+      prompt_text=excluded.prompt_text, prompt_output_preview=excluded.prompt_output_preview,
+      prompt_keyword=excluded.prompt_keyword, suggested_models_json=excluded.suggested_models_json,
+      status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary || '', 240),
+    clean(p.prompt_output_preview || '', 1000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : []),
+    clean(p.prompt_text, 1200), clean(p.prompt_output_preview || '', 1000),
+    clean(keyword, 80), JSON.stringify(DAIY_SUGGESTED_MODELS),
+    result.model || 'unknown', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'daiy_prompt', status: 'success', message: `DAIY prompt for ${publishDate} (${keyword})`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title, keyword };
+}
+
+// =============================================================================
+// generateHealthNewsDraft — Gemini Search Grounding → AI healthcare news digest
+// =============================================================================
+async function generateHealthNewsDraft(env, { apiKey, force = false } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) throw new Error('D1 is not configured.');
+
+  const nowMs = Date.now();
+  const publishDate = isoDateInTimezone(nowMs, 'Asia/Kolkata');
+  const dateSlug = publishDate.replace(/-/g, '');
+  const slug = `health-news-${dateSlug}`;
+  const existing = await db.prepare('SELECT id, status FROM content_posts WHERE slug = ?').bind(slug).first();
+  if (existing && !force) {
+    return { skipped: true, reason: `Health news already exists for ${publishDate}`, post_id: existing.id, status: existing.status };
+  }
+
+  // Use Gemini with google_search grounding to fetch real-time news
+  const prompt = `You are the Industry Intelligence Editor at GreyBrain Academy, curating daily AI healthcare news for doctor-founders.
+Today's date: ${publishDate}
+
+Search today's news on: AI healthcare startups, clinical AI FDA clearances, digital health funding rounds, AI in diagnostics, health tech entrepreneurship, and AI regulation in medicine.
+
+Select the 3 most important stories a doctor-founder should know today. For each story provide:
+- A crisp, precise headline (not clickbait)
+- A 2-sentence summary that explains: what happened + why it matters for clinician-entrepreneurs
+- The primary source/publication name
+
+Return strict JSON only (no markdown):
+{
+  "title": string,             // e.g. "AI Health Intelligence — March 10"
+  "summary": string,           // Under 220 chars
+  "content_markdown": string,  // Markdown with 3 news items, each with ## headline, summary, Source: X
+  "social_media_markdown": string, // A crisp, hook-heavy social media summary of these 3 stories (300-400 chars, bullet points, emoji-friendly)
+  "tags": string[]
+}`;
+
+  let result;
+  try {
+    // Always use Gemini for health news (Google Search grounding)
+    result = await callGeminiForDailyContentWithSearch({ apiKey, model: 'gemini-2.0-flash', prompt });
+  } catch (e) {
+    // Fallback to standard Chain (Groq/WorkerAI) if search fails
+    try {
+      result = await callContentModelWithFallback({ env, provider: 'groq', apiKey, modelOverride: '', prompt });
+    } catch (e2) {
+      throw new Error(`Health News AI fallback chain failed: ${e2.message}`);
+    }
+  }
+
+  const p = result?.payload || {};
+  if (!p.title || !p.content_markdown) throw new Error('Health News AI response missing required fields.');
+
+  const postId = existing?.id || crypto.randomUUID();
+  await db.prepare(
+    `INSERT INTO content_posts (
+      id, slug, title, summary, content_markdown, social_media_markdown, path, content_type, tags_json,
+      status, model_name, prompt_version, generated_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, 'entrepreneurship', 'health_news', ?, 'draft', ?, 'hn-v2', ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      slug=excluded.slug, title=excluded.title, summary=excluded.summary,
+      content_markdown=excluded.content_markdown, social_media_markdown=excluded.social_media_markdown,
+      status='draft', updated_at_ms=excluded.updated_at_ms`
+  ).bind(
+    postId, slug, clean(p.title, 200), clean(p.summary || '', 240), clean(p.content_markdown, 16000), clean(p.social_media_markdown || '', 2000),
+    JSON.stringify(Array.isArray(p.tags) ? p.tags.slice(0, 6) : ['ai-health', 'entrepreneurship']),
+    result.model || 'gemini-2.0-flash', nowMs, nowMs, nowMs
+  ).run();
+
+  await recordContentRun(db, { runType: 'health_news', status: 'success', message: `Health news for ${publishDate}`, postId });
+  return { skipped: false, post_id: postId, slug, title: p.title };
+}
+
+// Gemini with Google Search Grounding (Dynamic Retrieval)
+async function callGeminiForDailyContentWithSearch({ apiKey, model, prompt }) {
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        generationConfig: { temperature: 0.2, responseMimeType: 'application/json' },
+        tools: [{ googleSearch: {} }],
+        systemInstruction: {
+          parts: [{ text: 'You are a clinically cautious editorial assistant. Return valid JSON only.' }]
+        },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      })
+    }
+  );
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Gemini Search Grounding failed: ${details || response.status}`);
+  }
+  const payload = await response.json();
+  const content = Array.isArray(payload?.candidates?.[0]?.content?.parts)
+    ? payload.candidates[0].content.parts.map((part) => String(part?.text || '')).join('\n').trim()
+    : '';
+  if (!content) throw new Error('Gemini Search returned empty content.');
+  return { payload: parseJsonObject(content), model };
+}
+
+async function fetchAnalyticsInsightsStr(db) {
+  try {
+    const rows = await db.prepare(
+      `SELECT tags_json FROM content_posts WHERE status = 'published' AND tags_json IS NOT NULL`
+    ).all();
+    const tagCounts = {};
+    if (rows.success && rows.results) {
+      for (const row of rows.results) {
+        try {
+          const tags = JSON.parse(row.tags_json || '[]');
+          for (const t of tags) {
+            if (t) tagCounts[t] = (tagCounts[t] || 0) + 1;
+          }
+        } catch(e){}
+      }
+    }
+    const sortedTags = Object.entries(tagCounts)
+      .sort((a,b) => b[1] - a[1])
+      .map(e => e[0])
+      .slice(0, 5);
+    return sortedTags.length > 0 ? `Trending topics to cover if relevant: ${sortedTags.join(', ')}` : '';
+  } catch (e) {
+    return '';
+  }
+}
 
 async function runScheduledContentGeneration(env, cron) {
   if (!env.DEEPLEARN_DB) {
@@ -6834,7 +10695,43 @@ async function runScheduledContentGeneration(env, cron) {
 
   try {
     await ensureOpsSchema(env.DEEPLEARN_DB);
-    await generateDailyContentDraft(env, { mode: `scheduled:${cron || 'daily'}`, force: false, apiKeyOverride: '' });
+    // Get server-side API key for scheduled cron runs (coordinator BYOK used for on-demand only)
+    const scheduledApiKey = env.GROQ_API_KEY || env.GEMINI_API_KEY || '';
+    const geminiKey = env.GEMINI_API_KEY || scheduledApiKey;
+
+    const insights = await fetchAnalyticsInsightsStr(env.DEEPLEARN_DB);
+
+    // Core daily brief (uses existing logic — requires BYOK, skip if no key configured)
+    if (scheduledApiKey) {
+      await generateDailyContentDraft(env, { mode: `scheduled:${cron || 'daily'}`, force: false, apiKeyOverride: scheduledApiKey, insights });
+    }
+
+    // NEW: Model Spotlight
+    if (scheduledApiKey) {
+      await generateModelSpotlightDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: Spaces Spotlight
+    if (scheduledApiKey) {
+      await generateSpacesSpotlightDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: Health News (Uses Search Grounding)
+    if (geminiKey) {
+      await generateHealthNewsDraft(env, { apiKey: geminiKey, force: false });
+    }
+
+    // NEW: DAIY prompt (uses Groq or Gemini)
+    if (scheduledApiKey) {
+      await generateDaiyDraft(env, { apiKey: scheduledApiKey, provider: env.GEMINI_API_KEY ? 'gemini' : 'groq', force: false });
+    }
+
+    // NEW: Health News — always uses Gemini with Search Grounding
+    if (geminiKey) {
+      await generateHealthNewsDraft(env, { apiKey: geminiKey, force: false });
+    }
+
+    await autoPublishExpiredDrafts(env, { runType: `scheduled:auto-publish:${cron || 'hourly'}` });
   } catch (error) {
     await recordContentRun(env.DEEPLEARN_DB, {
       runType: 'scheduled',
@@ -6853,7 +10750,56 @@ async function runScheduledContentGeneration(env, cron) {
   }
 }
 
-async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
+async function autoPublishExpiredDrafts(env, { runType = 'auto-publish' } = {}) {
+  const db = env.DEEPLEARN_DB;
+  if (!db) {
+    throw new Error('D1 is not configured.');
+  }
+
+  if (!isContentAutoPublishEnabled(env)) {
+    return {
+      enabled: false,
+      published_count: 0,
+      reason: 'CONTENT_REVIEW_AUTO_PUBLISH is disabled'
+    };
+  }
+
+  const nowMs = Date.now();
+  const reviewWindowMs = resolveContentReviewWindowMs(env);
+  const expiresAtMs = nowMs - reviewWindowMs;
+
+  const updateResult = await db.prepare(
+    `UPDATE content_posts
+     SET status = 'published',
+         approved_at_ms = COALESCE(approved_at_ms, ?),
+         published_at_ms = ?,
+         updated_at_ms = ?
+     WHERE status = 'draft'
+       AND generated_at_ms <= ?`
+  )
+    .bind(nowMs, nowMs, nowMs, expiresAtMs)
+    .run();
+
+  const publishedCount = Number(updateResult.meta?.changes || 0);
+  if (publishedCount > 0) {
+    await recordContentRun(db, {
+      runType,
+      status: 'success',
+      message: `auto-published ${publishedCount} draft post(s) after review window`,
+      postId: ''
+    });
+    await triggerPagesDeployHookIfConfigured(env, `auto-publish:${publishedCount}`);
+  }
+
+  return {
+    enabled: true,
+    review_window_minutes: Math.round(reviewWindowMs / 60000),
+    published_count: publishedCount,
+    threshold_generated_before_ms: expiresAtMs
+  };
+}
+
+async function generateDailyContentDraft(env, { mode, force, apiKeyOverride, providerOverride, modelOverride, insights }) {
   const db = env.DEEPLEARN_DB;
   if (!db) {
     throw new Error('D1 is not configured.');
@@ -6881,21 +10827,52 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
     };
   }
 
-  const sourceSnapshot = await fetchClinicalFeedSnapshot();
-  const apiKey = (apiKeyOverride || env.GROQ_API_KEY || '').trim();
+  // Fetch internal news posts instead of calling Medium API
+  const sourceRows = await db.prepare(
+    `SELECT slug, title, published_at_ms 
+     FROM content_posts 
+     WHERE type IN ('news', 'blog') AND status = 'published' 
+     ORDER BY published_at_ms DESC 
+     LIMIT 8`
+  ).all();
+  
+  const sourceSnapshot = (sourceRows.results || []).map(r => ({
+    title: r.title,
+    url: `https://med.greybrain.ai/briefs/${r.slug}`,
+    date: r.published_at_ms > 0 ? new Date(r.published_at_ms).toISOString().slice(0, 10) : ''
+  }));
+  const apiKey = (apiKeyOverride || '').trim();
   if (!apiKey) {
-    throw new Error('Missing Groq API key. Provide groq_key or set GROQ_API_KEY in worker secrets.');
+    throw new Error('Missing BYOK API key. Provide api_key for Gemini, Claude, or Grok generation.');
   }
 
-  const baseUrl = resolveGroqBaseUrl(env);
-  const model = resolveGroqModel(env, baseUrl);
-  const prompt = buildDailyPrompt({ publishDate, sourceSnapshot });
-  const generationResult = await callGroqForDailyContent({
+  const prompt = buildDailyPrompt({ publishDate, sourceSnapshot, insights });
+
+  let contextText = '';
+  if (env.DEEPLEARN_INDEX && env.AI && sourceSnapshot.length > 0) {
+    try {
+      const queryText = sourceSnapshot.map(s => s.title).join(' ');
+      const embeddingResponse = await env.AI.run('@cf/baai/bge-base-en-v1.5', { text: [queryText] });
+      const vector = embeddingResponse.data[0];
+      const matchResult = await env.DEEPLEARN_INDEX.query(vector, { topK: 3, returnMetadata: true });
+      if (matchResult.matches && matchResult.matches.length > 0) {
+        contextText = matchResult.matches
+          .filter(m => m.metadata && m.metadata.text)
+          .map(m => m.metadata.text)
+          .join('\\n\\n');
+      }
+    } catch (e) {
+      console.error('Vectorize query failed:', e);
+    }
+  }
+
+  const generationResult = await callContentModelWithFallback({
     env,
+    provider: resolveContentGenerationProvider(providerOverride || 'groq'),
     apiKey,
-    baseUrl,
-    model,
-    prompt
+    modelOverride: modelOverride || '',
+    prompt,
+    context: contextText
   });
   const normalized = validateGeneratedContent(generationResult.payload, sourceSnapshot);
 
@@ -6904,17 +10881,29 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
   const sourceUrls = normalized.sources.map((source) => source.url);
   const tags = normalized.tags.length > 0 ? normalized.tags : ['clinical-ai', 'greybrain-daily'];
 
+  const r2AssetKey = `daily/${dateSlug}-${postId}.json`;
+  if (env.DEEPLEARN_ASSETS) {
+    try {
+      await env.DEEPLEARN_ASSETS.put(r2AssetKey, JSON.stringify(normalized, null, 2), {
+        httpMetadata: { contentType: 'application/json' }
+      });
+    } catch (err) {
+      console.error('Failed to save asset to R2:', err);
+    }
+  }
+
   const upsertResult = await db.prepare(
     `INSERT INTO content_posts (
-      id, slug, title, summary, content_markdown, path, tags_json, source_urls_json, model_name,
-      prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?, ?)
+      id, slug, title, summary, content_markdown, path, content_type, tags_json, source_urls_json, model_name,
+      prompt_version, status, generated_at_ms, approved_at_ms, published_at_ms, created_at_ms, updated_at_ms, r2_asset_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, NULL, NULL, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       slug = excluded.slug,
       title = excluded.title,
       summary = excluded.summary,
       content_markdown = excluded.content_markdown,
       path = excluded.path,
+      content_type = excluded.content_type,
       tags_json = excluded.tags_json,
       source_urls_json = excluded.source_urls_json,
       model_name = excluded.model_name,
@@ -6923,7 +10912,8 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
       generated_at_ms = excluded.generated_at_ms,
       approved_at_ms = NULL,
       published_at_ms = NULL,
-      updated_at_ms = excluded.updated_at_ms`
+      updated_at_ms = excluded.updated_at_ms,
+      r2_asset_key = excluded.r2_asset_key`
   )
     .bind(
       postId,
@@ -6932,13 +10922,15 @@ async function generateDailyContentDraft(env, { mode, force, apiKeyOverride }) {
       normalized.summary,
       normalized.content_markdown,
       normalized.path,
+      'daily_brief',
       JSON.stringify(tags),
       JSON.stringify(sourceUrls),
       generationResult.model,
       DAILY_PROMPT_VERSION,
       nowMs,
       nowMs,
-      nowMs
+      nowMs,
+      r2AssetKey
     )
     .run();
 
@@ -6974,43 +10966,166 @@ async function recordContentRun(db, { runType, status, message, postId }) {
     .run();
 }
 
-function buildDailyPrompt({ publishDate, sourceSnapshot }) {
-  return `You are writing the "Greybrain.AI Daily — Stay Ahead in Medicine" briefing.
+function buildDailyPrompt({ publishDate, sourceSnapshot, insights }) {
+  const insightsInstruction = insights ? `\nAnalytics Insight: ${insights}\n` : '';
+  return `You are the Content Editor for GreyBrain Academy.
+You are preparing a daily doctor-facing editorial brief for the public academy feed.
 Date: ${publishDate}
-
+${insightsInstruction}
 Output STRICT JSON only (no markdown fences) with keys:
 {
   "title": string,
   "summary": string,
   "path": "productivity" | "research" | "entrepreneurship",
   "content_markdown": string,
+  "social_thread_text": string,
+  "video_script": string,
+  "seo_metadata": string,
   "tags": string[],
   "sources": [{"title": string, "url": string, "date": string}]
 }
 
 Hard rules:
-1) Keep an editorial clinician-to-clinician tone. No hype language.
-2) Do not invent facts or dates. Use only the supplied source items.
-3) Mention uncertainty if evidence is weak.
-4) Keep summary under 220 characters.
-5) In content_markdown include three cards with headings:
+1) Write for doctors, residents, researchers, and clinician-founders. Keep a clinician-to-clinician tone.
+2) No hype language, no emojis, no generic marketing phrasing.
+3) Do not invent facts, dates, benchmarks, or capabilities. Use only the supplied source items.
+4) Mention uncertainty if evidence is weak, early, or not clinically validated.
+5) Keep summary under 220 characters.
+6) Choose the single best path for the piece:
+   - productivity = clinical workflow and practice
+   - research = methods, evidence, manuscripts, publication
+   - entrepreneurship = products, pilots, venture execution
+7) In content_markdown include three cards with headings:
    - Card 1: Model Spotlight
    - Card 2: Clinical AI in Practice
    - Card 3: Do-AI-Yourself (Prompt Artifact)
-6) Card 3 must include this exact prompt block:
+8) Make each card independently useful. The piece should feel like part of an AI wiki for doctors, not a sales newsletter.
+9) Card 1 should explain one model or system clearly: what it does, why it matters, and what doctors should watch out for.
+10) Card 2 should answer: what changed, why it matters, and who should care.
+11) Card 3 must include this exact prompt block:
 "I am a physician.
 Based on the attached clinical study, act as a medical communications expert and create:
 1) A three-point plain-language summary for a patient’s family
 2) Two ‘Did You Know?’ insights derived directly from the study data
 3) A five-step outline suitable for a patient-facing infographic"
-7) Include a final section "Sources" with markdown links only from the provided list.
+12) Include a short section titled "Why this matters to doctors".
+13) Include a final section "Sources" with markdown links only from the provided list.
+14) The title should sound like a premium editorial brief, not like clickbait.
 
 Provided source items:
 ${sourceSnapshot.map((item, idx) => `${idx + 1}. ${item.title} | ${item.url} | ${item.date}`).join('\n')}
 `;
 }
 
-async function callGroqForDailyContent({ env, apiKey, baseUrl, model, prompt }) {
+async function callContentModelWithFallback({ env, provider, apiKey, modelOverride, prompt, context = '' }) {
+  const chain = [];
+  
+  // 1. First attempt with requested provider
+  chain.push({ provider, apiKey, model: modelOverride });
+
+  // 2. Fallback to Gemini if not already tried
+  if (provider !== 'gemini' && apiKey) {
+    chain.push({ provider: 'gemini', apiKey, model: 'gemini-2.0-flash' });
+  }
+
+  // 3. Fallback to Groq if not already tried
+  if (provider !== 'groq' && (apiKey || env.GROQ_API_KEY)) {
+    chain.push({ provider: 'groq', apiKey: apiKey || env.GROQ_API_KEY, model: '' });
+  }
+
+  // 4. Final Fallback to Workers AI (No Key Required)
+  if (env.AI) {
+    chain.push({ provider: 'workers-ai', apiKey: '', model: '@cf/meta/llama-3.1-8b-instruct' });
+  }
+
+  let lastError = null;
+  for (const step of chain) {
+    try {
+      return await callContentModelForDailyContent({
+        env,
+        provider: step.provider,
+        apiKey: step.apiKey,
+        modelOverride: step.model,
+        prompt,
+        context
+      });
+    } catch (e) {
+      lastError = e;
+      console.error(`Provider ${step.provider} failed, trying next... Error: ${e.message}`);
+    }
+  }
+
+  throw new Error(`All providers in fallback chain failed. Last error: ${lastError?.message}`);
+}
+
+async function callContentModelForDailyContent({ env, provider, apiKey, modelOverride, prompt, context = '' }) {
+  if (provider === 'gemini') {
+    return await callGeminiForDailyContent({
+      env,
+      apiKey,
+      model: modelOverride || 'gemini-2.5-pro',
+      prompt,
+      context
+    });
+  }
+
+  if (provider === 'anthropic') {
+    return await callAnthropicForDailyContent({
+      apiKey,
+      model: modelOverride || 'claude-3-7-sonnet-latest',
+      prompt,
+      context
+    });
+  }
+
+  if (provider === 'workers-ai') {
+    return await callWorkersAiForDailyContent({ env, model: modelOverride, prompt, context });
+  }
+
+  const baseUrl =
+    provider === 'xai'
+      ? 'https://api.x.ai/v1'
+      : resolveGroqBaseUrl(env);
+  const model =
+    modelOverride ||
+    (provider === 'xai' ? 'grok-4' : resolveGroqModel(env, baseUrl));
+
+  return await callOpenAiCompatForDailyContent({
+    env,
+    apiKey,
+    baseUrl,
+    model,
+    prompt,
+    providerLabel: provider === 'xai' ? 'xAI' : 'Groq',
+    context
+  });
+}
+
+async function callWorkersAiForDailyContent({ env, model, prompt, context = '' }) {
+  const activeModel = model || '@cf/meta/llama-3.1-8b-instruct';
+  const systemPrompt = context 
+    ? `You are a clinically cautious editorial assistant. Return valid JSON only. Use context:\n\n${context}`
+    : 'You are a clinically cautious editorial assistant. Return valid JSON only.';
+
+  const result = await env.AI.run(activeModel, {
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt }
+    ],
+    temperature: 0.2,
+    max_tokens: 2800
+  });
+
+  const text = (result?.response || result?.result?.response || result?.text || '').trim();
+  if (!text) throw new Error('Workers AI returned empty response.');
+
+  return {
+    payload: parseJsonObject(text),
+    model: activeModel
+  };
+}
+
+async function callOpenAiCompatForDailyContent({ env, apiKey, baseUrl, model, prompt, providerLabel }) {
   let activeBaseUrl = baseUrl;
   let activeModel = model;
 
@@ -7051,7 +11166,7 @@ async function callGroqForDailyContent({ env, apiKey, baseUrl, model, prompt }) 
 
     const shouldRetryWithoutResponseFormat = /response_format|unsupported|unknown/i.test(details) || fallbackToDirect;
     if (!shouldRetryWithoutResponseFormat) {
-      throw new Error(`Groq content generation failed: ${details || firstAttempt.status}`);
+      throw new Error(`${providerLabel} content generation failed: ${details || firstAttempt.status}`);
     }
 
     const retryAttempt = await fetch(`${activeBaseUrl}/chat/completions`, {
@@ -7065,7 +11180,7 @@ async function callGroqForDailyContent({ env, apiKey, baseUrl, model, prompt }) 
 
     if (!retryAttempt.ok) {
       const retryDetails = await retryAttempt.text();
-      throw new Error(`Groq content generation failed: ${retryDetails || retryAttempt.status}`);
+      throw new Error(`${providerLabel} content generation failed: ${retryDetails || retryAttempt.status}`);
     }
 
     payload = await retryAttempt.json();
@@ -7084,7 +11199,8 @@ async function callGroqForDailyContent({ env, apiKey, baseUrl, model, prompt }) 
       apiKey,
       baseUrl: activeBaseUrl,
       model: activeModel,
-      malformedText: content
+      malformedText: content,
+      providerLabel
     });
     parsedPayload = parseJsonObject(repaired);
   }
@@ -7095,7 +11211,93 @@ async function callGroqForDailyContent({ env, apiKey, baseUrl, model, prompt }) 
   };
 }
 
-async function repairJsonWithModel({ apiKey, baseUrl, model, malformedText }) {
+async function callGeminiForDailyContent({ env, apiKey, model, prompt, context = '' }) {
+  const accountId = '9f4998a66a5d7bd7a230d0222544fbe6';
+  const gatewayName = env?.AI_GATEWAY_NAME || 'deeplearn-gateway';
+  const baseUrl = env?.AI_GATEWAY_NAME
+    ? `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayName}/google-ai-studio/v1beta/models`
+    : 'https://generativelanguage.googleapis.com/v1beta/models';
+
+  const systemInstruction = context
+    ? `You are a clinically cautious editorial assistant. Return valid JSON only. Use the following context if relevant:\n\n${context}`
+    : 'You are a clinically cautious editorial assistant. Return valid JSON only.';
+
+  const response = await fetch(
+    `${baseUrl}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        generationConfig: {
+          temperature: 0.2,
+          responseMimeType: 'application/json'
+        },
+        systemInstruction: {
+          parts: [{ text: systemInstruction }]
+        },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }]
+      })
+    }
+  );
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Gemini content generation failed: ${details || response.status}`);
+  }
+
+  const payload = await response.json();
+  const content = Array.isArray(payload?.candidates?.[0]?.content?.parts)
+    ? payload.candidates[0].content.parts.map((part) => String(part?.text || '')).join('\n').trim()
+    : '';
+  if (!content) {
+    throw new Error('Gemini returned empty content payload.');
+  }
+
+  return {
+    payload: parseJsonObject(content),
+    model
+  };
+}
+
+async function callAnthropicForDailyContent({ apiKey, model, prompt }) {
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: 2600,
+      temperature: 0.2,
+      system: 'You are a clinically cautious editorial assistant. Return valid JSON only.',
+      messages: [{ role: 'user', content: prompt }]
+    })
+  });
+
+  if (!response.ok) {
+    const details = await response.text();
+    throw new Error(`Claude content generation failed: ${details || response.status}`);
+  }
+
+  const payload = await response.json();
+  const content = Array.isArray(payload?.content)
+    ? payload.content.map((item) => (item?.type === 'text' ? String(item?.text || '') : '')).join('\n').trim()
+    : '';
+  if (!content) {
+    throw new Error('Claude returned empty content payload.');
+  }
+
+  return {
+    payload: parseJsonObject(content),
+    model
+  };
+}
+
+async function repairJsonWithModel({ apiKey, baseUrl, model, malformedText, providerLabel = 'Model' }) {
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -7120,7 +11322,7 @@ async function repairJsonWithModel({ apiKey, baseUrl, model, malformedText }) {
 
   if (!response.ok) {
     const details = await response.text();
-    throw new Error(`Failed to repair malformed JSON output: ${details || response.status}`);
+    throw new Error(`Failed to repair malformed JSON output from ${providerLabel}: ${details || response.status}`);
   }
 
   const payload = await response.json();
@@ -7185,88 +11387,22 @@ function validateGeneratedContent(payload, sourceSnapshot) {
     throw new Error('Generated content requires at least 2 verified sources.');
   }
 
+  const socialThreadText = String(payload?.social_thread_text || '').trim();
+  const videoScript = String(payload?.video_script || '').trim();
+  const seoMetadata = String(payload?.seo_metadata || '').trim();
+
   return {
     title,
     summary,
     path,
     content_markdown: contentMarkdown.slice(0, 48000),
+    social_thread_text: socialThreadText,
+    video_script: videoScript,
+    seo_metadata: seoMetadata,
+    tags,
     tags,
     sources
   };
-}
-
-async function fetchClinicalFeedSnapshot() {
-  const sourceCandidates = [
-    { title: 'Greybrain Clinical AI Feed', url: 'https://medium.com/feed/@ClinicalAI' },
-    { title: 'Greybrain Clinical AI', url: 'https://greybrain.ai/clinical-ai' }
-  ];
-
-  const snapshots = [];
-
-  for (const source of sourceCandidates) {
-    try {
-      const response = await fetch(source.url, {
-        headers: {
-          'user-agent': 'Mozilla/5.0 (compatible; DeepLearnContentBot/1.0)'
-        }
-      });
-      if (!response.ok) continue;
-      const text = await response.text();
-      const items = source.url.includes('/feed/')
-        ? parseRssItems(text)
-        : [{ title: source.title, url: source.url, date: isoDateInTimezone(Date.now(), 'UTC') }];
-      snapshots.push(...items);
-    } catch {
-      // Ignore source fetch failures and continue.
-    }
-  }
-
-  const deduped = [];
-  const seen = new Set();
-
-  for (const item of snapshots) {
-    if (!item.url || seen.has(item.url)) continue;
-    seen.add(item.url);
-    deduped.push(item);
-  }
-
-  if (deduped.length === 0) {
-    throw new Error('Unable to load source feed for daily content generation.');
-  }
-
-  return deduped.slice(0, 8);
-}
-
-function parseRssItems(xml) {
-  const matches = [...String(xml || '').matchAll(/<item>([\s\S]*?)<\/item>/g)];
-  return matches
-    .map((match) => {
-      const item = match[1] || '';
-      const title = decodeXml((item.match(/<title>([\s\S]*?)<\/title>/i) || [])[1] || '');
-      const url = decodeXml((item.match(/<link>([\s\S]*?)<\/link>/i) || [])[1] || '');
-      const pubDateRaw = decodeXml((item.match(/<pubDate>([\s\S]*?)<\/pubDate>/i) || [])[1] || '');
-      const parsedDate = new Date(pubDateRaw);
-      const date = Number.isNaN(parsedDate.getTime()) ? '' : parsedDate.toISOString().slice(0, 10);
-      return {
-        title: clean(title, 200),
-        url: clean(url, 400),
-        date
-      };
-    })
-    .filter((item) => item.title && item.url);
-}
-
-function decodeXml(value) {
-  return String(value || '')
-    .replace(/<!\[CDATA\[|\]\]>/g, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function normalizeCrmStage(value) {
@@ -7294,7 +11430,22 @@ function parseJsonArray(value) {
   }
 }
 
+function normalizeStringArray(value, limit = 8, maxLength = 220) {
+  const items = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value
+          .split(/\r?\n|,/)
+          .map((item) => item.trim())
+          .filter(Boolean)
+      : [];
+  return items.map((item) => clean(String(item || ''), maxLength)).filter(Boolean).slice(0, limit);
+}
+
 function parseJsonObjectOrDefault(value, fallback) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value;
+  }
   if (typeof value !== 'string' || !value.trim()) return fallback;
   try {
     const parsed = JSON.parse(value);
@@ -7451,9 +11602,62 @@ async function sha256Hex(input) {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+async function handleOnboardingQueue(batch, env) {
+  for (const message of batch.messages) {
+    const { email, fullName, courseTitle, cohortName } = message.body;
+    try {
+      const resendKey = clean(env.RESEND_API_KEY || '', 240);
+      if (!resendKey) {
+        console.warn('RESEND_API_KEY missing. Skipping email.');
+        message.ack();
+        continue;
+      }
+
+      const response = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${resendKey}`
+        },
+        body: JSON.stringify({
+          from: 'GreyBrain Academy <academy@med.greybrain.ai>',
+          to: [email],
+          subject: `Welcome to ${courseTitle}`,
+          html: `
+            <div style="font-family: sans-serif; max-width: 600px; margin: 0 auto; border: 1px solid #eee; border-radius: 12px; padding: 24px;">
+              <h2 style="color: #0f172a;">Welcome, ${fullName}!</h2>
+              <p>Your enrollment in <b>${courseTitle}</b> (${cohortName}) is confirmed.</p>
+              <p>You can now access the learner workspace to start your journey.</p>
+              <div style="margin: 32px 0;">
+                <a href="https://med.greybrain.ai/learn" style="background: #0f172a; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold;">Open Learner Workspace</a>
+              </div>
+              <hr style="border: 0; border-top: 1px solid #eee; margin: 32px 0;" />
+              <p style="font-size: 12px; color: #64748b;">GreyBrain Academy & Operational Incubator</p>
+            </div>
+          `
+        })
+      });
+
+      if (response.ok) {
+        message.ack();
+      } else {
+        const errorText = await response.text();
+        console.error('Resend API failure:', errorText);
+        message.retry();
+      }
+    } catch (err) {
+      console.error('Queue processing error:', err);
+      message.retry();
+    }
+  }
+}
+
 export default {
   fetch(request, env, ctx) {
     return app.fetch(request, env, ctx);
+  },
+  async queue(batch, env, ctx) {
+    ctx.waitUntil(handleOnboardingQueue(batch, env));
   },
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runScheduledContentGeneration(env, controller.cron));

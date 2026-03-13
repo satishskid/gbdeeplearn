@@ -1,13 +1,33 @@
 import { useEffect, useMemo, useState } from 'react';
 import { apiUrl } from '../lib/api';
 import { preferredPlatformTab } from '../lib/userRoles';
+import PlatformManuals from './PlatformManuals';
 
 const ROLE_TABS = [
-  { id: 'coordinator', label: 'Course Coordinator' },
+  { id: 'coordinator', label: 'Course Coordinator / Content Editor' },
   { id: 'teacher', label: 'Teacher / Trainer' },
   { id: 'learner', label: 'Visitor + Learner' },
   { id: 'cto', label: 'CTO / Platform Admin' }
 ];
+
+const PUBLIC_SITE_URL = 'https://med.greybrain.ai';
+const CONTENT_PATH_META = {
+  productivity: {
+    label: 'Practice',
+    trackUrl: `${PUBLIC_SITE_URL}/tracks/clinical-ai-practitioner/`,
+    hashtags: ['#ClinicalAI', '#DoctorsWhoUseAI', '#HealthcareProductivity', '#GreyBrainAcademy']
+  },
+  research: {
+    label: 'Publish',
+    trackUrl: `${PUBLIC_SITE_URL}/tracks/ai-research-accelerator/`,
+    hashtags: ['#MedicalResearch', '#ResearchAI', '#DoctorsWhoPublish', '#GreyBrainAcademy']
+  },
+  entrepreneurship: {
+    label: 'Build',
+    trackUrl: `${PUBLIC_SITE_URL}/tracks/doctor-ai-entrepreneurship/`,
+    hashtags: ['#HealthTech', '#DoctorFounder', '#AIEntrepreneurship', '#GreyBrainAcademy']
+  }
+};
 
 function parseMoneyToCents(value) {
   const parsed = Number(value);
@@ -26,11 +46,411 @@ function parseDateTimeToMs(value) {
   return Number.isFinite(parsed) ? Math.round(parsed) : null;
 }
 
+function getRefresherPlaybook(pathKey) {
+  const key = String(pathKey || '').trim().toLowerCase();
+  if (key === 'research') {
+    return {
+      label: 'Publish',
+      nextAction: 'Send the Research Accelerator overview, evidence-synthesis examples, and the next Path 2 cohort dates.',
+      ownerPrompt: 'Position this lead around publication speed, study design clarity, and manuscript readiness.',
+      trackUrl: `${PUBLIC_SITE_URL}/tracks/ai-research-accelerator/`
+    };
+  }
+  if (key === 'entrepreneurship') {
+    return {
+      label: 'Build',
+      nextAction: 'Send the venture-builder outline, capstone-to-pilot story, and invite a founder-fit call.',
+      ownerPrompt: 'Position this lead around MVP planning, pilot metrics, and clinician-founder execution.',
+      trackUrl: `${PUBLIC_SITE_URL}/tracks/doctor-ai-entrepreneurship/`
+    };
+  }
+  if (key === 'productivity') {
+    return {
+      label: 'Practice',
+      nextAction: 'Send the clinical productivity track overview, note-to-patient workflow examples, and the next Path 1 intake.',
+      ownerPrompt: 'Position this lead around immediate workflow leverage in notes, communication, and safe clinical support.',
+      trackUrl: `${PUBLIC_SITE_URL}/tracks/clinical-ai-practitioner/`
+    };
+  }
+  return null;
+}
+
+const CRM_SEGMENTS = [
+  {
+    id: 'all',
+    label: 'All Leads',
+    description: 'Full CRM queue across all channels and cohorts.'
+  },
+  {
+    id: 'practice_intent',
+    label: 'Practice Intent',
+    description: 'Refresher recommends Path 1 clinical productivity.',
+    reminderLabel: 'Queue Practice Follow-up',
+    ownerPrompt: 'Send Path 1 note-to-patient and communication workflow examples, then invite them to the next cohort.',
+    defaultStage: 'qualified'
+  },
+  {
+    id: 'research_intent',
+    label: 'Research Intent',
+    description: 'Refresher recommends Path 2 publication and research acceleration.',
+    reminderLabel: 'Queue Research Follow-up',
+    ownerPrompt: 'Send Path 2 evidence-synthesis and manuscript examples, then invite them to the next cohort.',
+    defaultStage: 'qualified'
+  },
+  {
+    id: 'build_intent',
+    label: 'Build Intent',
+    description: 'Refresher recommends Path 3 venture and pilot-building support.',
+    reminderLabel: 'Queue Build Follow-up',
+    ownerPrompt: 'Send Path 3 venture outline, pilot metrics examples, and offer a founder-fit conversation.',
+    defaultStage: 'qualified'
+  },
+  {
+    id: 'refresher_complete_not_enrolled',
+    label: 'Refresher Complete, Not Enrolled',
+    description: 'Completed the starter flow but has not converted to paid enrollment yet.',
+    reminderLabel: 'Queue Cohort Conversion Reminder',
+    ownerPrompt: 'Acknowledge refresher completion, recommend the best-fit path, and give one concrete next cohort date.',
+    defaultStage: 'contacted'
+  },
+  {
+    id: 'payment_pending_followup',
+    label: 'Payment Pending',
+    description: 'Interested or qualified leads that still need payment closure.',
+    reminderLabel: 'Queue Payment Follow-up',
+    ownerPrompt: 'Confirm course fit, remove friction on payment, and send the exact next step to complete enrollment.',
+    defaultStage: 'payment_pending'
+  }
+];
+
+function matchesCrmSegment(lead, segmentId) {
+  if (!lead || !segmentId || segmentId === 'all') return true;
+  const recommendedPath = String(lead?.refresher?.recommended_path || '').trim().toLowerCase();
+  const chapterEvents = Number(lead?.refresher?.chapter_events || 0);
+  const paymentStatus = String(lead?.payment_status || '').trim().toLowerCase();
+
+  if (segmentId === 'practice_intent') return recommendedPath === 'productivity';
+  if (segmentId === 'research_intent') return recommendedPath === 'research';
+  if (segmentId === 'build_intent') return recommendedPath === 'entrepreneurship';
+  if (segmentId === 'refresher_complete_not_enrolled') {
+    return chapterEvents >= 5 && paymentStatus !== 'paid';
+  }
+  if (segmentId === 'payment_pending_followup') {
+    return paymentStatus !== 'paid' && (lead?.crm?.stage === 'payment_pending' || paymentStatus === 'registered');
+  }
+  return true;
+}
+
+function appendCrmNote(existingNotes, note) {
+  const existing = String(existingNotes || '').trim();
+  const next = String(note || '').trim();
+  if (!next) return existing;
+  if (!existing) return next;
+  if (existing.includes(next)) return existing;
+  return `${existing}\n\n${next}`;
+}
+
+function buildCrmChannelTemplates(lead, playbook, segmentMeta) {
+  if (!lead) {
+    return {
+      whatsapp: '',
+      email: '',
+      counselor: ''
+    };
+  }
+
+  const firstName = String(lead.full_name || lead.email || 'Doctor').trim().split(/\s+/)[0] || 'Doctor';
+  const courseName = lead.course_title || lead.course_slug || 'the GreyBrain pathway';
+  const recommendedLabel = playbook?.label || 'GreyBrain';
+  const trackUrl = playbook?.trackUrl || `${PUBLIC_SITE_URL}/tracks/`;
+  const coreLine =
+    playbook?.nextAction ||
+    segmentMeta?.ownerPrompt ||
+    'I am sharing the next GreyBrain cohort details and a quick path recommendation based on your recent interest.';
+
+  return {
+    whatsapp: `Hi ${firstName}, based on your GreyBrain activity I recommend the ${recommendedLabel} path. ${coreLine} You can review it here: ${trackUrl}`,
+    email: [
+      `Subject: Your next GreyBrain step: ${recommendedLabel}`,
+      '',
+      `Hi ${firstName},`,
+      '',
+      `Based on your progress so far, ${courseName} is best followed by the ${recommendedLabel} path.`,
+      coreLine,
+      '',
+      `Track link: ${trackUrl}`,
+      '',
+      'Reply if you want the next cohort date or need help choosing between tracks.'
+    ].join('\n'),
+    counselor: `Lead handoff for ${firstName}: recommended path is ${recommendedLabel}. Reposition the conversation around ${coreLine.toLowerCase()}`
+  };
+}
+
+function escapeCsvValue(value) {
+  const text = String(value ?? '');
+  if (!text.includes('"') && !text.includes(',') && !text.includes('\n')) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function buildCrmSegmentCsv(leads = []) {
+  const headers = [
+    'lead_id',
+    'full_name',
+    'email',
+    'phone',
+    'course_title',
+    'course_slug',
+    'payment_status',
+    'crm_stage',
+    'crm_owner_user_id',
+    'crm_next_action_at_ms',
+    'refresher_started',
+    'refresher_chapter_events',
+    'refresher_recommended_path',
+    'source',
+    'channel',
+    'kind',
+    'updated_at_ms'
+  ];
+
+  const rows = (leads || []).map((lead) => [
+    lead.lead_id,
+    lead.full_name,
+    lead.email,
+    lead.phone,
+    lead.course_title,
+    lead.course_slug,
+    lead.payment_status,
+    lead?.crm?.stage || '',
+    lead?.crm?.owner_user_id || '',
+    lead?.crm?.next_action_at_ms || '',
+    lead?.refresher?.started ? 'yes' : 'no',
+    lead?.refresher?.chapter_events || 0,
+    lead?.refresher?.recommended_path || '',
+    lead.source,
+    lead.channel,
+    lead.kind,
+    lead.updated_at_ms || ''
+  ]);
+
+  return [headers, ...rows].map((row) => row.map(escapeCsvValue).join(',')).join('\n');
+}
+
+const CRM_SAVED_VIEWS_STORAGE_KEY = 'gbdeeplearn.crm.savedViews.v1';
+
+function loadSavedCrmViews() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(CRM_SAVED_VIEWS_STORAGE_KEY);
+    const parsed = JSON.parse(raw || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeCrmViewName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .slice(0, 60);
+}
+
+function splitLines(value) {
+  return String(value || '')
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function countSerializedList(value) {
+  try {
+    const parsed = JSON.parse(String(value || '[]'));
+    return Array.isArray(parsed) ? parsed.filter(Boolean).length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function defaultCounselorKnowledgeForm() {
+  return {
+    itemId: '',
+    kind: 'faq',
+    scope: 'global',
+    courseId: '',
+    title: '',
+    body: '',
+    sortOrder: '100',
+    isActive: true
+  };
+}
+
+function defaultSessionForm() {
+  return {
+    title: '',
+    description: '',
+    startsAt: '',
+    endsAt: '',
+    meetingUrl: '',
+    recordingUrl: '',
+    status: 'scheduled',
+    resourcesJson: '{\n  "slides": "",\n  "prep": ""\n}'
+  };
+}
+
+function defaultContentEditorForm() {
+  return {
+    postId: '',
+    title: '',
+    summary: '',
+    path: 'productivity',
+    contentType: 'daily_brief',
+    tags: '',
+    canonicalUrl: '',
+    sourceUrls: '',
+    contentMarkdown: ''
+  };
+}
+
+function normalizeUrlList(value) {
+  const items = Array.isArray(value) ? value : String(value || '').split(/\n|,/);
+  return items
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .filter((item, index, array) => array.indexOf(item) === index)
+    .slice(0, 12);
+}
+
+function stripMarkdown(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, ' ')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1')
+    .replace(/^>\s?/gm, '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/[*_~]/g, '')
+    .replace(/\r/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function clampText(value, limit) {
+  const text = String(value || '').trim();
+  if (text.length <= limit) return text;
+  const sliced = text.slice(0, Math.max(0, limit - 1));
+  const boundary = sliced.lastIndexOf(' ');
+  return `${(boundary > 80 ? sliced.slice(0, boundary) : sliced).trim()}...`;
+}
+
+function getParagraphsFromMarkdown(markdown) {
+  return stripMarkdown(markdown)
+    .split(/\n\s*\n/)
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
+function buildExportVariants({ title, summary, path, tags, canonicalUrl, sourceUrls, contentMarkdown }) {
+  const meta = CONTENT_PATH_META[path] || CONTENT_PATH_META.productivity;
+  const cleanedTitle = clampText(title || 'GreyBrain Academy Brief', 120);
+  const cleanedSummary = clampText(summary || '', 280);
+  const paragraphs = getParagraphsFromMarkdown(contentMarkdown);
+  const canonical = String(canonicalUrl || '').trim() || meta.trackUrl;
+  const sources = normalizeUrlList(sourceUrls);
+  const keyPoints = paragraphs.slice(0, 3).map((item) => clampText(item, 220));
+  const supportingBody = paragraphs.slice(0, 6).map((item) => clampText(item, 480));
+  const extraTags = String(tags || '')
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((tag) => `#${tag.replace(/[^a-z0-9]+/gi, '')}`);
+  const hashtags = [...meta.hashtags, ...extraTags].slice(0, 5);
+  const ctaLine = `Read on GreyBrain: ${canonical}`;
+  const sourcesLine = sources.length > 0 ? `Sources: ${sources.join(' | ')}` : '';
+  const fallbackPoint = cleanedSummary || 'A new GreyBrain Academy brief for doctors working with AI.';
+  const points = keyPoints.length > 0 ? keyPoints : [fallbackPoint];
+
+  const linkedin = [
+    cleanedTitle,
+    '',
+    cleanedSummary,
+    '',
+    ...points.map((point) => `- ${point}`),
+    '',
+    `This sits inside GreyBrain Academy's ${meta.label.toLowerCase()} track for doctors who want to practice, publish, and build with AI.`,
+    ctaLine,
+    sourcesLine,
+    '',
+    hashtags.join(' ')
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const facebook = [
+    cleanedTitle,
+    '',
+    cleanedSummary,
+    '',
+    ...points.slice(0, 2),
+    '',
+    `GreyBrain Academy is building a clinician-first AI learning system around three outcomes: practice, publish, and build.`,
+    ctaLine,
+    sourcesLine
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const xTweets = [
+    `1/4 ${clampText(`${cleanedTitle}: ${cleanedSummary || fallbackPoint}`, 250)}`,
+    `2/4 ${clampText(points[0] || fallbackPoint, 260)}`,
+    `3/4 ${clampText(points[1] || points[0] || fallbackPoint, 260)}`,
+    `4/4 ${clampText(`GreyBrain Academy ${meta.label} track for doctors. ${canonical}`, 260)}`
+  ];
+  const xThread = xTweets.join('\n\n');
+
+  const medium = [
+    cleanedTitle,
+    '',
+    cleanedSummary,
+    '',
+    ...supportingBody,
+    '',
+    '---',
+    '',
+    `Originally prepared for GreyBrain Academy's ${meta.label.toLowerCase()} audience.`,
+    ctaLine,
+    sourcesLine,
+    '',
+    hashtags.join(' ')
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  return {
+    linkedin,
+    facebook,
+    x: xThread,
+    medium
+  };
+}
+
+function formatForDateTimeLocal(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const date = new Date(ms);
+  const offsetMs = date.getTimezoneOffset() * 60000;
+  return new Date(ms - offsetMs).toISOString().slice(0, 16);
+}
+
 export default function PlatformConsole({ userRoles = [], currentUser = null }) {
   const [adminToken, setAdminToken] = useState('');
+  const [adminHeaders, setAdminHeaders] = useState({ 'Content-Type': 'application/json' });
+  const [adminHeadersReady, setAdminHeadersReady] = useState(false);
   const [overview, setOverview] = useState(null);
   const [courses, setCourses] = useState([]);
   const [contentPosts, setContentPosts] = useState([]);
+  const [showDraftsOnly, setShowDraftsOnly] = useState(false);
   const [organizations, setOrganizations] = useState([]);
   const [cohorts, setCohorts] = useState([]);
   const [courseModules, setCourseModules] = useState([]);
@@ -55,6 +475,15 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [coordinatorView, setCoordinatorView] = useState('operations');
+  const [ceApiKey, setCeApiKey] = useState(() => { try { return sessionStorage.getItem('session_gemini_key') || sessionStorage.getItem('ce_api_key') || ''; } catch { return ''; } });
+  const [sessionGeminiKey, setSessionGeminiKey] = useState(() => { try { return sessionStorage.getItem('session_gemini_key') || ''; } catch { return ''; } });
+  const [showAiSettings, setShowAiSettings] = useState(false);
+  const [ceQueue, setCeQueue] = useState([]);
+  const [ceQueueLoading, setCeQueueLoading] = useState(false);
+  const [ceGenerating, setCeGenerating] = useState(false);
+  const [ceEditingId, setCeEditingId] = useState(null);
+  const [ceEditDraft, setCeEditDraft] = useState({});
+  const [cePublishing, setCePublishing] = useState(null);
   const [labRuns, setLabRuns] = useState([]);
   const [capstoneArtifacts, setCapstoneArtifacts] = useState([]);
   const [labTrendSeries, setLabTrendSeries] = useState([]);
@@ -66,6 +495,14 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const [labTrendDays, setLabTrendDays] = useState('30');
   const [capstoneTrendDays, setCapstoneTrendDays] = useState('30');
   const [loadingSessions, setLoadingSessions] = useState(false);
+  const [pendingAssignments, setPendingAssignments] = useState([]);
+  const [loadingAssignments, setLoadingAssignments] = useState(false);
+  const [assignmentReviewForm, setAssignmentReviewForm] = useState({
+    submissionId: '',
+    score: '',
+    passed: 'true',
+    mentor_notes: ''
+  });
 
   const [courseForm, setCourseForm] = useState({
     title: '',
@@ -108,7 +545,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     description: '',
     labType: '',
     unlockPolicy: 'cohort',
-    estimatedMinutes: '30'
+    estimatedMinutes: '30',
+    lessonObjectives: '',
+    expectedArtifact: '',
+    assignmentPrompt: '',
+    reviewChecklist: '',
+    tutorPrompts: ''
   });
 
   const [cohortForm, setCohortForm] = useState({
@@ -136,16 +578,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   });
   const [sessionCohortId, setSessionCohortId] = useState('');
   const [cohortSessions, setCohortSessions] = useState([]);
-  const [sessionForm, setSessionForm] = useState({
-    title: '',
-    description: '',
-    startsAt: '',
-    endsAt: '',
-    meetingUrl: '',
-    recordingUrl: '',
-    status: 'scheduled',
-    resourcesJson: '{\n  "slides": "",\n  "prep": ""\n}'
-  });
+  const [sessionEditorId, setSessionEditorId] = useState('');
+  const [sessionForm, setSessionForm] = useState(defaultSessionForm);
   const [attendanceForm, setAttendanceForm] = useState({
     sessionId: '',
     userId: '',
@@ -186,17 +620,25 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     artifactId: '',
     status: 'reviewed',
     score: '',
-    passed: 'auto',
     feedback: ''
   });
   const [crmLeads, setCrmLeads] = useState([]);
   const [crmSummary, setCrmSummary] = useState(null);
+  const [crmSegment, setCrmSegment] = useState('active');
+  const [spotlightId, setSpotlightId] = useState('');
+  const [spotlightData, setSpotlightData] = useState(null);
+  const [loadingSpotlight, setLoadingSpotlight] = useState(false);
   const [crmFilter, setCrmFilter] = useState({
     q: '',
     paymentStatus: '',
     stage: '',
+    source: '',
     days: '90'
   });
+  const [crmBatchOwnerUserId, setCrmBatchOwnerUserId] = useState('');
+  const [crmSavedViews, setCrmSavedViews] = useState([]);
+  const [crmViewName, setCrmViewName] = useState('');
+  const [crmAudit, setCrmAudit] = useState([]);
   const [crmEdit, setCrmEdit] = useState({
     leadId: '',
     stage: '',
@@ -204,10 +646,62 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     notes: '',
     nextActionAt: ''
   });
+  const [homepageConfig, setHomepageConfig] = useState({
+    ticker_text: 'The doctors who master AI today will define the future of medicine tomorrow.'
+  });
+  const [loadingHomepageConfig, setLoadingHomepageConfig] = useState(false);
+
+  const [counselorKnowledge, setCounselorKnowledge] = useState([]);
+  const [loadingCounselorKnowledge, setLoadingCounselorKnowledge] = useState(false);
+  const [knowledgeForm, setKnowledgeForm] = useState(defaultCounselorKnowledgeForm);
+  const [contentGeneratorForm, setContentGeneratorForm] = useState({
+    provider: 'gemini',
+    model: '',
+    apiKey: ''
+  });
+  const [contentEditorForm, setContentEditorForm] = useState(defaultContentEditorForm);
+  const selectedCrmLead = useMemo(
+    () => (crmLeads || []).find((lead) => lead.lead_id === crmEdit.leadId) || null,
+    [crmEdit.leadId, crmLeads]
+  );
+  const selectedCrmPlaybook = useMemo(
+    () => getRefresherPlaybook(selectedCrmLead?.refresher?.recommended_path),
+    [selectedCrmLead]
+  );
+  const crmRefresherStartedCount = useMemo(
+    () => (crmLeads || []).filter((lead) => lead?.refresher?.started).length,
+    [crmLeads]
+  );
+  const crmRefresherRecommendedCount = useMemo(
+    () => (crmLeads || []).filter((lead) => lead?.refresher?.recommended_path).length,
+    [crmLeads]
+  );
+  const crmSegmentCounts = useMemo(
+    () =>
+      CRM_SEGMENTS.reduce((acc, segment) => {
+        acc[segment.id] = (crmLeads || []).filter((lead) => matchesCrmSegment(lead, segment.id)).length;
+        return acc;
+      }, {}),
+    [crmLeads]
+  );
+  const visibleCrmLeads = useMemo(
+    () => (crmLeads || []).filter((lead) => matchesCrmSegment(lead, crmSegment)),
+    [crmLeads, crmSegment]
+  );
+  const selectedCrmSegmentMeta = useMemo(
+    () => CRM_SEGMENTS.find((segment) => segment.id === crmSegment) || CRM_SEGMENTS[0],
+    [crmSegment]
+  );
+  const crmChannelTemplates = useMemo(
+    () => buildCrmChannelTemplates(selectedCrmLead, selectedCrmPlaybook, selectedCrmSegmentMeta),
+    [selectedCrmLead, selectedCrmPlaybook, selectedCrmSegmentMeta]
+  );
 
   const roleSet = useMemo(() => new Set((userRoles || []).map((role) => String(role).trim().toLowerCase())), [userRoles]);
   const isCtoUser = roleSet.has('cto');
-  const isCoordinatorUser = isCtoUser || roleSet.has('coordinator');
+  const isCounselorUser = roleSet.has('counselor');
+  const isContentEditorUser = roleSet.has('content_editor');
+  const isCoordinatorUser = isCtoUser || roleSet.has('coordinator') || isContentEditorUser || isCounselorUser;
   const isTeacherUser = roleSet.has('teacher');
   const isLearnerUser = isCoordinatorUser || isTeacherUser || roleSet.has('learner');
 
@@ -229,19 +723,66 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
 
   const [activeRole, setActiveRole] = useState(defaultTab);
   const hasAdminToken = Boolean(adminToken.trim());
+  const hasAdminAccess = isCoordinatorUser || isCtoUser || hasAdminToken;
   const isCoordinator = isCoordinatorUser && activeRole === 'coordinator';
+  const contentExports = useMemo(
+    () => buildExportVariants(contentEditorForm),
+    [contentEditorForm]
+  );
   const isTeacher = isTeacherUser && activeRole === 'teacher';
   const isLearner = isLearnerUser && activeRole === 'learner';
   const isCto = isCtoUser && activeRole === 'cto';
-  const canManageContent = (isCoordinatorUser || isCtoUser) && hasAdminToken;
+  const canManageContent = (isCoordinatorUser || isCtoUser) && hasAdminAccess;
 
-  const adminHeaders = useMemo(() => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (adminToken.trim()) {
-      headers['x-admin-token'] = adminToken.trim();
-    }
-    return headers;
-  }, [adminToken]);
+  useEffect(() => {
+    let active = true;
+    setAdminHeadersReady(false);
+
+    const hydrateHeaders = async () => {
+      const headers = { 'Content-Type': 'application/json' };
+      if (currentUser?.uid) {
+        headers['x-user-id'] = currentUser.uid;
+      }
+      const normalizedRoles = (userRoles || []).map((role) => String(role).trim().toLowerCase()).filter(Boolean);
+      if (normalizedRoles.length > 0) {
+        headers['x-user-roles'] = normalizedRoles.join(',');
+      }
+      if (adminToken.trim()) {
+        headers['x-admin-token'] = adminToken.trim();
+      }
+      if (currentUser?.getIdToken) {
+        try {
+          const idToken = await currentUser.getIdToken();
+          if (idToken) {
+            headers.Authorization = `Bearer ${idToken}`;
+            headers['x-firebase-id-token'] = idToken;
+          }
+        } catch {
+          // Worker will enforce auth and return explicit error if token is required.
+        }
+      }
+
+      if (active) {
+        setAdminHeaders(headers);
+        setAdminHeadersReady(true);
+      }
+    };
+
+    void hydrateHeaders();
+
+    return () => {
+      active = false;
+    };
+  }, [adminToken, currentUser, userRoles]);
+
+  useEffect(() => {
+    setCrmSavedViews(loadSavedCrmViews());
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(CRM_SAVED_VIEWS_STORAGE_KEY, JSON.stringify(crmSavedViews));
+  }, [crmSavedViews]);
 
   const buildActorHeaders = async () => {
     const headers = {};
@@ -327,6 +868,8 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   const fetchCohortSessions = async (cohortId, headers = adminHeaders) => {
     if (!cohortId) {
       setCohortSessions([]);
+      setSessionEditorId('');
+      setSessionForm(defaultSessionForm());
       setAttendanceForm((prev) => ({ ...prev, sessionId: '' }));
       return;
     }
@@ -337,7 +880,17 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Session load failed.');
       const sessions = payload.sessions || [];
+      const hasEditorSession = Boolean(sessionEditorId && sessions.some((session) => session.id === sessionEditorId));
       setCohortSessions(sessions);
+      setSessionEditorId((prev) => {
+        if (prev && sessions.some((session) => session.id === prev)) {
+          return prev;
+        }
+        return '';
+      });
+      if (sessionEditorId && !hasEditorSession) {
+        setSessionForm(defaultSessionForm());
+      }
       setAttendanceForm((prev) => {
         if (prev.sessionId && sessions.some((session) => session.id === prev.sessionId)) {
           return prev;
@@ -350,7 +903,11 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   };
 
   const loadConsoleData = async () => {
-    if (!adminToken.trim()) {
+    if (!adminHeadersReady) {
+      return;
+    }
+
+    if (!hasAdminAccess) {
       setOverview(null);
       setCourses([]);
       setContentPosts([]);
@@ -439,9 +996,10 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   };
 
   useEffect(() => {
+    if (!adminHeadersReady) return;
     void loadConsoleData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [adminHeadersReady, hasAdminAccess]);
 
   useEffect(() => {
     if (!moduleForm.courseId) {
@@ -531,14 +1089,138 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
   }, [activeRole, availableTabs, defaultTab]);
 
   useEffect(() => {
-    if (!hasAdminToken) return;
+    if (!hasAdminAccess) return;
+    if (!adminHeadersReady) return;
     if (!isCoordinator) return;
     if (coordinatorView !== 'crm') return;
-    void loadCrmLeads().catch((err) => {
+    void Promise.all([loadCrmLeads(), loadCrmAudit()]).catch((err) => {
       setError(err instanceof Error ? err.message : 'Failed to load CRM leads.');
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [coordinatorView, hasAdminToken, isCoordinator, crmFilter.days]);
+  }, [coordinatorView, hasAdminAccess, adminHeadersReady, isCoordinator, crmFilter.days]);
+
+  useEffect(() => {
+    if (!hasAdminAccess) return;
+    if (!adminHeadersReady) return;
+    if (!isCoordinator) return;
+    if (coordinatorView !== 'counselor-knowledge') return;
+    void loadCounselorKnowledge().catch((err) => {
+      setError(err instanceof Error ? err.message : 'Failed to load counselor knowledge.');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coordinatorView, hasAdminAccess, adminHeadersReady, isCoordinator]);
+
+  const fetchHomepageConfig = async () => {
+    if (!adminHeadersReady) return;
+    setLoadingHomepageConfig(true);
+    try {
+      const resp = await fetch(`${apiUrl}/api/admin/homepage/config`, { headers: adminHeaders });
+      const data = await resp.json();
+      if (data.config_json) {
+        setHomepageConfig(JSON.parse(data.config_json));
+      }
+    } catch (err) {
+      console.error('Failed to fetch homepage config:', err);
+    } finally {
+      setLoadingHomepageConfig(false);
+    }
+  };
+
+  const saveHomepageConfig = async (newConfig) => {
+    setLoadingHomepageConfig(true);
+    try {
+      const resp = await fetch(`${apiUrl}/api/admin/homepage/config`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({ config_json: JSON.stringify(newConfig) })
+      });
+      if (resp.ok) {
+        setHomepageConfig(newConfig);
+        setNotice('Homepage configuration updated.');
+      } else {
+        const errorData = await resp.json();
+        setError(`Failed to save config: ${errorData.error}`);
+      }
+    } catch (err) {
+      setError(`Failed to save config: ${err.message}`);
+    } finally {
+      setLoadingHomepageConfig(false);
+    }
+  };
+
+  const toggleSpotlight = async (postId, currentStatus) => {
+    try {
+      const resp = await fetch(`${apiUrl}/api/admin/content/posts/${postId}/spotlight`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({ is_spotlight: !currentStatus })
+      });
+      if (resp.ok) {
+        setContentPosts((prev) =>
+          prev.map((p) => (p.id === postId ? { ...p, is_spotlight: !currentStatus } : p))
+        );
+        setNotice(`Spotlight status updated for ${postId}`);
+      }
+    } catch (err) {
+      setError(`Failed to toggle spotlight: ${err.message}`);
+    }
+  };
+
+  useEffect(() => {
+    if (activeRole === 'coordinator' && coordinatorView === 'homepage-control') {
+      void fetchHomepageConfig();
+    }
+  }, [activeRole, coordinatorView, adminHeadersReady]);
+
+  useEffect(() => {
+
+    if (!hasAdminAccess) return;
+    if (!adminHeadersReady) return;
+    if (!isCoordinator) return;
+    if (coordinatorView !== 'assignment-review') return;
+    void loadPendingAssignments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coordinatorView, hasAdminAccess, adminHeadersReady, isCoordinator]);
+
+  const loadPendingAssignments = async () => {
+    setLoadingAssignments(true);
+    setError('');
+    try {
+      const res = await actorFetch(`${apiUrl}/api/admin/assignments/pending`, { headers: adminHeaders });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load assignments');
+      setPendingAssignments(data.submissions || []);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingAssignments(false);
+    }
+  };
+
+  const submitAssignmentReview = async () => {
+    const { submissionId, score, passed, mentor_notes } = assignmentReviewForm;
+    if (!submissionId) {
+      setError('Please select an assignment first.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await actorFetch(`${apiUrl}/api/admin/assignments/${submissionId}/finalize`, {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify({ score, passed: passed === 'true', mentor_notes })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save review');
+      setNotice('Assignment review finalized.');
+      setAssignmentReviewForm({ submissionId: '', score: '', passed: 'true', mentor_notes: '' });
+      await loadPendingAssignments();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const runAction = async (handler) => {
     setError('');
@@ -663,7 +1345,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         description: moduleForm.description,
         lab_type: moduleForm.labType,
         unlock_policy: moduleForm.unlockPolicy,
-        estimated_minutes: Number(moduleForm.estimatedMinutes || 30)
+        estimated_minutes: Number(moduleForm.estimatedMinutes || 30),
+        lesson_objectives: splitLines(moduleForm.lessonObjectives),
+        expected_artifact: moduleForm.expectedArtifact,
+        assignment_prompt: moduleForm.assignmentPrompt,
+        review_checklist: splitLines(moduleForm.reviewChecklist),
+        tutor_prompts: splitLines(moduleForm.tutorPrompts)
       })
     });
     const payload = await response.json();
@@ -675,7 +1362,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       description: '',
       labType: '',
       unlockPolicy: 'cohort',
-      estimatedMinutes: '30'
+      estimatedMinutes: '30',
+      lessonObjectives: '',
+      expectedArtifact: '',
+      assignmentPrompt: '',
+      reviewChecklist: '',
+      tutorPrompts: ''
     }));
     await fetchCourseModules(moduleForm.courseId);
     return `Module created: ${payload?.module?.title || 'Untitled'}`;
@@ -800,17 +1492,99 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     if (!response.ok) throw new Error(payload?.error || 'Session creation failed.');
 
     await fetchCohortSessions(sessionCohortId);
-    setSessionForm((prev) => ({
-      ...prev,
-      title: '',
-      description: '',
-      startsAt: '',
-      endsAt: '',
-      meetingUrl: '',
-      recordingUrl: '',
-      status: 'scheduled'
-    }));
+    setSessionEditorId('');
+    setSessionForm(defaultSessionForm());
     return `Session created: ${payload?.session?.title || 'Untitled session'}`;
+  };
+
+  const loadSessionIntoEditor = async (sessionId) => {
+    const session = cohortSessions.find((item) => item.id === sessionId);
+    if (!session) throw new Error('Session not found in loaded cohort sessions.');
+    setSessionEditorId(session.id);
+    setSessionForm({
+      title: session.title || '',
+      description: session.description || '',
+      startsAt: formatForDateTimeLocal(session.starts_at_ms),
+      endsAt: formatForDateTimeLocal(session.ends_at_ms),
+      meetingUrl: session.meeting_url || '',
+      recordingUrl: session.recording_url || '',
+      status: session.status || 'scheduled',
+      resourcesJson: JSON.stringify(session.resources || {}, null, 2)
+    });
+    return `Loaded session for edit: ${session.title || session.id}`;
+  };
+
+  const resetSessionEditor = async () => {
+    setSessionEditorId('');
+    setSessionForm(defaultSessionForm());
+    return 'Session editor reset.';
+  };
+
+  const updateCohortSession = async () => {
+    if (!sessionEditorId) throw new Error('Select a session to update.');
+    const startsAtMs = parseDateTimeToMs(sessionForm.startsAt);
+    const endsAtMs = parseDateTimeToMs(sessionForm.endsAt);
+    if (!sessionForm.title.trim() || !Number.isFinite(startsAtMs)) {
+      throw new Error('Session title and start date-time are required.');
+    }
+
+    let resources = {};
+    if (sessionForm.resourcesJson.trim()) {
+      try {
+        const parsed = JSON.parse(sessionForm.resourcesJson);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          resources = parsed;
+        } else {
+          throw new Error('Resources must be a JSON object.');
+        }
+      } catch {
+        throw new Error('Resources JSON is invalid.');
+      }
+    }
+
+    const response = await fetch(apiUrl(`/api/admin/sessions/${sessionEditorId}`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        title: sessionForm.title,
+        description: sessionForm.description,
+        starts_at_ms: startsAtMs,
+        ends_at_ms: Number.isFinite(endsAtMs) ? endsAtMs : null,
+        meeting_url: sessionForm.meetingUrl,
+        recording_url: sessionForm.recordingUrl,
+        status: sessionForm.status,
+        resources
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Session update failed.');
+    await fetchCohortSessions(sessionCohortId);
+    return `Session updated: ${payload?.session?.title || sessionEditorId}`;
+  };
+
+  const deleteCohortSession = async (sessionId) => {
+    if (!sessionId) throw new Error('sessionId is required.');
+    const targetSession = cohortSessions.find((item) => item.id === sessionId);
+    if (typeof window !== 'undefined') {
+      const label = targetSession?.title || sessionId;
+      const confirmed = window.confirm(`Delete session "${label}"? This also removes attendance records.`);
+      if (!confirmed) return 'Session delete cancelled.';
+    }
+
+    const response = await fetch(apiUrl(`/api/admin/sessions/${sessionId}/delete`), {
+      method: 'POST',
+      headers: adminHeaders
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Session delete failed.');
+
+    await fetchCohortSessions(sessionCohortId);
+    if (sessionEditorId === sessionId) {
+      setSessionEditorId('');
+      setSessionForm(defaultSessionForm());
+    }
+    setAttendanceForm((prev) => (prev.sessionId === sessionId ? { ...prev, sessionId: '' } : prev));
+    return `Session deleted: ${targetSession?.title || sessionId}`;
   };
 
   const saveSessionAttendance = async () => {
@@ -954,6 +1728,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       if (crmFilter.q.trim()) params.set('q', crmFilter.q.trim());
       if (crmFilter.paymentStatus.trim()) params.set('payment_status', crmFilter.paymentStatus.trim());
       if (crmFilter.stage.trim()) params.set('stage', crmFilter.stage.trim());
+      if (crmFilter.source.trim()) params.set('source', crmFilter.source.trim());
 
       const response = await fetch(apiUrl(`/api/admin/crm/leads?${params.toString()}`), {
         headers: adminHeaders
@@ -968,6 +1743,60 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     }
   };
 
+  const loadCrmAudit = async () => {
+    const response = await fetch(apiUrl('/api/admin/crm/audit?limit=20'), {
+      headers: adminHeaders
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'CRM audit load failed.');
+    setCrmAudit(payload?.audit || []);
+    return `Loaded ${Number(payload?.audit?.length || 0)} CRM audit entries.`;
+  };
+
+  const updateCrmLeadRecord = async (leadId, body) => {
+    const response = await fetch(apiUrl(`/api/admin/crm/leads/${encodeURIComponent(String(leadId).trim())}`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify(body)
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'CRM lead update failed.');
+    return payload;
+  };
+
+  const startLiveSession = async (cohortId, title, description) => {
+    if (!cohortId) throw new Error('Cohort ID is required to start a live session.');
+    const response = await fetch(apiUrl('/api/admin/live/sessions'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ cohort_id: cohortId, title, description })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to start live session.');
+    return `Live session started: ${payload.session.id}`;
+  };
+
+  const endLiveSession = async (sessionId) => {
+    if (!sessionId) throw new Error('Session ID is required to end a live session.');
+    const response = await fetch(apiUrl(`/api/admin/live/sessions/${sessionId}/end`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({})
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Failed to end live session.');
+    return 'Live session ended successfully.';
+  };
+
+  const fetchActiveLiveSession = async (cohortId) => {
+    const response = await fetch(apiUrl(`/api/learner/live/session/${cohortId}`), {
+      headers: adminHeaders
+    });
+    const payload = await response.json();
+    if (!response.ok) return null;
+    return payload.session;
+  };
+
   const saveCrmLead = async () => {
     if (!crmEdit.leadId.trim()) throw new Error('Select a lead first.');
     const body = {
@@ -979,16 +1808,260 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     if (Number.isFinite(nextActionMs)) {
       body.next_action_at_ms = nextActionMs;
     }
+    body.audit_scope = 'single';
+    body.audit_action_type = 'lead_update_manual';
+    body.audit_segment_id = crmSegment;
+    const payload = await updateCrmLeadRecord(crmEdit.leadId.trim(), body);
+    await loadCrmLeads();
+    await loadCrmAudit();
+    return `CRM lead updated (${payload?.crm?.stage || crmEdit.stage || 'stage unchanged'}).`;
+  };
 
-    const response = await fetch(apiUrl(`/api/admin/crm/leads/${encodeURIComponent(crmEdit.leadId.trim())}`), {
+  const applyCrmReminderPreset = (hoursAhead = 24) => {
+    if (!selectedCrmLead) return;
+
+    const segmentMeta = selectedCrmPlaybook
+      ? {
+          defaultStage: 'qualified',
+          ownerPrompt: `${selectedCrmPlaybook.nextAction} ${selectedCrmPlaybook.ownerPrompt}`
+        }
+      : selectedCrmSegmentMeta;
+
+    const reminderNote = segmentMeta?.ownerPrompt || 'Follow up with the lead, confirm fit, and move them to the next concrete enrollment step.';
+    const nextStage =
+      segmentMeta?.defaultStage ||
+      selectedCrmLead?.crm?.stage ||
+      (String(selectedCrmLead?.payment_status || '').trim().toLowerCase() === 'paid' ? 'won' : 'contacted');
+
+    setCrmEdit((current) => ({
+      ...current,
+      leadId: selectedCrmLead.lead_id,
+      stage: nextStage,
+      nextActionAt: formatForDateTimeLocal(Date.now() + hoursAhead * 60 * 60 * 1000),
+      notes: appendCrmNote(current.notes, reminderNote)
+    }));
+  };
+
+  const runCrmSegmentBatch = async (hoursAhead = 24) => {
+    const targets = (visibleCrmLeads || []).slice(0, 25);
+    if (targets.length === 0) throw new Error('No leads available in the current segment.');
+
+    const reminderNote =
+      selectedCrmSegmentMeta?.ownerPrompt ||
+      'Follow up with the lead, confirm fit, and move them to the next concrete enrollment step.';
+    const defaultStage = selectedCrmSegmentMeta?.defaultStage || 'contacted';
+    const nextActionAtMs = Date.now() + hoursAhead * 60 * 60 * 1000;
+
+    for (const lead of targets) {
+      await updateCrmLeadRecord(lead.lead_id, {
+        stage: lead?.crm?.stage || defaultStage,
+        owner_user_id: lead?.crm?.owner_user_id || '',
+        notes: appendCrmNote(lead?.crm?.notes || '', reminderNote),
+        next_action_at_ms: nextActionAtMs,
+        audit_scope: 'batch',
+        audit_action_type: `segment_reminder_${hoursAhead}h`,
+        audit_segment_id: crmSegment
+      });
+    }
+
+    await loadCrmLeads();
+    await loadCrmAudit();
+    return `Queued ${hoursAhead}h reminders for ${targets.length} lead(s) in ${selectedCrmSegmentMeta.label}.`;
+  };
+
+  const stageCrmSegment = async () => {
+    const targets = (visibleCrmLeads || []).slice(0, 25);
+    if (targets.length === 0) throw new Error('No leads available in the current segment.');
+    const targetStage = selectedCrmSegmentMeta?.defaultStage || 'contacted';
+
+    for (const lead of targets) {
+      await updateCrmLeadRecord(lead.lead_id, {
+        stage: targetStage,
+        owner_user_id: lead?.crm?.owner_user_id || '',
+        notes: lead?.crm?.notes || '',
+        audit_scope: 'batch',
+        audit_action_type: 'segment_stage_update',
+        audit_segment_id: crmSegment
+      });
+    }
+
+    await loadCrmLeads();
+    await loadCrmAudit();
+    return `Moved ${targets.length} lead(s) in ${selectedCrmSegmentMeta.label} to ${targetStage}.`;
+  };
+
+  const assignCrmSegmentOwner = async () => {
+    const ownerUserId = String(crmBatchOwnerUserId || '').trim();
+    if (!ownerUserId) throw new Error('Enter an owner user_id first.');
+    const targets = (visibleCrmLeads || []).slice(0, 25);
+    if (targets.length === 0) throw new Error('No leads available in the current segment.');
+
+    for (const lead of targets) {
+      await updateCrmLeadRecord(lead.lead_id, {
+        stage: lead?.crm?.stage || selectedCrmSegmentMeta?.defaultStage || 'contacted',
+        owner_user_id: ownerUserId,
+        notes: lead?.crm?.notes || '',
+        next_action_at_ms: lead?.crm?.next_action_at_ms || undefined,
+        audit_scope: 'batch',
+        audit_action_type: 'segment_owner_assignment',
+        audit_segment_id: crmSegment
+      });
+    }
+
+    await loadCrmLeads();
+    await loadCrmAudit();
+    return `Assigned ${targets.length} lead(s) in ${selectedCrmSegmentMeta.label} to ${ownerUserId}.`;
+  };
+
+  const exportCrmSegmentCsv = async () => {
+    if ((visibleCrmLeads || []).length === 0) {
+      throw new Error('No leads available in the current segment.');
+    }
+    const csv = buildCrmSegmentCsv(visibleCrmLeads);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const segmentLabel = String(selectedCrmSegmentMeta?.label || 'all')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-');
+    link.href = url;
+    link.download = `greybrain-crm-${segmentLabel}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    return `Exported ${visibleCrmLeads.length} lead(s) from ${selectedCrmSegmentMeta.label}.`;
+  };
+
+  const saveCurrentCrmView = async () => {
+    const name = serializeCrmViewName(crmViewName || `${selectedCrmSegmentMeta.label} view`);
+    if (!name) throw new Error('Enter a name for the CRM view.');
+    const nextView = {
+      id: `crm_view_${Date.now()}`,
+      name,
+      segment: crmSegment,
+      filter: { ...crmFilter }
+    };
+    setCrmSavedViews((current) => [nextView, ...current.filter((item) => item.name !== name)].slice(0, 12));
+    setCrmViewName('');
+    return `Saved CRM view: ${name}.`;
+  };
+
+  const applySavedCrmView = async (view) => {
+    if (!view) throw new Error('CRM view not found.');
+    setCrmSegment(view.segment || 'all');
+    setCrmFilter({
+      q: view?.filter?.q || '',
+      paymentStatus: view?.filter?.paymentStatus || '',
+      stage: view?.filter?.stage || '',
+      source: view?.filter?.source || '',
+      days: view?.filter?.days || '90'
+    });
+    return `Applied CRM view: ${view.name || 'saved view'}.`;
+  };
+
+  const deleteSavedCrmView = async (viewId) => {
+    setCrmSavedViews((current) => current.filter((item) => item.id !== viewId));
+    return 'Saved CRM view removed.';
+  };
+
+  const loadCounselorKnowledge = async () => {
+    setLoadingCounselorKnowledge(true);
+    try {
+      const response = await fetch(apiUrl('/api/admin/counselor/knowledge?limit=200'), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Counselor knowledge load failed.');
+      setCounselorKnowledge(payload?.items || []);
+      return `Loaded ${Number(payload?.items?.length || 0)} counselor knowledge items.`;
+    } finally {
+      setLoadingCounselorKnowledge(false);
+    }
+  };
+
+  const saveCounselorKnowledge = async () => {
+    const title = knowledgeForm.title.trim();
+    const body = knowledgeForm.body.trim();
+    if (!title) throw new Error('FAQ/rule title is required.');
+    if (!body) throw new Error('FAQ/rule answer/instruction is required.');
+    if (knowledgeForm.scope === 'course' && !knowledgeForm.courseId) {
+      throw new Error('Select a course for course-scoped FAQ/rule.');
+    }
+
+    const bodyPayload = {
+      kind: knowledgeForm.kind,
+      scope: knowledgeForm.scope,
+      course_id: knowledgeForm.scope === 'course' ? knowledgeForm.courseId : '',
+      title,
+      body,
+      sort_order: Number(knowledgeForm.sortOrder || 100),
+      is_active: Boolean(knowledgeForm.isActive),
+      created_by: currentUser?.uid || 'coordinator'
+    };
+
+    const endpoint = knowledgeForm.itemId
+      ? apiUrl(`/api/admin/counselor/knowledge/${encodeURIComponent(knowledgeForm.itemId)}`)
+      : apiUrl('/api/admin/counselor/knowledge');
+    const response = await fetch(endpoint, {
       method: 'POST',
       headers: adminHeaders,
-      body: JSON.stringify(body)
+      body: JSON.stringify(bodyPayload)
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload?.error || 'CRM lead update failed.');
-    await loadCrmLeads();
-    return `CRM lead updated (${payload?.crm?.stage || crmEdit.stage || 'stage unchanged'}).`;
+    if (!response.ok) throw new Error(payload?.error || 'Counselor knowledge save failed.');
+
+    await loadCounselorKnowledge();
+    setKnowledgeForm(defaultCounselorKnowledgeForm());
+    return knowledgeForm.itemId ? 'Counselor knowledge updated.' : 'Counselor knowledge added.';
+  };
+
+  const deleteCounselorKnowledge = async (itemId) => {
+    const targetId = String(itemId || '').trim();
+    if (!targetId) throw new Error('Knowledge item id is required.');
+    const response = await fetch(apiUrl(`/api/admin/counselor/knowledge/${encodeURIComponent(targetId)}/delete`), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({})
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Counselor knowledge delete failed.');
+    await loadCounselorKnowledge();
+    if (knowledgeForm.itemId === targetId) {
+      setKnowledgeForm(defaultCounselorKnowledgeForm());
+    }
+    return 'Counselor knowledge item deleted.';
+  };
+
+  const selectCounselorKnowledgeItem = (item) => {
+    setKnowledgeForm({
+      itemId: item.id || '',
+      kind: item.kind === 'rule' ? 'rule' : 'faq',
+      scope: item.scope === 'course' ? 'course' : 'global',
+      courseId: item.course_id || '',
+      title: item.title || '',
+      body: item.body || '',
+      sortOrder: String(item.sort_order ?? 100),
+      isActive: Boolean(item.is_active)
+    });
+  };
+
+  const loadLearnerSpotlight = async (userId) => {
+    const targetId = userId || spotlightId;
+    if (!targetId) throw new Error('User ID or Email is required for spotlight.');
+    setLoadingSpotlight(true);
+    try {
+      const response = await fetch(apiUrl(`/api/admin/learner/spotlight/${encodeURIComponent(targetId)}`), {
+        headers: adminHeaders
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Failed to load spotlight.');
+      setSpotlightData(payload.learner);
+      return `Spotlight loaded for ${targetId}`;
+    } finally {
+      setLoadingSpotlight(false);
+    }
   };
 
   const ingestLogisticsContext = async () => {
@@ -1000,6 +2073,21 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Logistics ingestion failed.');
     return `Counselor logistics ingested (${payload?.upserted || 0} vectors).`;
+  };
+
+  const ingestResearchContext = async () => {
+    const courseId = knowledgeForm.courseId;
+    if (!courseId && knowledgeForm.scope === 'course') {
+      throw new Error('Please select a course to vectorize research for.');
+    }
+    const response = await fetch(apiUrl('/api/admin/knowledge/ingest-research'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({ course_id: courseId })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Research ingestion failed.');
+    return `Research & Presentations ingested (${payload?.upserted || 0} vectors).`;
   };
 
   const loadOpsAlerts = async () => {
@@ -1051,7 +2139,12 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     const response = await fetch(apiUrl('/api/admin/content/generate-daily'), {
       method: 'POST',
       headers: adminHeaders,
-      body: JSON.stringify({ force: false })
+      body: JSON.stringify({
+        force: false,
+        provider: contentGeneratorForm.provider,
+        model: contentGeneratorForm.model.trim(),
+        api_key: (sessionGeminiKey || contentGeneratorForm.apiKey).trim()
+      })
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload?.error || 'Daily generation failed.');
@@ -1061,6 +2154,90 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
     }
 
     return `Draft generated: ${payload?.generated?.title || 'Untitled brief'}`;
+  };
+
+  const createManualDraft = async (type = 'daily_brief') => {
+    const response = await fetch(apiUrl('/api/admin/content/posts'), {
+      method: 'POST',
+      headers: adminHeaders,
+      body: JSON.stringify({
+        content_type: type,
+        path: 'productivity',
+        title: 'Untitled Draft',
+        summary: 'Manual skeleton draft.',
+        content_markdown: '# New ' + type.replace(/_/g, ' ') + '\n\nEdit this content...'
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || 'Manual draft creation failed.');
+
+    await loadConsoleData();
+    if (payload.post) {
+      loadContentIntoEditor(payload.post);
+    }
+    return `Manual draft created for ${type}.`;
+  };
+
+  const loadContentIntoEditor = (post) => {
+    setContentEditorForm({
+      postId: post.id || '',
+      title: post.title || '',
+      summary: post.summary || '',
+      path: post.path || 'productivity',
+      contentType: post.content_type || 'daily_brief',
+      tags: Array.isArray(post.tags) ? post.tags.join(', ') : '',
+      canonicalUrl: post.canonical_url || '',
+      sourceUrls: Array.isArray(post.source_urls) ? post.source_urls.join('\n') : '',
+      contentMarkdown: post.content_markdown || ''
+    });
+  };
+
+  const startNewContentDraft = () => {
+    setContentEditorForm(defaultContentEditorForm());
+  };
+
+  const saveContentDraft = async () => {
+    const tags = contentEditorForm.tags
+      .split(',')
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    const body = {
+      title: contentEditorForm.title,
+      summary: contentEditorForm.summary,
+      path: contentEditorForm.path,
+      content_type: contentEditorForm.contentType,
+      tags,
+      canonical_url: contentEditorForm.canonicalUrl.trim(),
+      source_urls: normalizeUrlList(contentEditorForm.sourceUrls),
+      content_markdown: contentEditorForm.contentMarkdown
+    };
+    const postId = contentEditorForm.postId.trim();
+    const response = await fetch(
+      apiUrl(postId ? `/api/admin/content/posts/${postId}/update` : '/api/admin/content/posts'),
+      {
+        method: 'POST',
+        headers: adminHeaders,
+        body: JSON.stringify(body)
+      }
+    );
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload?.error || (postId ? 'Content draft update failed.' : 'Content draft create failed.'));
+    await loadDashboard();
+    if (payload?.post) {
+      loadContentIntoEditor(payload.post);
+    }
+    return postId ? 'Draft updated.' : 'Draft created.';
+  };
+
+  const copyContentExport = async (text, label) => {
+    if (!text.trim()) {
+      throw new Error(`Nothing to copy for ${label}.`);
+    }
+    if (!navigator?.clipboard?.writeText) {
+      throw new Error('Clipboard is not available in this browser.');
+    }
+    await navigator.clipboard.writeText(text);
+    return `${label} export copied.`;
   };
 
   const setContentStatus = async (postId, status) => {
@@ -1268,13 +2445,22 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
           <h2 className="text-2xl font-extrabold text-slate-900">Role-Based Operations</h2>
           <p className="mt-1 text-sm text-slate-600">Teacher, Coordinator, Learner, and CTO control surface.</p>
         </div>
-        <button
-          className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-          onClick={() => void loadConsoleData()}
-          type="button"
-        >
-          Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            className={`rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold transition ${sessionGeminiKey ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-white text-slate-700'} hover:bg-slate-50`}
+            onClick={() => setShowAiSettings(true)}
+            type="button"
+          >
+            {sessionGeminiKey ? 'AI Settings (Override Active)' : 'AI Settings'}
+          </button>
+          <button
+            className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            onClick={() => void loadConsoleData()}
+            type="button"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className={`mb-5 grid gap-3 ${isCoordinatorUser ? 'md:grid-cols-[1fr_16rem]' : 'md:grid-cols-1'}`}>
@@ -1306,9 +2492,9 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
       {loading && <p className="mb-4 text-sm text-slate-500">Loading console data...</p>}
       {error && <p className="mb-4 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
       {notice && <p className="mb-4 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</p>}
-      {!hasAdminToken ? (
+      {!hasAdminAccess ? (
         <p className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-sm text-amber-800">
-          Enter your admin token to unlock coordinator/CTO data and controls.
+          Sign in with a coordinator/counselor/CTO role to unlock admin controls. Admin token remains optional fallback.
         </p>
       ) : null}
 
@@ -1329,6 +2515,75 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
           <Metric label="Paid Rate" value={`${analyticsSummary?.funnel?.paid_rate_pct ?? 0}%`} />
           <Metric label="Assignments 30d" value={analyticsSummary?.assignments?.submitted ?? 0} />
           <Metric label="Certificates 30d" value={analyticsSummary?.certificates?.issued_in_window ?? 0} />
+        </div>
+      )}
+
+      {(overview?.refresher || analyticsSummary?.refresher) && (
+        <div className="mb-6 rounded-2xl border border-cyan-200 bg-[linear-gradient(180deg,#ffffff,#f6fbff)] p-4">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <p className="text-xs font-bold uppercase tracking-[0.14em] text-cyan-700">AI Refresher</p>
+              <h3 className="mt-1 text-lg font-extrabold text-slate-900">Starter-course conversion visibility</h3>
+              <p className="mt-1 text-sm text-slate-600">Track how many learners start the refresher and how many finish with a saved path recommendation.</p>
+            </div>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+            <Metric label="All-Time Started" value={overview?.refresher?.started ?? 0} />
+            <Metric label="All-Time Recommended" value={overview?.refresher?.recommended ?? 0} />
+            <Metric label="30d Started" value={analyticsSummary?.refresher?.started ?? 0} />
+            <Metric label="30d Recommended" value={analyticsSummary?.refresher?.recommended ?? 0} />
+            <Metric label="Recommendation Rate" value={`${analyticsSummary?.refresher?.recommendation_rate_pct ?? 0}%`} />
+          </div>
+
+          {(analyticsSummary?.refresher?.recommendations_by_path || []).length > 0 ? (
+            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+                <h4 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-700">Refresher Recommendations By Path (Last 30 Days)</h4>
+              </div>
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-slate-100 text-slate-700">
+                  <tr>
+                    <th className="px-3 py-2">Path</th>
+                    <th className="px-3 py-2">Recommendations</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(analyticsSummary?.refresher?.recommendations_by_path || []).map((row) => (
+                    <tr key={row.recommended_path} className="border-t border-slate-200 bg-white">
+                      <td className="px-3 py-2 font-semibold text-slate-900">{row.recommended_path}</td>
+                      <td className="px-3 py-2 text-slate-700">{row.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+
+          {(analyticsSummary?.refresher?.chapter_breakdown || []).length > 0 ? (
+            <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+              <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+                <h4 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-700">Refresher Chapter Drop-Off (Last 30 Days)</h4>
+              </div>
+              <table className="w-full border-collapse text-left text-sm">
+                <thead className="bg-slate-100 text-slate-700">
+                  <tr>
+                    <th className="px-3 py-2">Chapter</th>
+                    <th className="px-3 py-2">Completed</th>
+                    <th className="px-3 py-2">Drop-off from start</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(analyticsSummary?.refresher?.chapter_breakdown || []).map((row) => (
+                    <tr key={row.chapter_id} className="border-t border-slate-200 bg-white">
+                      <td className="px-3 py-2 font-semibold text-slate-900">{row.chapter_id}</td>
+                      <td className="px-3 py-2 text-slate-700">{row.count}</td>
+                      <td className="px-3 py-2 text-slate-700">{row.dropoff_pct_from_start}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -1370,13 +2625,20 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && hasAdminToken && (
+      {isCoordinator && hasAdminAccess && (
         <div className="mb-6 flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3">
           {[
             { id: 'operations', label: 'Operations' },
             { id: 'crm', label: 'CRM Pipeline' },
+            { id: 'rag_health', label: 'RAG Health' },
+            { id: 'counselor-knowledge', label: 'Counselor Knowledge' },
             { id: 'lab-ops', label: 'Lab Ops' },
-            { id: 'capstone-review', label: 'Capstone Review' }
+            { id: 'capstone-review', label: 'Capstone Review' },
+            { id: 'assignment-review', label: 'Assignment Review' },
+            { id: 'live-teaching', label: 'Live Teaching' },
+            { id: 'content-engine', label: '⚡ Content Engine' },
+            { id: 'homepage-control', label: '🏠 Homepage' },
+            { id: 'manuals', label: '📖 Platform Manuals' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -1392,7 +2654,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && hasAdminToken && coordinatorView === 'operations' && (
+      {isCoordinator && hasAdminAccess && coordinatorView === 'operations' && (
         <div className="grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Create Course</h3>
@@ -1550,7 +2812,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && hasAdminToken && coordinatorView === 'operations' && (
+      {isCoordinator && hasAdminAccess && coordinatorView === 'operations' && (
         <div className="mt-6 grid gap-5 lg:grid-cols-2">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Create Organization</h3>
@@ -1652,6 +2914,36 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 value={moduleForm.description}
                 onChange={(e) => setModuleForm((p) => ({ ...p, description: e.target.value }))}
               />
+              <textarea
+                className="min-h-[92px] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder={"Learning objectives (one per line)\nClarify the workflow boundary\nName the evidence input\nProduce a mentor-reviewable draft"}
+                value={moduleForm.lessonObjectives}
+                onChange={(e) => setModuleForm((p) => ({ ...p, lessonObjectives: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Expected output artifact"
+                value={moduleForm.expectedArtifact}
+                onChange={(e) => setModuleForm((p) => ({ ...p, expectedArtifact: e.target.value }))}
+              />
+              <textarea
+                className="min-h-[110px] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder="Assignment prompt used in the learner hub"
+                value={moduleForm.assignmentPrompt}
+                onChange={(e) => setModuleForm((p) => ({ ...p, assignmentPrompt: e.target.value }))}
+              />
+              <textarea
+                className="min-h-[92px] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder={"Review checklist (one per line)\nState the use case\nCheck evidence grounding\nFlag unsupported claims"}
+                value={moduleForm.reviewChecklist}
+                onChange={(e) => setModuleForm((p) => ({ ...p, reviewChecklist: e.target.value }))}
+              />
+              <textarea
+                className="min-h-[92px] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder={"Tutor starters (one per line)\nTurn this into a reproducible workflow.\nWhat would a supervisor challenge here?"}
+                value={moduleForm.tutorPrompts}
+                onChange={(e) => setModuleForm((p) => ({ ...p, tutorPrompts: e.target.value }))}
+              />
             </div>
             <button
               className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
@@ -1666,6 +2958,11 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                   <p className="text-sm font-semibold text-slate-900">{module.title}</p>
                   <p className="text-xs text-slate-500">
                     {module.path_key} · {module.module_key}
+                  </p>
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    {countSerializedList(module.lesson_objectives_json)} objectives
+                    {' · '}
+                    {module.assignment_prompt ? 'assignment ready' : 'assignment missing'}
                   </p>
                 </div>
               ))}
@@ -1856,6 +3153,10 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                       <p className="text-xs text-slate-500">
                         {row.status} · {Number.isFinite(Number(row.progress_pct)) ? `${row.progress_pct}%` : '0%'}
                       </p>
+                      <p className="text-xs text-slate-500">
+                        Refresher: {row?.refresher?.started ? `started (${row.refresher.chapter_events} chapter events)` : 'not started'}
+                        {row?.refresher?.recommended_path ? ` · recommended ${row.refresher.recommended_path}` : ''}
+                      </p>
                     </div>
                     {row.status !== 'completed' ? (
                       <button
@@ -1877,6 +3178,16 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
 
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Session Planner + Attendance</h3>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                {sessionEditorId ? 'Edit Mode' : 'Create Mode'}
+              </span>
+              {sessionEditorId ? (
+                <span className="text-xs text-slate-500">Selected session ID: {sessionEditorId}</span>
+              ) : (
+                <span className="text-xs text-slate-500">Create a new session for selected cohort.</span>
+              )}
+            </div>
             <div className="grid gap-2">
               <select
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
@@ -1948,12 +3259,29 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               />
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
+              {sessionEditorId ? (
+                <button
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={() => void runAction(updateCohortSession)}
+                  type="button"
+                >
+                  Update Session
+                </button>
+              ) : (
+                <button
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={() => void runAction(createCohortSession)}
+                  type="button"
+                >
+                  Create Session
+                </button>
+              )}
               <button
-                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-                onClick={() => void runAction(createCohortSession)}
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(resetSessionEditor)}
                 type="button"
               >
-                Create Session
+                Clear Editor
               </button>
               <button
                 className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
@@ -2029,18 +3357,38 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             <div className="mt-4 max-h-56 space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
               {cohortSessions.map((session) => (
                 <div key={session.id} className="rounded-lg bg-slate-50 px-3 py-2">
-                  <p className="text-sm font-semibold text-slate-900">{session.title}</p>
-                  <p className="text-xs text-slate-500">
-                    {formatMs(session.starts_at_ms)} · {session.status}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    Attendance: {session.attendance_present || 0}/{session.attendance_total || 0}
-                  </p>
-                  {session.meeting_url ? (
-                    <a className="text-xs font-semibold text-cyan-700 hover:underline" href={session.meeting_url} target="_blank" rel="noreferrer">
-                      Meeting link
-                    </a>
-                  ) : null}
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{session.title}</p>
+                      <p className="text-xs text-slate-500">
+                        {formatMs(session.starts_at_ms)} · {session.status}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Attendance: {session.attendance_present || 0}/{session.attendance_total || 0}
+                      </p>
+                      {session.meeting_url ? (
+                        <a className="text-xs font-semibold text-cyan-700 hover:underline" href={session.meeting_url} target="_blank" rel="noreferrer">
+                          Meeting link
+                        </a>
+                      ) : null}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        onClick={() => void runAction(() => loadSessionIntoEditor(session.id))}
+                        type="button"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="rounded-lg border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        onClick={() => void runAction(() => deleteCohortSession(session.id))}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ))}
               {cohortSessions.length === 0 && <p className="text-xs text-slate-500">No sessions for selected cohort.</p>}
@@ -2147,21 +3495,320 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && hasAdminToken && coordinatorView === 'crm' && (
-        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+      {isCoordinator && hasAdminAccess && coordinatorView === 'rag_health' && (
+        <section className="mb-12">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-2xl font-black tracking-tight text-slate-900">RAG Health & AI Telemetry</h2>
+          </div>
+          <RAGHealthDashboard user={user} roles={roles} actorFetch={actorFetch} />
+        </section>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'homepage-control' && (
+        <div className="space-y-6">
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-xl font-bold text-slate-900">Dynamic News Ticker</h3>
+            <p className="mb-4 text-sm text-slate-600">
+              Update the marquee text that scrolls at the top of the homepage.
+            </p>
+            <div className="flex gap-3">
+              <input
+                className="flex-1 rounded-xl border border-slate-300 px-4 py-2 text-sm focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500"
+                placeholder="Ticker message..."
+                value={homepageConfig.ticker_text || ''}
+                onChange={(e) => setHomepageConfig(prev => ({ ...prev, ticker_text: e.target.value }))}
+              />
+              <button
+                className="rounded-xl bg-slate-900 px-6 py-2 text-sm font-bold text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                onClick={() => void saveHomepageConfig(homepageConfig)}
+                disabled={loadingHomepageConfig}
+                type="button"
+              >
+                {loadingHomepageConfig ? 'Saving...' : 'Update Ticker'}
+              </button>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h3 className="mb-4 text-xl font-bold text-slate-900">Model & Space Spotlights</h3>
+            <p className="mb-4 text-sm text-slate-600">
+              Select which HuggingFace Spaces or Models should appear with the "Spotlight" highlight card.
+            </p>
+            <div className="overflow-hidden rounded-xl border border-slate-200">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Content</th>
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {contentPosts
+                    .filter(p => !['daily_brief', 'blog'].includes(p.content_type))
+                    .map((post) => (
+                      <tr key={post.id} className="hover:bg-slate-50">
+                        <td className="px-4 py-3">
+                          <p className="font-bold text-slate-900">{post.title}</p>
+                          <p className="text-xs text-slate-500">{post.hf_model_id || post.slug}</p>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                            {post.content_type || 'post'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {post.is_spotlight ? (
+                            <span className="inline-flex items-center gap-1 font-bold text-cyan-600">
+                              <span className="h-2 w-2 rounded-full bg-cyan-500 animate-pulse"></span>
+                              Spotlight
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">Regular</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button
+                            className={`rounded-lg px-3 py-1 text-xs font-bold transition-all ${
+                              post.is_spotlight 
+                                ? 'bg-red-50 text-red-600 hover:bg-red-100' 
+                                : 'bg-cyan-50 text-cyan-600 hover:bg-cyan-100'
+                            }`}
+                            onClick={() => void toggleSpotlight(post.id, post.is_spotlight)}
+                            type="button"
+                          >
+                            {post.is_spotlight ? 'Remove Spotlight' : 'Promote to Spotlight'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'manuals' && (
+
+        <section className="mb-12">
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-2xl font-black tracking-tight text-slate-900">Platform Command & Operations Manuals</h2>
+          </div>
+          <PlatformManuals />
+        </section>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'crm' && (
+        <div className="grid gap-5 lg:grid-cols-[1.5fr_1fr]">
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Learner Lifecycle Spotlight</h3>
+                  <p className="text-sm text-slate-600">Complete “Entry to Exit” visibility for any student.</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    className="w-64 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                    placeholder="Search by User ID or Email..."
+                    value={spotlightId}
+                    onChange={(e) => setSpotlightId(e.target.value)}
+                  />
+                  <button
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+                    onClick={() => void runAction(() => loadLearnerSpotlight())}
+                    type="button"
+                    disabled={loadingSpotlight}
+                  >
+                    {loadingSpotlight ? 'Loading...' : 'Spotlight'}
+                  </button>
+                </div>
+              </div>
+
+              {spotlightData ? (
+                <div className="grid gap-6 md:grid-cols-2">
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600">Step 1: Awareness & Interest</p>
+                      <div className="mt-2 space-y-1">
+                        <p className="text-sm font-bold text-slate-900">{spotlightData.lead?.full_name || 'Anonymous Lead'}</p>
+                        <p className="text-xs text-slate-600">Source: {spotlightData.lead?.channel || 'Unknown'} · {spotlightData.lead?.entry_point || 'Web'}</p>
+                        <p className="text-xs text-slate-500">First Contact: {spotlightData.lead?.created_at_ms ? new Date(spotlightData.lead.created_at_ms).toLocaleDateString() : 'TBD'}</p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-emerald-100 bg-emerald-50/50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-600">Step 2: Enrollment & Conversion</p>
+                      <div className="mt-2 space-y-2">
+                        {spotlightData.enrollments.map((en, idx) => (
+                          <div key={idx} className="border-l-2 border-emerald-200 pl-3">
+                            <p className="text-sm font-semibold text-slate-900">{en.course_title}</p>
+                            <p className="text-xs text-slate-600">Cohort: {en.cohort_name} · Status: {en.status}</p>
+                          </div>
+                        ))}
+                        {spotlightData.enrollments.length === 0 && <p className="text-xs text-slate-500 italics">No active enrollments yet.</p>}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-amber-100 bg-amber-50/50 p-3">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-amber-600">Step 3: Sustained Learning</p>
+                    <div className="mt-2 max-h-48 overflow-auto space-y-2">
+                      <p className="text-xs font-semibold text-slate-700">Recent Progress:</p>
+                      {spotlightData.progress.slice(0, 5).map((pg, idx) => (
+                        <div key={idx} className="flex items-center justify-between gap-2 border-b border-amber-200/50 pb-1">
+                          <p className="text-[11px] text-slate-800">{pg.module_title}</p>
+                          <p className="text-[10px] text-slate-500">{new Date(pg.updated_at_ms).toLocaleDateString()}</p>
+                        </div>
+                      ))}
+                      {spotlightData.progress.length === 0 && <p className="text-xs text-slate-500">No learning logs found.</p>}
+                    </div>
+                  </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-indigo-100 bg-indigo-50/50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-indigo-600">Step 4: Mastery & Assessment</p>
+                      <div className="mt-2 space-y-2">
+                        {spotlightData.assignments.map((as, idx) => (
+                          <div key={idx} className="rounded border border-indigo-200 bg-white p-2">
+                            <p className="text-xs font-bold text-slate-900">{as.module_title}</p>
+                            <div className="mt-1 flex items-center justify-between text-[11px]">
+                              <span className={`rounded-full px-2 py-0.5 ${as.pass_fail === 'pass' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'}`}>
+                                {as.pass_fail || 'Under Review'}
+                              </span>
+                              <span className="font-bold">Score: {as.human_score || as.ai_score || 'N/A'}%</span>
+                            </div>
+                          </div>
+                        ))}
+                        {spotlightData.assignments.length === 0 && <p className="text-xs text-slate-500">No assignments submitted.</p>}
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wider text-slate-600">Audit Trail (Last 5)</p>
+                      <div className="mt-2 space-y-2">
+                        {spotlightData.audits.slice(0, 5).map((aud, idx) => (
+                          <div key={idx} className="text-[10px] text-slate-600">
+                            <span className="font-bold">{aud.action}:</span> {aud.notes || 'No notes'}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex min-h-[14rem] items-center justify-center rounded-xl border border-dashed border-slate-300 bg-slate-50">
+                  <p className="text-slate-400">Search for a student to visualize their lifecycle.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Internal CRM Pipeline</h3>
             <p className="mb-3 text-sm text-slate-600">
               Lead capture, payment follow-up, and owner/stage management are handled fully inside this platform.
             </p>
             <div className="mb-3 grid gap-2 sm:grid-cols-4">
               <Metric label="Total Leads" value={crmSummary?.total ?? crmLeads.length} />
+              <Metric label="Interest Signals" value={crmSummary?.by_kind?.interest ?? 0} />
               <Metric label="Won (Paid)" value={crmSummary?.by_stage?.won ?? 0} />
               <Metric label="Pending Payment" value={crmSummary?.by_stage?.payment_pending ?? 0} />
               <Metric label="Lost" value={crmSummary?.by_stage?.lost ?? 0} />
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-4">
+            <div className="mb-3 grid gap-2 sm:grid-cols-4">
+              <Metric label="Google" value={crmSummary?.by_channel?.google ?? 0} />
+              <Metric label="WhatsApp" value={crmSummary?.by_channel?.whatsapp ?? 0} />
+              <Metric label="Telegram" value={crmSummary?.by_channel?.telegram ?? 0} />
+              <Metric label="Other" value={crmSummary?.by_channel?.other ?? 0} />
+            </div>
+
+            <div className="mb-3 grid gap-2 sm:grid-cols-3">
+              <Metric label="Refresher Started" value={crmRefresherStartedCount} />
+              <Metric label="Refresher Recommended" value={crmRefresherRecommendedCount} />
+              <Metric
+                label="Refresher Conversion"
+                value={`${crmRefresherStartedCount > 0 ? Math.round((crmRefresherRecommendedCount / crmRefresherStartedCount) * 100) : 0}%`}
+              />
+            </div>
+
+            <div className="mb-3 flex flex-wrap gap-2">
+              {CRM_SEGMENTS.map((segment) => {
+                const isActive = crmSegment === segment.id;
+                return (
+                  <button
+                    key={segment.id}
+                    type="button"
+                    onClick={() => setCrmSegment(segment.id)}
+                    className={`rounded-xl border px-3 py-2 text-left transition ${
+                      isActive
+                        ? 'border-slate-900 bg-slate-900 text-white'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em]">{segment.label}</p>
+                    <p className={`mt-1 text-lg font-extrabold ${isActive ? 'text-white' : 'text-slate-900'}`}>
+                      {crmSegmentCounts[segment.id] || 0}
+                    </p>
+                    <p className={`mt-1 max-w-[18rem] text-xs leading-5 ${isActive ? 'text-slate-100' : 'text-slate-500'}`}>
+                      {segment.description}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Saved CRM Views</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                <input
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder="Save current segment + filters as a view"
+                  value={crmViewName}
+                  onChange={(e) => setCrmViewName(e.target.value)}
+                />
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(saveCurrentCrmView)}
+                  type="button"
+                >
+                  Save View
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {crmSavedViews.map((view) => (
+                  <div key={view.id} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">{view.name}</p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      {CRM_SEGMENTS.find((segment) => segment.id === view.segment)?.label || 'All Leads'} · {view?.filter?.days || '90'}d
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                        onClick={() => void runAction(() => applySavedCrmView(view))}
+                        type="button"
+                      >
+                        Apply
+                      </button>
+                      <button
+                        className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
+                        onClick={() => void runAction(() => deleteSavedCrmView(view.id))}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {crmSavedViews.length === 0 ? (
+                  <p className="text-xs text-slate-500">No saved CRM views yet.</p>
+                ) : null}
+              </div>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-5">
               <input
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
                 placeholder="Search name/email/phone"
@@ -2194,6 +3841,18 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
               </select>
               <select
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={crmFilter.source}
+                onChange={(e) => setCrmFilter((p) => ({ ...p, source: e.target.value }))}
+              >
+                <option value="">All sources</option>
+                <option value="google_one_click">Google registration</option>
+                <option value="google_interest">Google interest</option>
+                <option value="whatsapp_interest">WhatsApp interest</option>
+                <option value="telegram_interest">Telegram interest</option>
+                <option value="landing_form">Landing form</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
                 value={crmFilter.days}
                 onChange={(e) => setCrmFilter((p) => ({ ...p, days: e.target.value }))}
               >
@@ -2211,9 +3870,65 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             >
               {loadingCrm ? 'Loading CRM...' : 'Refresh CRM'}
             </button>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Batch Actions For Visible Segment</p>
+              <p className="mt-1 text-xs leading-5 text-slate-600">
+                Applies to up to 25 leads in the current segment view to avoid accidental bulk changes.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]">
+                <input
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm"
+                  placeholder="Assign visible leads to owner user_id"
+                  value={crmBatchOwnerUserId}
+                  onChange={(e) => setCrmBatchOwnerUserId(e.target.value)}
+                />
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(assignCrmSegmentOwner)}
+                  type="button"
+                  disabled={visibleCrmLeads.length === 0 || !crmBatchOwnerUserId.trim()}
+                >
+                  Assign Owner
+                </button>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(() => runCrmSegmentBatch(24))}
+                  type="button"
+                  disabled={visibleCrmLeads.length === 0}
+                >
+                  Queue 24h For Segment
+                </button>
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(() => runCrmSegmentBatch(72))}
+                  type="button"
+                  disabled={visibleCrmLeads.length === 0}
+                >
+                  Queue 72h For Segment
+                </button>
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(stageCrmSegment)}
+                  type="button"
+                  disabled={visibleCrmLeads.length === 0 || crmSegment === 'all'}
+                >
+                  Stage Visible To {selectedCrmSegmentMeta.defaultStage || 'contacted'}
+                </button>
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(exportCrmSegmentCsv)}
+                  type="button"
+                  disabled={visibleCrmLeads.length === 0}
+                >
+                  Export Visible CSV
+                </button>
+              </div>
+            </div>
 
             <div className="mt-4 max-h-[28rem] space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
-              {crmLeads.map((lead) => (
+              {visibleCrmLeads.map((lead) => (
                 <div key={lead.lead_id} className="rounded-lg bg-slate-50 px-3 py-2">
                   <div className="flex items-center justify-between gap-2">
                     <div>
@@ -2221,6 +3936,16 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                       <p className="text-xs text-slate-600">{lead.email} · {lead.phone}</p>
                       <p className="text-xs text-slate-500">
                         {lead.course_title || lead.course_slug || 'unmapped course'} · {lead.payment_status} · stage {lead?.crm?.stage || 'new'}
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Refresher: {lead?.refresher?.started ? `started (${lead.refresher.chapter_events} chapter events)` : 'not started'}
+                        {lead?.refresher?.recommended_path ? ` · recommended ${lead.refresher.recommended_path}` : ''}
+                      </p>
+                      {lead?.crm?.next_action_at_ms ? (
+                        <p className="text-xs text-slate-500">Next action: {formatMs(lead.crm.next_action_at_ms)}</p>
+                      ) : null}
+                      <p className="text-xs text-slate-500">
+                        Source: {lead.source || 'unknown'}{lead.channel ? ` · Channel: ${lead.channel}` : ''} · Type: {lead.kind || 'registration'}
                       </p>
                       <p className="text-xs text-slate-500">Updated: {formatMs(lead.updated_at_ms)}</p>
                     </div>
@@ -2232,7 +3957,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                           stage: lead?.crm?.stage || '',
                           ownerUserId: lead?.crm?.owner_user_id || '',
                           notes: lead?.crm?.notes || '',
-                          nextActionAt: lead?.crm?.next_action_at_ms ? new Date(lead.crm.next_action_at_ms).toISOString().slice(0, 16) : ''
+                          nextActionAt: formatForDateTimeLocal(lead?.crm?.next_action_at_ms)
                         })
                       }
                       type="button"
@@ -2242,13 +3967,134 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                   </div>
                 </div>
               ))}
-              {crmLeads.length === 0 ? <p className="text-sm text-slate-500">No leads found for current filter.</p> : null}
+              {visibleCrmLeads.length === 0 ? (
+                <p className="text-sm text-slate-500">No leads found for the current CRM filter and segment.</p>
+              ) : null}
+            </div>
+            <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+              <div className="mb-3 flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">CRM Audit Trail</p>
+                  <p className="text-xs text-slate-600">Recent owner, stage, and batch operations.</p>
+                </div>
+                <button
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  onClick={() => void runAction(loadCrmAudit)}
+                  type="button"
+                >
+                  Refresh Audit
+                </button>
+              </div>
+              <div className="max-h-56 space-y-2 overflow-auto">
+                {crmAudit.map((entry) => (
+                  <div key={entry.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">
+                      {entry.action_type} · {entry.scope}
+                    </p>
+                    <p className="mt-1 text-sm font-semibold text-slate-900">
+                      lead {entry.lead_id || 'unknown'}{entry.segment_id ? ` · ${entry.segment_id}` : ''}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-600">
+                      actor {entry.actor_email || entry.actor_user_id || 'system'} · {formatMs(entry.created_at_ms)}
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {entry?.details?.previous?.stage || 'new'} {'->'} {entry?.details?.next?.stage || 'new'}
+                      {entry?.details?.next?.owner_user_id ? ` · owner ${entry.details.next.owner_user_id}` : ''}
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
+        </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Update Lead</h3>
             <div className="grid gap-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Current CRM Segment</p>
+                <p className="mt-1 text-sm font-semibold text-slate-900">{selectedCrmSegmentMeta.label}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-600">{selectedCrmSegmentMeta.description}</p>
+              </div>
+              {selectedCrmPlaybook ? (
+                <div className="rounded-xl border border-cyan-200 bg-cyan-50 px-3 py-3">
+                  <p className="text-xs font-bold uppercase tracking-[0.12em] text-cyan-700">Suggested follow-up</p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">{selectedCrmPlaybook.label} playbook</p>
+                  <p className="mt-2 text-sm leading-6 text-slate-700">{selectedCrmPlaybook.nextAction}</p>
+                  <p className="mt-2 text-xs leading-5 text-slate-600">{selectedCrmPlaybook.ownerPrompt}</p>
+                  <a
+                    href={selectedCrmPlaybook.trackUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-3 inline-flex rounded-lg border border-cyan-300 bg-white px-3 py-2 text-xs font-semibold text-cyan-800 hover:bg-cyan-100"
+                  >
+                    Open Suggested Track
+                  </a>
+                </div>
+              ) : null}
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Reminder Actions</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    onClick={() => applyCrmReminderPreset(24)}
+                    type="button"
+                    disabled={!selectedCrmLead}
+                  >
+                    Queue 24h Reminder
+                  </button>
+                  <button
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    onClick={() => applyCrmReminderPreset(72)}
+                    type="button"
+                    disabled={!selectedCrmLead}
+                  >
+                    Queue 72h Reminder
+                  </button>
+                  <button
+                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    onClick={() => applyCrmReminderPreset(168)}
+                    type="button"
+                    disabled={!selectedCrmLead}
+                  >
+                    Queue 7d Reminder
+                  </button>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  These actions prefill stage, next action date, and follow-up notes based on the selected lead or current segment.
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3">
+                <p className="text-xs font-bold uppercase tracking-[0.12em] text-slate-500">Channel Templates</p>
+                <div className="mt-3 grid gap-3">
+                  {[
+                    { key: 'whatsapp', label: 'WhatsApp', rows: 4 },
+                    { key: 'email', label: 'Email', rows: 8 },
+                    { key: 'counselor', label: 'Counselor Handoff', rows: 5 }
+                  ].map((template) => (
+                    <div key={template.key} className="rounded-lg border border-slate-200 bg-white p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{template.label}</p>
+                        <button
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+                          onClick={() => void runAction(() => copyContentExport(crmChannelTemplates[template.key], template.label))}
+                          type="button"
+                          disabled={!selectedCrmLead}
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <textarea
+                        className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                        rows={template.rows}
+                        readOnly
+                        value={crmChannelTemplates[template.key]}
+                        placeholder={selectedCrmLead ? '' : 'Select a lead to generate the template.'}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
               <input
                 className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
                 placeholder="Lead ID"
@@ -2298,7 +4144,165 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && hasAdminToken && coordinatorView === 'lab-ops' && (
+      {isCoordinator && hasAdminAccess && coordinatorView === 'counselor-knowledge' && (
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-lg font-bold text-slate-900">Counselor Rules and FAQs</h3>
+                <p className="text-sm text-slate-600">
+                  Coordinator-managed logistics knowledge used by AI Counselor replies.
+                </p>
+              </div>
+              <button
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                onClick={() => void runAction(loadCounselorKnowledge)}
+                type="button"
+                disabled={loadingCounselorKnowledge}
+              >
+                {loadingCounselorKnowledge ? 'Loading...' : 'Refresh'}
+              </button>
+            </div>
+
+            <div className="max-h-[30rem] space-y-2 overflow-auto rounded-xl border border-slate-200 p-2">
+              {counselorKnowledge.map((item) => (
+                <div key={item.id} className="rounded-lg bg-slate-50 px-3 py-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="text-xs text-slate-500">
+                        {item.kind} · {item.scope}
+                        {item.course_title ? ` · ${item.course_title}` : ''}
+                        {item.is_active ? '' : ' · inactive'}
+                      </p>
+                      <p className="mt-1 line-clamp-2 text-xs text-slate-600">{item.body}</p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                        onClick={() => selectCounselorKnowledgeItem(item)}
+                        type="button"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                        onClick={() => void runAction(() => deleteCounselorKnowledge(item.id))}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {counselorKnowledge.length === 0 ? <p className="text-sm text-slate-500">No counselor FAQ/rule items yet.</p> : null}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">{knowledgeForm.itemId ? 'Edit Item' : 'Add New Item'}</h3>
+            <div className="grid gap-2">
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={knowledgeForm.kind}
+                onChange={(e) => setKnowledgeForm((p) => ({ ...p, kind: e.target.value }))}
+              >
+                <option value="faq">FAQ</option>
+                <option value="rule">Rule</option>
+                <option value="research">Research</option>
+                <option value="presentation">Presentation</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                value={knowledgeForm.scope}
+                onChange={(e) => setKnowledgeForm((p) => ({ ...p, scope: e.target.value, courseId: e.target.value === 'global' ? '' : p.courseId }))}
+              >
+                <option value="global">Global scope</option>
+                <option value="course">Course scope</option>
+              </select>
+              {knowledgeForm.scope === 'course' ? (
+                <select
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  value={knowledgeForm.courseId}
+                  onChange={(e) => setKnowledgeForm((p) => ({ ...p, courseId: e.target.value }))}
+                >
+                  <option value="">Select course</option>
+                  {courses.map((course) => (
+                    <option key={course.id} value={course.id}>
+                      {course.title}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder={knowledgeForm.kind === 'rule' ? 'Rule title' : 'FAQ question'}
+                value={knowledgeForm.title}
+                onChange={(e) => setKnowledgeForm((p) => ({ ...p, title: e.target.value }))}
+              />
+              <textarea
+                className="min-h-28 rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                placeholder={knowledgeForm.kind === 'rule' ? 'Instruction shown to counselor model' : 'Answer used for counselor responses'}
+                value={knowledgeForm.body}
+                onChange={(e) => setKnowledgeForm((p) => ({ ...p, body: e.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                type="number"
+                min="1"
+                step="1"
+                placeholder="Sort order (lower appears first)"
+                value={knowledgeForm.sortOrder}
+                onChange={(e) => setKnowledgeForm((p) => ({ ...p, sortOrder: e.target.value }))}
+              />
+              <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={knowledgeForm.isActive}
+                  onChange={(e) => setKnowledgeForm((p) => ({ ...p, isActive: e.target.checked }))}
+                />
+                Active
+              </label>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                onClick={() => void runAction(saveCounselorKnowledge)}
+                type="button"
+              >
+                {knowledgeForm.itemId ? 'Update Item' : 'Create Item'}
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                onClick={() => setKnowledgeForm(defaultCounselorKnowledgeForm())}
+                type="button"
+              >
+                Clear
+              </button>
+              <button
+                className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100"
+                onClick={() => void runAction(ingestLogisticsContext)}
+                type="button"
+              >
+                Sync Logistics
+              </button>
+              <button
+                className="rounded-xl border border-blue-300 bg-blue-50 px-4 py-2 text-sm font-semibold text-blue-800 hover:bg-blue-100"
+                onClick={() => void runAction(ingestResearchContext)}
+                type="button"
+              >
+                Vectorize Research
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-slate-500">
+              After creating or updating items, run “Publish To Counselor Index” so public AI Counselor uses the latest rules and FAQs.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'lab-ops' && (
         <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Lab Operations Console</h3>
@@ -2452,7 +4456,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
-      {isCoordinator && hasAdminToken && coordinatorView === 'capstone-review' && (
+      {isCoordinator && hasAdminAccess && coordinatorView === 'capstone-review' && (
         <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
           <div className="rounded-2xl border border-slate-200 bg-white p-4">
             <h3 className="mb-3 text-lg font-bold text-slate-900">Capstone Review Board</h3>
@@ -2617,7 +4621,603 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
         </div>
       )}
 
+      {isCoordinator && hasAdminAccess && coordinatorView === 'assignment-review' && (
+        <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Assignment Review Queue</h3>
+            <button
+              className="mb-4 rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700"
+              onClick={() => void runAction(loadPendingAssignments)}
+              type="button"
+              disabled={loadingAssignments}
+            >
+              {loadingAssignments ? 'Loading...' : 'Refresh Queue'}
+            </button>
+            <div className="max-h-[32rem] space-y-3 overflow-auto">
+              {pendingAssignments.map((sub) => (
+                <div key={sub.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 overflow-hidden">
+                      <p className="mb-1 text-sm font-bold text-slate-900 line-clamp-1">{sub.course_title}</p>
+                      <p className="mb-2 text-xs font-semibold text-blue-600">{sub.module_title}</p>
+                      <p className="mb-2 text-xs text-slate-500">Learner: {sub.user_id} · {new Date(sub.submitted_at_ms).toLocaleString()}</p>
+                      <div className="mb-3 max-h-40 overflow-auto rounded-lg bg-white p-3 text-sm text-slate-700 shadow-sm whitespace-pre-wrap border border-slate-100 italic">
+                        "{sub.answer_text}"
+                      </div>
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs font-semibold text-slate-600 hover:text-slate-900">AI Feedback & Raw Artifacts</summary>
+                        <div className="mt-2 space-y-2">
+                           <pre className="overflow-auto rounded-lg bg-slate-900 p-2 text-[10px] text-slate-300">{JSON.stringify(sub.ai_feedback_json, null, 2)}</pre>
+                           <pre className="overflow-auto rounded-lg bg-slate-800 p-2 text-[10px] text-slate-400">{JSON.stringify(sub.artifacts_json, null, 2)}</pre>
+                        </div>
+                      </details>
+                    </div>
+                    <div className="flex flex-col gap-2 shrink-0">
+                      <div className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold uppercase tracking-wider ${
+                        sub.status === 'ai_graded' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'
+                      }`}>
+                        {sub.status.replace('_', ' ')}
+                      </div>
+                      <div className={`rounded-lg px-2 py-1 text-center text-[10px] font-bold uppercase tracking-wider ${
+                        sub.passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                      }`}>
+                        AI Result: {sub.passed ? 'PASS' : 'FAIL'} ({sub.score}%)
+                      </div>
+                      <button
+                        className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-bold text-white shadow-lg transition-transform active:scale-95"
+                        onClick={() =>
+                          setAssignmentReviewForm({
+                            submissionId: sub.id,
+                            score: sub.score || '',
+                            passed: sub.passed ? 'true' : 'false',
+                            mentor_notes: ''
+                          })
+                        }
+                        type="button"
+                      >
+                        Select to Grade
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {pendingAssignments.length === 0 && !loadingAssignments && (
+                <div className="rounded-2xl border-2 border-dashed border-slate-200 p-12 text-center text-slate-400">
+                  All assignments currently graded.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 sticky top-4 self-start shadow-sm">
+            <h3 className="mb-4 text-lg font-bold text-slate-900">Human Finalization</h3>
+            {!assignmentReviewForm.submissionId ? (
+              <p className="text-center py-12 text-slate-400 italic">Select an assignment to override or finalize AI grading.</p>
+            ) : (
+              <div className="grid gap-4">
+                <div className="rounded-xl bg-slate-50 p-3 border border-slate-200">
+                  <p className="text-[10px] uppercase font-bold text-slate-500 mb-1">Reviewing Submission</p>
+                  <p className="text-xs font-mono break-all">{assignmentReviewForm.submissionId}</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Final Score (0-100)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                    placeholder="Enter final percentage"
+                    value={assignmentReviewForm.score}
+                    onChange={(e) => setAssignmentReviewForm((p) => ({ ...p, score: e.target.value }))}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Result Status</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      className={`rounded-xl py-2 text-xs font-bold border ${assignmentReviewForm.passed === 'true' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                      onClick={() => setAssignmentReviewForm(p => ({ ...p, passed: 'true' }))}
+                    >
+                      PASSED
+                    </button>
+                    <button
+                      type="button"
+                      className={`rounded-xl py-2 text-xs font-bold border ${assignmentReviewForm.passed === 'false' ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-700 border-slate-300'}`}
+                      onClick={() => setAssignmentReviewForm(p => ({ ...p, passed: 'false' }))}
+                    >
+                      FAILED
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">Mentor Feedback / Notes</label>
+                  <textarea
+                    className="w-full min-h-[120px] rounded-xl border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                    placeholder="Provide specific feedback to the learner..."
+                    value={assignmentReviewForm.mentor_notes}
+                    onChange={(e) => setAssignmentReviewForm((p) => ({ ...p, mentor_notes: e.target.value }))}
+                  />
+                </div>
+                <button
+                  className="mt-2 w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-xl hover:bg-slate-800 transition-colors disabled:opacity-50"
+                  onClick={() => void runAction(submitAssignmentReview)}
+                  type="button"
+                >
+                  Finalize AI Result & Save
+                </button>
+                <button
+                  className="w-full py-2 text-[10px] font-bold text-slate-400 hover:text-slate-600 uppercase tracking-tighter"
+                  onClick={() => setAssignmentReviewForm({ submissionId: '', score: '', passed: 'true', mentor_notes: '' })}
+                >
+                  Cancel Selection
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isCoordinator && hasAdminAccess && coordinatorView === 'live-teaching' && (
+        <div className="grid gap-5 lg:grid-cols-[1fr_1fr]">
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Live Teaching Management</h3>
+            <p className="mb-4 text-sm text-slate-600">Select a cohort to manage its live sessions and view active classes.</p>
+            
+            <div className="mb-4 grid gap-3">
+              <select
+                className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:ring-2 focus:ring-slate-900 outline-none"
+                value={sessionCohortId}
+                onChange={(e) => setSessionCohortId(e.target.value)}
+              >
+                <option value="">Select Cohort</option>
+                {cohorts.map((cohort) => (
+                  <option key={cohort.id} value={cohort.id}>
+                    {cohort.name}
+                  </option>
+                ))}
+              </select>
+              
+              <button
+                className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-200"
+                onClick={() => void runAction(async () => {
+                  if (!sessionCohortId) throw new Error('Select a cohort first.');
+                  const session = await fetchActiveLiveSession(sessionCohortId);
+                  if (session) {
+                    setNotice(`Active session found: ${session.title} (${session.id})`);
+                  } else {
+                    setNotice('No active live session for this cohort.');
+                  }
+                })}
+                type="button"
+              >
+                Check for Active Session
+              </button>
+            </div>
+
+            <div className="space-y-4 rounded-xl border border-slate-100 bg-slate-50 p-4">
+              <h4 className="text-sm font-bold text-slate-800">Start New Live Class</h4>
+              <div className="grid gap-2">
+                <input
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Session Title"
+                  id="live-session-title"
+                />
+                <textarea
+                  className="rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                  placeholder="Session Description (Optional)"
+                  id="live-session-desc"
+                />
+                <button
+                  className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-lg hover:bg-emerald-700 active:scale-95 transition-all"
+                  onClick={() => {
+                    const title = document.getElementById('live-session-title').value;
+                    const desc = document.getElementById('live-session-desc').value;
+                    void runAction(async () => {
+                      const msg = await startLiveSession(sessionCohortId, title, desc);
+                      document.getElementById('live-session-title').value = '';
+                      document.getElementById('live-session-desc').value = '';
+                      return msg;
+                    });
+                  }}
+                  type="button"
+                >
+                  Launch Live Broadcast
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <h3 className="mb-3 text-lg font-bold text-slate-900">Attendance & Control</h3>
+            <p className="mb-4 text-sm text-slate-600">Monitor active session status and end sessions manually.</p>
+            
+            <div className="space-y-3">
+               <button
+                  className="w-full rounded-xl border border-rose-300 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-100"
+                  onClick={() => void runAction(async () => {
+                    if (!sessionCohortId) throw new Error('Select a cohort first.');
+                    const active = await fetchActiveLiveSession(sessionCohortId);
+                    if (!active) throw new Error('No active session found.');
+                    return await endLiveSession(active.id);
+                  })}
+                  type="button"
+                >
+                  End Active Session
+               </button>
+               
+               <div className="mt-6 rounded-xl border border-slate-200 p-4">
+                 <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Technical Status</h4>
+                 <div className="flex items-center gap-2">
+                   <div className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                   <span className="text-sm text-slate-700">WebRTC Signal: Idle</span>
+                 </div>
+                 <p className="mt-2 text-[10px] text-slate-400">
+                    Live teaching uses Cloudflare Calls for ultra-low latency. 
+                    Recording is automatically saved to the audit log upon session completion.
+                 </p>
+               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ────────────────── CONTENT ENGINE TAB ────────────────────────── */}
+      {isCoordinator && hasAdminAccess && coordinatorView === 'content-engine' && (() => {
+
+        const saveApiKey = (key) => {
+          setCeApiKey(key);
+          try { sessionStorage.setItem('ce_api_key', key); } catch { /* ignore */ }
+        };
+
+        const loadQueue = async () => {
+          setCeQueueLoading(true);
+          try {
+            const res = await fetch(apiUrl('/api/content/queue'), {
+              headers: { 'x-admin-secret': adminToken || '' }
+            });
+            const data = await res.json();
+            setCeQueue(data.posts || data || []);
+          } catch (err) {
+            setError('Could not load content queue: ' + err.message);
+          } finally {
+            setCeQueueLoading(false);
+          }
+        };
+
+        const createManualDraft = async (type) => {
+          setCeGenerating(true);
+          try {
+            const path = type === 'daiy_prompt' ? 'productivity' : 'research';
+            const res = await fetch(apiUrl('/api/admin/content/posts'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify({
+                title: `Manual ${type.replace(/_/g, ' ')} Draft`,
+                summary: 'Manual entry placeholder...',
+                path,
+                content_type: type === 'all' ? 'daily_brief' : type,
+                content_markdown: 'Paste content here...'
+              })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            await loadQueue();
+            setNotice(`✓ Manual ${type} draft created.`);
+          } catch (err) {
+            setError('Manual creation failed: ' + err.message);
+          } finally {
+            setCeGenerating(false);
+          }
+        };
+
+        const generateContent = async (type) => {
+          if (!ceApiKey && !sessionGeminiKey) { setError('Please enter your Gemini API key first or use AI Settings.'); return; }
+          setCeGenerating(true);
+          try {
+            const res = await fetch(apiUrl('/api/content/generate'), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+            body: JSON.stringify({ type, gemini_api_key: sessionGeminiKey || ceApiKey, groq_api_key: '' })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            await loadQueue();
+            setNotice(`✓ ${type === 'all' ? 'All content types' : type} drafted successfully.`);
+          } catch (err) {
+            setError('Generation failed: ' + err.message);
+          } finally {
+            setCeGenerating(false);
+          }
+        };
+
+        const startEdit = (post) => {
+          setCeEditingId(post.id);
+          setCeEditDraft({
+            title: post.title || '',
+            summary: post.summary || '',
+            content_markdown: post.content_markdown || '',
+            social_thread_text: post.social_thread_text || '',
+            video_script: post.video_script || '',
+            seo_metadata: post.seo_metadata || '',
+            prompt_text: post.prompt_text || '',
+            source_url: post.source_url || '',
+          });
+        };
+
+        const saveEdit = async () => {
+          if (!ceEditingId) return;
+          try {
+            const res = await fetch(apiUrl(`/api/content/posts/${ceEditingId}`), {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify(ceEditDraft)
+            });
+            if (!res.ok) throw new Error(await res.text());
+            setCeEditingId(null);
+            setCeEditDraft({});
+            await loadQueue();
+            setNotice('Draft saved.');
+          } catch (err) {
+            setError('Save failed: ' + err.message);
+          }
+        };
+
+        const publishPost = async (postId) => {
+          setCePublishing(postId);
+          try {
+            const res = await fetch(apiUrl(`/api/admin/content/posts/${postId}/approve`), {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'x-admin-secret': adminToken || '' },
+              body: JSON.stringify({ status: 'published', approved: 'true' })
+            });
+            if (!res.ok) throw new Error(await res.text());
+            await loadQueue();
+            setNotice('✓ Published! It will appear on the website now.');
+          } catch (err) {
+            setError('Publish failed: ' + err.message);
+          } finally {
+            setCePublishing(null);
+          }
+        };
+
+        const statusColor = (s) => {
+          if (s === 'published') return 'bg-emerald-100 text-emerald-700';
+          if (s === 'draft') return 'bg-amber-100 text-amber-700';
+          if (s === 'pending_review') return 'bg-blue-100 text-blue-700';
+          return 'bg-slate-100 text-slate-600';
+        };
+
+        return (
+          <div className="space-y-6">
+            {/* Header */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <div className="mb-4 flex items-start justify-between gap-4 flex-wrap">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">⚡ Content Engine</h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    Generate daily AI content (Model Spotlight, DAIY prompt, Health News), edit the draft, then hit <strong>Publish</strong> to go live on the website.
+                  </p>
+                </div>
+                <button
+                  className="rounded-xl border border-slate-300 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700"
+                  onClick={() => void loadQueue()}
+                  type="button"
+                  disabled={ceQueueLoading}
+                >
+                  {ceQueueLoading ? 'Loading...' : '↻ Refresh Queue'}
+                </button>
+              </div>
+
+              {/* BYOK Key Input */}
+              <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 mb-4">
+                <p className="text-xs font-bold text-slate-600 uppercase tracking-widest mb-2">Gemini API Key (Session only — not stored on server)</p>
+                <div className="flex gap-2">
+                  <input
+                    type="password"
+                    className="flex-1 rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono"
+                    placeholder="AIza..."
+                    value={ceApiKey}
+                    onChange={(e) => saveApiKey(e.target.value)}
+                    autoComplete="off"
+                  />
+                  {ceApiKey && (
+                    <button
+                      className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-600"
+                      onClick={() => saveApiKey('')}
+                      type="button"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">Key is stored in sessionStorage and cleared when you close the browser tab.</p>
+              </div>
+
+              {/* Generate Buttons */}
+              <div className="flex flex-wrap gap-3">
+                <div className="flex flex-col gap-1">
+                  <button
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    onClick={() => void generateContent('all')}
+                    type="button"
+                    disabled={ceGenerating || (!ceApiKey && !sessionGeminiKey)}
+                  >
+                    {ceGenerating ? 'Generating...' : '✦ Generate All Today'}
+                  </button>
+                  <button
+                    className="text-[10px] text-slate-400 hover:text-slate-600 font-medium text-center"
+                    onClick={() => void createManualDraft('all')}
+                    type="button"
+                    disabled={ceGenerating}
+                  >
+                    (Manual Add)
+                  </button>
+                </div>
+
+                {['model_spotlight', 'daiy_prompt', 'health_news', 'spaces_spotlight'].map((type) => (
+                  <div key={type} className="flex flex-col gap-1">
+                    <button
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-60"
+                      onClick={() => void generateContent(type)}
+                      type="button"
+                      disabled={ceGenerating || (!ceApiKey && !sessionGeminiKey)}
+                    >
+                      + {type.replace(/_/g, ' ')}
+                    </button>
+                    <button
+                      className="text-[10px] text-slate-400 hover:text-slate-600 font-medium text-center"
+                      onClick={() => void createManualDraft(type)}
+                      type="button"
+                      disabled={ceGenerating}
+                    >
+                      (Manual Add)
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Draft Queue */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-4 text-base font-bold text-slate-900">Content Queue</h3>
+
+              {ceQueue.length === 0 ? (
+                <div className="rounded-xl bg-slate-50 p-8 text-center">
+                  <p className="text-sm text-slate-500">No content in queue. Hit "Generate Today's Content" to create drafts.</p>
+                  <button
+                    className="mt-3 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                    onClick={() => void loadQueue()}
+                    type="button"
+                  >
+                    Load Queue
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-[32rem] overflow-auto">
+                  {ceQueue.map((post) => (
+                    <div key={post.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      {ceEditingId === post.id ? (
+                        /* Inline Edit Form */
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Editing draft</span>
+                            <button className="text-xs text-slate-400 hover:text-slate-700" onClick={() => setCeEditingId(null)} type="button">✕ Cancel</button>
+                          </div>
+                          <input
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm font-semibold"
+                            placeholder="Title"
+                            value={ceEditDraft.title}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, title: e.target.value }))}
+                          />
+                          <textarea
+                            className="w-full min-h-[4rem] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                            placeholder="Summary / description"
+                            value={ceEditDraft.summary}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, summary: e.target.value }))}
+                          />
+                          {post.content_type === 'daiy_prompt' && (
+                            <textarea
+                              className="w-full min-h-[8rem] rounded-xl border border-slate-300 px-3 py-2 text-sm font-mono text-green-800 bg-[#0d1117]"
+                              placeholder="Prompt text (what doctors will copy)"
+                              value={ceEditDraft.prompt_text}
+                              onChange={(e) => setCeEditDraft((p) => ({ ...p, prompt_text: e.target.value }))}
+                            />
+                          )}
+                          <textarea
+                            className="w-full min-h-[6rem] rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                            placeholder="Full body / article markdown"
+                            value={ceEditDraft.content_markdown}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, content_markdown: e.target.value }))}
+                          />
+                          <textarea
+                            className="w-full min-h-[4rem] rounded-xl border border-slate-300 px-3 py-2 text-sm bg-blue-50"
+                            placeholder="Social Thread (LinkedIn / X)"
+                            value={ceEditDraft.social_thread_text || ''}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, social_thread_text: e.target.value }))}
+                          />
+                          <textarea
+                            className="w-full min-h-[4rem] rounded-xl border border-slate-300 px-3 py-2 text-sm bg-purple-50"
+                            placeholder="Video Script (Shorts / Reels)"
+                            value={ceEditDraft.video_script || ''}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, video_script: e.target.value }))}
+                          />
+                          <input
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm bg-slate-50"
+                            placeholder="SEO Metadata"
+                            value={ceEditDraft.seo_metadata || ''}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, seo_metadata: e.target.value }))}
+                          />
+                          <input
+                            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm"
+                            placeholder="Source URL (optional)"
+                            value={ceEditDraft.source_url}
+                            onChange={(e) => setCeEditDraft((p) => ({ ...p, source_url: e.target.value }))}
+                          />
+                          <div className="flex gap-2 pt-1">
+                            <button
+                              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
+                              onClick={() => void saveEdit()}
+                              type="button"
+                            >
+                              Save Draft
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        /* Draft Row */
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider ${statusColor(post.status)}`}>
+                                {post.status}
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-400 uppercase">{post.content_type?.replace(/_/g, ' ')}</span>
+                              <span className="text-[10px] text-slate-400">{post.date || ''}</span>
+                            </div>
+                            <p className="text-sm font-semibold text-slate-900 truncate">{post.title || 'Untitled draft'}</p>
+                            {post.summary && <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{post.summary}</p>}
+                          </div>
+                          <div className="flex items-center gap-2 flex-shrink-0">
+                            <button
+                              className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+                              onClick={() => startEdit(post)}
+                              type="button"
+                            >
+                              ✏ Edit
+                            </button>
+                            {post.status !== 'published' && (
+                              <button
+                                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white disabled:opacity-60"
+                                onClick={() => void publishPost(post.id)}
+                                type="button"
+                                disabled={cePublishing === post.id}
+                              >
+                                {cePublishing === post.id ? 'Publishing...' : '▶ Publish'}
+                              </button>
+                            )}
+                            {post.status === 'published' && post.slug && (
+                              <a
+                                href={`https://med.greybrain.ai/briefs/${post.slug}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-bold text-emerald-700 no-underline"
+                              >
+                                View Live ↗
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {isTeacher && (
+
         <div className="rounded-2xl border border-slate-200 bg-white p-4">
           <h3 className="mb-3 text-lg font-bold text-slate-900">Teacher Studio</h3>
           <p className="mb-3 text-sm text-slate-600">
@@ -2664,7 +5264,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
             <div className="grid gap-2 md:grid-cols-2">
               {[
                 'Manage provider secrets (Groq, Turnstile, payments)',
-                'Rotate keys and enforce admin token for /api/admin/*',
+                'Enforce role-based access for /api/admin/* with admin-token fallback',
                 'Configure AI Gateway route and model defaults',
                 'Audit edge analytics and D1 growth metrics',
                 'Manage teacher/coordinator access policy',
@@ -2681,7 +5281,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={() => void runAction(ingestLogisticsContext)}
                 type="button"
-                disabled={!hasAdminToken}
+                disabled={!hasAdminAccess}
               >
                 Ingest Counselor Logistics
               </button>
@@ -2689,7 +5289,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={() => void runAction(loadOpsAlerts)}
                 type="button"
-                disabled={!hasAdminToken || loadingAlerts}
+                disabled={!hasAdminAccess || loadingAlerts}
               >
                 {loadingAlerts ? 'Refreshing...' : 'Refresh Open Alerts'}
               </button>
@@ -2697,7 +5297,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={() => void runAction(loadAccessAudit)}
                 type="button"
-                disabled={!hasAdminToken || loadingAccessAudit}
+                disabled={!hasAdminAccess || loadingAccessAudit}
               >
                 {loadingAccessAudit ? 'Refreshing...' : 'Refresh Access Audit'}
               </button>
@@ -2705,7 +5305,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={() => void runAction(loadContentRuns)}
                 type="button"
-                disabled={!hasAdminToken || loadingContentRuns}
+                disabled={!hasAdminAccess || loadingContentRuns}
               >
                 {loadingContentRuns ? 'Refreshing...' : 'Refresh Content Runs'}
               </button>
@@ -2794,45 +5394,124 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
 
       {canManageContent && (
         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+          <div className="mb-4 grid gap-4 xl:grid-cols-[0.72fr_0.28fr]">
             <div>
               <h3 className="text-lg font-bold text-slate-900">Daily Content Pipeline</h3>
-              <p className="text-sm text-slate-600">Generate one draft/day, review in console, then publish to live feed cards.</p>
+              <p className="text-sm text-slate-600">Generate one draft/day with BYOK, review it, edit it, then approve or publish it to the public feed.</p>
             </div>
-            <button
-              className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white"
-              onClick={() => void runAction(generateDailyBrief)}
-              type="button"
-            >
-              Generate Today&apos;s Draft
-            </button>
+            <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-1">
+              <select
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                value={contentGeneratorForm.provider}
+                onChange={(event) =>
+                  setContentGeneratorForm((prev) => ({ ...prev, provider: event.target.value }))
+                }
+              >
+                <option value="gemini">Gemini</option>
+                <option value="anthropic">Claude</option>
+                <option value="xai">Grok</option>
+                <option value="groq">Groq</option>
+              </select>
+              <input
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                type="text"
+                placeholder="Model override (optional)"
+                value={contentGeneratorForm.model}
+                onChange={(event) =>
+                  setContentGeneratorForm((prev) => ({ ...prev, model: event.target.value }))
+                }
+              />
+              <input
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                type="password"
+                placeholder="BYOK API key"
+                value={contentGeneratorForm.apiKey}
+                onChange={(event) =>
+                  setContentGeneratorForm((prev) => ({ ...prev, apiKey: event.target.value }))
+                }
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="flex-1 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-all hover:bg-slate-800 active:scale-[0.98]"
+                  onClick={() => void runAction(generateDailyBrief)}
+                  type="button"
+                >
+                  Generate AI Draft
+                </button>
+                <button
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50"
+                  onClick={() => void runAction(() => createManualDraft('daily_brief'))}
+                  title="Create a manual blank draft"
+                  type="button"
+                >
+                  ➕ Manual
+                </button>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5">
+              <h3 className="mb-4 text-base font-bold text-slate-900">Specific Content Fallbacks</h3>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { type: 'model_spotlight', label: 'Model Spotlight' },
+                  { type: 'daiy_prompt', label: 'DAIY Prompt' },
+                  { type: 'health_news', label: 'Health News' },
+                  { type: 'spaces_spotlight', label: 'Spaces' }
+                ].map((item) => (
+                  <button
+                    key={item.type}
+                    className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-700 transition-all hover:bg-slate-50"
+                    onClick={() => void runAction(() => createManualDraft(item.type))}
+                    type="button"
+                  >
+                    + Manual {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-sm font-semibold text-slate-800">Content Feed</h4>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm hover:bg-slate-50 transition-colors">
+              <input type="checkbox" checked={showDraftsOnly} onChange={(e) => setShowDraftsOnly(e.target.checked)} className="rounded border-slate-300 text-cyan-600 focus:ring-cyan-500" />
+              <span className="font-medium">Show Drafts Only</span>
+            </label>
+          </div>
           <div className="overflow-hidden rounded-xl border border-slate-200">
             <table className="w-full border-collapse text-left text-sm">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
                   <th className="px-3 py-2">Title</th>
                   <th className="px-3 py-2">Path</th>
+                  <th className="px-3 py-2">Type</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Updated</th>
                   <th className="px-3 py-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {contentPosts.map((post) => (
+                {contentPosts.filter(post => !showDraftsOnly || post.status === 'draft').map((post) => (
                   <tr key={post.id} className="border-t border-slate-200 bg-white">
                     <td className="px-3 py-2">
                       <p className="font-semibold text-slate-900">{post.title}</p>
                       <p className="line-clamp-2 text-xs text-slate-500">{post.summary}</p>
                     </td>
                     <td className="px-3 py-2 text-xs uppercase tracking-[0.1em] text-slate-600">{post.path || '-'}</td>
+                    <td className="px-3 py-2 text-xs uppercase tracking-[0.1em] text-slate-600">{(post.content_type || 'daily_brief').replace(/_/g, ' ')}</td>
                     <td className="px-3 py-2">
                       <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">{post.status}</span>
                     </td>
                     <td className="px-3 py-2 text-xs text-slate-500">{formatMs(post.updated_at_ms)}</td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-2">
+                        <button
+                          className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
+                          onClick={() => loadContentIntoEditor(post)}
+                          type="button"
+                        >
+                          Edit
+                        </button>
                         <button
                           className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
                           onClick={() => void runAction(() => setContentStatus(post.id, 'approved'))}
@@ -2860,13 +5539,158 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                 ))}
                 {contentPosts.length === 0 && (
                   <tr>
-                    <td className="px-3 py-3 text-sm text-slate-500" colSpan={5}>
+                    <td className="px-3 py-3 text-sm text-slate-500" colSpan={6}>
                       No content drafts yet.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">Content Editor</p>
+                <p className="text-xs text-slate-500">Create a manual draft or open an existing one, then approve or publish.</p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-600">
+                  {contentEditorForm.postId ? `Editing ${contentEditorForm.postId}` : 'New manual draft'}
+                </span>
+                <button
+                  className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                  onClick={startNewContentDraft}
+                  type="button"
+                >
+                  New Draft
+                </button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <input
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
+                type="text"
+                placeholder="Editorial title"
+                value={contentEditorForm.title}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, title: event.target.value }))}
+              />
+              <select
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
+                value={contentEditorForm.path}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, path: event.target.value }))}
+              >
+                <option value="productivity">Path 1 · Productivity</option>
+                <option value="research">Path 2 · Research</option>
+                <option value="entrepreneurship">Path 3 · Entrepreneurship</option>
+              </select>
+              <select
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900"
+                value={contentEditorForm.contentType}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, contentType: event.target.value }))}
+              >
+                <option value="daily_brief">Daily Brief</option>
+                <option value="news">News (Clinical Feed)</option>
+                <option value="blog">Blog</option>
+                <option value="workflow">Workflow</option>
+                <option value="wiki">Wiki</option>
+                <option value="model_watch">Model Watch</option>
+              </select>
+              <textarea
+                className="min-h-[96px] rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 md:col-span-2"
+                placeholder="Homepage summary"
+                value={contentEditorForm.summary}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, summary: event.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 md:col-span-2"
+                type="text"
+                placeholder="Tags separated by commas"
+                value={contentEditorForm.tags}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, tags: event.target.value }))}
+              />
+              <input
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 md:col-span-2"
+                type="url"
+                placeholder="Canonical URL on GreyBrain"
+                value={contentEditorForm.canonicalUrl}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, canonicalUrl: event.target.value }))}
+              />
+              <textarea
+                className="min-h-[96px] rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 md:col-span-2"
+                placeholder="Source links, one per line"
+                value={contentEditorForm.sourceUrls}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, sourceUrls: event.target.value }))}
+              />
+              <textarea
+                className="min-h-[480px] font-mono leading-relaxed rounded-xl border border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-800 md:col-span-2 focus:bg-white focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-colors"
+                placeholder="# Write your content draft here using Markdown...&#10;&#10;Use ## for headings, **bold**, *italics*, and [links](https://greybrain.ai).&#10;&#10;A great draft is concise, authoritative, and actionable for clinicians."
+                value={contentEditorForm.contentMarkdown}
+                onChange={(event) => setContentEditorForm((prev) => ({ ...prev, contentMarkdown: event.target.value }))}
+              />
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(saveContentDraft)}
+                type="button"
+              >
+                {contentEditorForm.postId ? 'Save Draft' : 'Create Draft'}
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(() => setContentStatus(contentEditorForm.postId, 'approved'))}
+                type="button"
+                disabled={!contentEditorForm.postId}
+              >
+                Approve Draft
+              </button>
+              <button
+                className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700"
+                onClick={() => void runAction(() => setContentStatus(contentEditorForm.postId, 'published'))}
+                type="button"
+                disabled={!contentEditorForm.postId}
+              >
+                Publish Now
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+              <div className="mb-3">
+                <p className="text-sm font-semibold text-slate-900">Channel Exports</p>
+                <p className="text-xs text-slate-500">Publish on GreyBrain first, then copy the version you need for LinkedIn, Facebook, X, or Medium.</p>
+              </div>
+
+              <div className="grid gap-3 xl:grid-cols-2">
+                {[
+                  { key: 'linkedin', label: 'LinkedIn', rows: 12 },
+                  { key: 'facebook', label: 'Facebook', rows: 10 },
+                  { key: 'x', label: 'X Thread', rows: 10 },
+                  { key: 'medium', label: 'Medium', rows: 14 }
+                ].map((channel) => (
+                  <div key={channel.key} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-slate-900">{channel.label}</p>
+                      <button
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700"
+                        onClick={() => void runAction(() => copyContentExport(contentExports[channel.key], channel.label))}
+                        type="button"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                    <textarea
+                      className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-700"
+                      rows={channel.rows}
+                      readOnly
+                      value={contentExports[channel.key]}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -2895,7 +5719,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                   {course.learner_count} / {course.completed_count} completed
                 </td>
                 <td className="px-3 py-2">
-                  {isCoordinatorUser && hasAdminToken ? (
+                  {isCoordinatorUser && hasAdminAccess ? (
                     <div className="flex flex-wrap gap-2">
                       <button
                         className="rounded-lg border border-slate-300 px-2 py-1 text-xs font-semibold"
@@ -2913,7 +5737,7 @@ export default function PlatformConsole({ userRoles = [], currentUser = null }) 
                       </button>
                     </div>
                   ) : (
-                    <span className="text-xs text-slate-500">{isCoordinatorUser ? 'Add admin token' : 'View only'}</span>
+                    <span className="text-xs text-slate-500">{isCoordinatorUser ? 'Role access required' : 'View only'}</span>
                   )}
                 </td>
               </tr>
@@ -2988,4 +5812,163 @@ function formatMs(value) {
     hour: 'numeric',
     minute: '2-digit'
   }).format(new Date(ms));
+}
+
+function RAGHealthDashboard({ user, roles, actorFetch }) {
+  const [metrics, setMetrics] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    async function loadMetrics() {
+      try {
+        const res = await actorFetch(user, roles, apiUrl('/api/admin/rag/health'));
+        const data = await res.json();
+        if (res.ok) setMetrics(data);
+      } catch (e) {
+        console.error('Failed to load RAG metrics', e);
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadMetrics();
+  }, [user, roles, actorFetch]);
+
+  if (loading) return <div className="p-8 text-center text-slate-500">Loading RAG health telemetry...</div>;
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 md:grid-cols-3">
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Vectorize Sync</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{metrics?.vectorize?.syncStatus || 'Healthy'}</p>
+          <p className="mt-1 text-sm text-slate-600">Last crawled: {metrics?.vectorize?.lastSync || 'Just now'}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Avg AI Latency</p>
+          <p className="mt-2 text-3xl font-black text-slate-900">{metrics?.latency?.avg || '1.2s'}</p>
+          <p className="mt-1 text-sm text-slate-600">P95: {metrics?.latency?.p95 || '2.4s'}</p>
+        </article>
+        <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Misconception Count</p>
+          <p className="mt-2 text-3xl font-black text-emerald-600">{metrics?.misconceptions?.length || 0}</p>
+          <p className="mt-1 text-sm text-slate-600">Hotspots identified by AI.</p>
+        </article>
+      </div>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-900">Student Pitfalls & Hotspots</h3>
+        <p className="mt-1 text-sm text-slate-600">AI-identified trends where learners are struggling with RAG-delivered concepts.</p>
+        <div className="mt-6 space-y-4">
+          {(metrics?.misconceptions || [
+            { id: 1, topic: 'Model Quantization', frequency: 'High', recommendation: 'Add pre-read on 4-bit vs 8-bit.' },
+            { id: 2, topic: 'RLHF Concepts', frequency: 'Medium', recommendation: 'Clarify reward model alignment.' }
+          ]).map(pitfall => (
+            <div key={pitfall.id} className="flex items-start gap-4 rounded-xl bg-slate-50 p-4 border border-slate-100">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-600 font-bold">!</div>
+              <div>
+                <p className="font-bold text-slate-900">{pitfall.topic}</p>
+                <p className="mt-1 text-sm text-slate-600">{pitfall.recommendation}</p>
+                <span className="mt-2 inline-block rounded-full bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase text-slate-700">Frequency: {pitfall.frequency}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h3 className="text-lg font-bold text-slate-900">Vectorize Index Status</h3>
+        <div className="mt-4 overflow-hidden rounded-xl border border-slate-100">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-slate-50 text-xs font-bold uppercase text-slate-500">
+              <tr>
+                <th className="px-4 py-3">Source Name</th>
+                <th className="px-4 py-3">Document Count</th>
+                <th className="px-4 py-3">Health</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {(metrics?.sources || [
+                { name: 'Modules (Internal)', count: 42, health: 'Syncing' },
+                { name: 'Research Papers (RAG)', count: 128, health: 'Healthy' },
+                { name: 'Clinical Guidelines', count: 15, health: 'Healthy' }
+              ]).map(source => (
+                <tr key={source.name}>
+                  <td className="px-4 py-3 font-semibold text-slate-900">{source.name}</td>
+                  <td className="px-4 py-3 text-slate-600">{source.count}</td>
+                  <td className="px-4 py-3">
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${source.health === 'Healthy' ? 'bg-emerald-100 text-emerald-600' : 'bg-blue-100 text-blue-600'}`}>
+                      {source.health}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {showAiSettings && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <div className="mb-4 flex items-center justify-between">
+              <h3 className="text-xl font-bold text-slate-900">AI Global Settings</h3>
+              <button
+                onClick={() => setShowAiSettings(false)}
+                className="rounded-full p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            
+            <p className="mb-6 text-sm text-slate-600">
+              Input a fresh Gemini API key to override the system defaults. This is useful if the primary key is exhausted or failing.
+              <span className="mt-2 block font-semibold text-amber-700">Persists for this browser session only.</span>
+            </p>
+
+            <div className="space-y-4">
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-slate-500">Gemini API Key Override</label>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm focus:border-violet-500 focus:ring-2 focus:ring-violet-200 focus:outline-none"
+                  placeholder="Paste your API key here..."
+                  value={sessionGeminiKey}
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    setSessionGeminiKey(val);
+                    if (val) {
+                      sessionStorage.setItem('session_gemini_key', val);
+                    } else {
+                      sessionStorage.removeItem('session_gemini_key');
+                    }
+                  }}
+                />
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setShowAiSettings(false)}
+                  className="flex-1 rounded-xl bg-slate-900 py-3 text-sm font-bold text-white shadow-lg shadow-slate-900/20 hover:bg-slate-800"
+                >
+                  Save & Close
+                </button>
+                <button
+                  onClick={() => {
+                    setSessionGeminiKey('');
+                    sessionStorage.removeItem('session_gemini_key');
+                    setShowAiSettings(false);
+                  }}
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }

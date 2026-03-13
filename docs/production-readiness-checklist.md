@@ -1,6 +1,6 @@
 # Production Readiness Checklist
 
-Updated: 2026-03-02
+Updated: 2026-03-03
 
 ## Scope
 
@@ -68,3 +68,23 @@ DEEPLEARN_PAGES_BASE_URL=https://<pages-domain> npm run readiness:check
 ```
 
 If `critical_failures > 0`, do not mark go-live complete.
+
+## Strict Release Gate (Required)
+
+Run:
+
+```bash
+ADMIN_API_TOKEN=... \
+DEEPLEARN_API_BASE_URL=https://deeplearn-worker.satish-9f4.workers.dev \
+DEEPLEARN_PAGES_BASE_URL=https://med.greybrain.ai \
+npm run release:orchestrate
+```
+
+Pass criteria:
+- `status = "PASS"` in `reports/release-gate-latest.json`
+- `readiness_session_smoke` is `ok=true`
+- `rbac_bundle_gate` is `ok=true`
+
+CI enforcement:
+- `.github/workflows/build.yml` must pass on PR/main
+- `.github/workflows/release-gate.yml` must pass on main/manual release

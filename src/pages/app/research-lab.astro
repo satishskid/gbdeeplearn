@@ -1,7 +1,7 @@
 ---
-import BaseLayout from '../layouts/BaseLayout.astro';
+import BaseLayout from '../../layouts/BaseLayout.astro';
 
-const SITE_ORIGIN = 'https://gbdeeplearn.pages.dev';
+const SITE_ORIGIN = 'https://med.greybrain.ai';
 
 const methodSteps = [
   {
@@ -63,12 +63,26 @@ const aiFlow = [
     detail: 'You validate evidence, reasoning quality, and fit for patient-facing use.'
   }
 ];
+
+const deliveryArtifacts = [
+  'Protocol worksheet with cohort logic, confounders, and endpoint definitions',
+  'Evidence map with citation-linked extraction notes',
+  'Study design table with variable dictionary and baseline methods',
+  'Manuscript skeleton with reviewer-risk mitigation notes'
+];
+
+const readinessChecks = [
+  'Module rubrics enforce methodology correctness and evidence traceability.',
+  'Learner workspace supports assignment submission, grading, and progression events.',
+  'Cohort sessions and attendance are tracked in D1 for operational reporting.',
+  'Certificate issuance is linked to completion state and verifier endpoint.'
+];
 ---
 
 <BaseLayout
   title="In-Silico Investigator | Path 2 Research Lab"
   description="A clinician-first AI research lab: learn hypothesis-to-conclusion methodology with RAG tutoring and practical experimentation."
-  canonical={`${SITE_ORIGIN}/research-lab`}
+  canonical={`${SITE_ORIGIN}/app/research-lab`}
 >
   <section class="mb-8 rounded-[2rem] bg-slate-950 px-6 py-8 text-white shadow-2xl md:px-8 md:py-10">
     <p class="mb-3 inline-flex rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.15em] text-cyan-100">
@@ -127,5 +141,25 @@ const aiFlow = [
         </article>
       ))}
     </div>
+  </section>
+
+  <section class="mt-8 grid gap-4 md:grid-cols-2">
+    <article class="rounded-2xl border border-slate-200 bg-white/85 p-4 shadow-sm">
+      <h3 class="text-lg font-bold text-slate-900">Path 2 Required Deliverables</h3>
+      <ul class="mt-3 space-y-2 text-sm text-slate-700">
+        {deliveryArtifacts.map((item) => (
+          <li class="rounded-lg bg-slate-50 px-3 py-2">{item}</li>
+        ))}
+      </ul>
+    </article>
+
+    <article class="rounded-2xl border border-slate-200 bg-white/85 p-4 shadow-sm">
+      <h3 class="text-lg font-bold text-slate-900">Production Readiness Checks</h3>
+      <ul class="mt-3 space-y-2 text-sm text-slate-700">
+        {readinessChecks.map((item) => (
+          <li class="rounded-lg bg-slate-50 px-3 py-2">{item}</li>
+        ))}
+      </ul>
+    </article>
   </section>
 </BaseLayout>

@@ -1,0 +1,73 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+
+// Fetch all published DAIY prompts
+let posts = [];
+try {
+  const API_ORIGIN = import.meta.env.VITE_API_ORIGIN || 'https://deeplearn-worker.satish-9f4.workers.dev';
+  const res = await fetch(`${API_ORIGIN}/api/content/posts?content_type=daiy_prompt&limit=60`);
+  if (res.ok) {
+    const data = await res.json();
+    posts = data.posts || data || [];
+  }
+} catch { /* fallback */ }
+
+const SITE_ORIGIN = 'https://med.greybrain.ai';
+const canonical = `${SITE_ORIGIN}/daiy`;
+const pageTitle = 'DAIY — Do AI Yourself | Daily Prompts for Doctors | GreyBrain Academy';
+const pageDesc = 'A daily, curated AI prompt for clinicians. Copy the prompt, try it in Claude, Gemini, Perplexity, Qwen, or MiniMax, and see what AI can do for your practice.';
+
+function formatDate(dateStr) {
+  if (!dateStr) return '';
+  try {
+    return new Date(dateStr).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+  } catch { return dateStr; }
+}
+---
+
+<BaseLayout title={pageTitle} description={pageDesc} canonical={canonical}>
+  <Fragment slot="head">
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={pageTitle} />
+    <meta property="og:description" content={pageDesc} />
+    <meta property="og:url" content={canonical} />
+  </Fragment>
+
+  <div class="ce-page-shell--wide">
+    <!-- Header -->
+    <div style="margin-bottom:3rem">
+      <a href="/" class="inline-flex items-center gap-2 text-slate-500 hover:text-teal-700 text-sm font-bold mb-6 transition">← Home</a>
+      <div class="terminal-section-label">
+        <span class="live-dot"></span>
+        DAIY // DO AI YOURSELF // PROMPT ARCHIVE
+      </div>
+      <h1 class="text-4xl md:text-6xl mb-4">Daily Prompts<br/><span style="color:#0d9488">for Doctors.</span></h1>
+      <p class="text-slate-600 text-lg max-w-2xl">
+        Every day, one high-yield AI prompt designed for clinicians. Copy it. Try it in your favourite AI model. See the results.
+      </p>
+    </div>
+
+    {posts.length > 0 ? (
+      <div class="ce-card-grid">
+        {posts.map((post) => {
+          const dateSlug = post.date?.slice(0,10) || post.slug?.replace('daiy-','') || '';
+          const dateFormatted = dateSlug ? dateSlug.replace(/(\d{4})(\d{2})(\d{2})/, '$1-$2-$3') : '';
+          const pageDate = dateFormatted || dateSlug;
+          return (
+            <a href={`/daiy/${pageDate || post.slug}`} class="ce-card">
+              <p class="ce-card__date">{formatDate(post.date || post.published_at)}</p>
+              {post.prompt_keyword && <span class="ce-card__keyword">{post.prompt_keyword}</span>}
+              <h2 class="ce-card__title">{post.title}</h2>
+              {post.summary && <p class="ce-card__summary">{post.summary}</p>}
+            </a>
+          );
+        })}
+      </div>
+    ) : (
+      <div style="text-align:center;padding:4rem;color:#94a3b8">
+        <p style="font-family:'IBM Plex Mono',monospace;font-size:0.8rem">[NO PROMPTS PUBLISHED YET]</p>
+        <p style="margin-top:1rem;font-size:0.9rem">The course coordinator publishes a new prompt every day. Check back soon.</p>
+      </div>
+    )}
+  </div>
+</BaseLayout>

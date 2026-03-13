@@ -1,0 +1,60 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="60" y1="40" x2="1140" y2="590" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0D1A2B"/>
+      <stop offset="0.6" stop-color="#0A1726"/>
+      <stop offset="1" stop-color="#0C2133"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(930 120) rotate(155) scale(320 200)">
+      <stop stop-color="#59D0FF" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#59D0FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(210 560) rotate(-35) scale(280 180)">
+      <stop stop-color="#F4C26B" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#F4C26B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="630" rx="36" fill="url(#bg)"/>
+  <rect width="1200" height="630" rx="36" fill="url(#glowA)"/>
+  <rect width="1200" height="630" rx="36" fill="url(#glowB)"/>
+
+  <g opacity="0.8">
+    <path d="M770 470L860 420L950 452L1030 392L1120 418" stroke="#59D0FF" stroke-width="3" stroke-dasharray="10 10"/>
+    <path d="M796 350L872 316L944 338L1014 292L1092 316" stroke="#59D0FF" stroke-width="3" stroke-dasharray="10 10"/>
+    <circle cx="770" cy="470" r="7" fill="#6BE2CA"/>
+    <circle cx="860" cy="420" r="8" fill="#F4C26B"/>
+    <circle cx="950" cy="452" r="7" fill="#6BE2CA"/>
+    <circle cx="1030" cy="392" r="8" fill="#59D0FF"/>
+    <circle cx="1120" cy="418" r="7" fill="#6BE2CA"/>
+  </g>
+
+  <g transform="translate(740 146)">
+    <path d="M80 136C55 138 36 119 36 95C36 76 48 62 64 56C65 34 84 18 106 18C120 18 132 24 141 35C150 24 162 18 176 18C198 18 217 34 218 56C234 62 246 76 246 95C246 119 227 138 202 136C196 155 180 168 162 168C153 168 144 164 137 158C130 164 121 168 112 168C94 168 78 155 72 136H80Z" fill="#12243A" stroke="#75E0FF" stroke-width="4"/>
+    <path d="M102 54C88 62 82 82 92 96C98 104 108 108 118 108" stroke="#75E0FF" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M136 46C125 55 122 74 130 87C136 95 145 99 154 99" stroke="#75E0FF" stroke-width="3.4" stroke-linecap="round"/>
+    <path d="M166 48C176 56 179 75 171 88C165 96 156 100 147 100" stroke="#75E0FF" stroke-width="3.4" stroke-linecap="round"/>
+    <circle cx="145" cy="112" r="6.5" fill="#6BE2CA"/>
+    <circle cx="178" cy="118" r="6.5" fill="#F4C26B"/>
+  </g>
+
+  <g transform="translate(940 176)">
+    <circle cx="92" cy="62" r="24" fill="#132641" stroke="#D6ECFF" stroke-width="3"/>
+    <path d="M48 202C48 164 68 138 92 138C116 138 136 164 136 202V226H48V202Z" fill="#1A344F" stroke="#D6ECFF" stroke-width="3"/>
+    <path d="M72 154V174C72 190 85 203 101 203C117 203 130 190 130 174V162" stroke="#F4C26B" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="130" cy="162" r="10" fill="#F4C26B"/>
+  </g>
+
+  <text x="68" y="110" fill="#BEE9FF" font-family="Manrope, Arial, sans-serif" font-size="28" font-weight="700" letter-spacing="4">
+    GREYBRAIN ACADEMY
+  </text>
+  <text x="68" y="210" fill="#F8FBFF" font-family="Sora, Arial, sans-serif" font-size="78" font-weight="800">
+    AI Learning For Doctors
+  </text>
+  <text x="68" y="282" fill="#F8FBFF" font-family="Sora, Arial, sans-serif" font-size="78" font-weight="800">
+    Clinical + Research + Venture
+  </text>
+  <text x="68" y="356" fill="#DCE9F8" font-family="Manrope, Arial, sans-serif" font-size="35" font-weight="600">
+    Cohort sessions, AI tutor, assignments, and certificate outcomes.
+  </text>
+</svg>

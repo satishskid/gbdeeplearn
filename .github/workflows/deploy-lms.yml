@@ -1,0 +1,32 @@
+name: Deploy to Cloudflare Pages (LMS App)
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy LMS App
+    steps:
+      - name: Checkout gbdeeplearn-app repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build Astro
+        run: npm run build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: 9f4998a66a5d7bd7a230d0222544fbe6
+          command: pages deploy dist --project-name med-greybrain-app --branch main --commit-dirty=true

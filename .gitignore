@@ -5,3 +5,8 @@ dist
 .wrangler
 .env
 .env.*
+.playwright-cli
+reports
+_external
+delete
+update
