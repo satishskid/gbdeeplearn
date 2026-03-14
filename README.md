@@ -32,6 +32,23 @@ npm install
 npm run dev
 ```
 
+### AI-Assisted Testing (TestSprite MCP)
+
+This project supports [TestSprite](https://testsprite.com) for automated E2E testing. To enable the TestSprite MCP in your IDE (Cursor/VS Code), add the following to your `mcpServers` configuration:
+
+```json
+{
+  "TestSprite": {
+    "command": "npx",
+    "args": ["@testsprite/testsprite-mcp@latest"],
+    "env": {
+      "API_KEY": "YOUR_API_KEY"
+    }
+  }
+}
+```
+A reference `.mcp.json` is provided in the project root.
+
 ## Required env vars
 
 Create `.env` with:
