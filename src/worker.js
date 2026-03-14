@@ -1,7 +1,20 @@
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { getEvergreenSeedEntries } from './lib/evergreenContent.js';
 
 const app = new Hono();
+
+app.use('*', async (c, next) => {
+  const allowedOrigins = c.env.ALLOWED_ORIGINS || [];
+  return cors({
+    origin: allowedOrigins,
+    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposeHeaders: ['Content-Length'],
+    maxAge: 600,
+    credentials: true,
+  })(c, next);
+});
 
 const TUTOR_PROMPT = `You are a Socratic Teaching Assistant. Use only the provided context.
 If context is missing, reply exactly: "I cannot find that in the syllabus."`;
@@ -9000,7 +9013,7 @@ async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) 
     items.push({
       id: 'default-path2-overview',
       question: 'What does Path 2 (AI Research Accelerator) cover?',
-      answer: `Path 2 (${clean(path2.title || 'AI Research Accelerator', 220)}) teaches hypothesis-to-conclusion research workflows with AI support for literature synthesis, study design, evidence mapping, manuscript structuring, and reviewer-response readiness. Delivery is cohort-based with mentor review and AI tutor support between sessions. Status: Rolling Admissions.`
+      answer: `Path 2 (${clean(path2.title || 'AI Research Accelerator', 220)}) teaches hypothesis-to-conclusion research workflows with AI support for literature synthesis, study design, evidence mapping, manuscript structuring, and reviewer-response readiness. Delivery is cohort-based with mentor review and AI tutor support between sessions. Status: Registration Open.`
     });
   }
 
@@ -9019,7 +9032,7 @@ async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) 
     items.push({
       id: 'default-path1-overview',
       question: 'What does Path 1 (Clinical Productivity) cover?',
-      answer: `Path 1 (${clean(path1.title || 'Clinical AI Practitioner', 220)}) is designed for doctors who want immediate AI leverage in day-to-day clinical work. It covers prompting, notes, summaries, patient communication, workflow implementation, and safe adoption habits. Delivery is cohort-based with AI tutor support and mentor review. Status: Applications Active.`
+      answer: `Path 1 (${clean(path1.title || 'Clinical AI Practitioner', 220)}) is designed for doctors who want immediate AI leverage in day-to-day clinical work. It covers prompting, notes, summaries, patient communication, workflow implementation, and safe adoption habits. Delivery is cohort-based with AI tutor support and mentor review. Status: Registration Open.`
     });
   }
 
@@ -9031,7 +9044,7 @@ async function buildDefaultCounselorFaqs(db, { limit = 5, courseId = '' } = {}) 
     items.push({
       id: 'default-course-list',
       question: 'Which courses are currently active or open?',
-      answer: `Current focus includes: ${topCourses.join('; ')}. Ask the counselor for fee, dates, and prerequisites by course slug.`
+      answer: `Current focus includes: ${topCourses.join('; ')}. Ask the counselor for fee, registration, and prerequisites by course slug.`
     });
   }
 

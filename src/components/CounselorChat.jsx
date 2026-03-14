@@ -167,7 +167,7 @@ export default function CounselorChat({ mode = 'inline', className = '' }) {
       <header className="mb-3">
         <p className="mb-1 text-xs font-bold uppercase tracking-[0.16em] text-emerald-700">Pre-Enrollment</p>
         <h2 className="text-xl font-extrabold text-slate-900">AI Counselor</h2>
-        <p className="mt-1 text-sm text-slate-600">AI-mediated logistics help for path, timeline, payment, and onboarding.</p>
+        <p className="mt-1 text-sm text-slate-600">AI-mediated logistics help for path, registration, payment, and onboarding.</p>
       </header>
 
       <div className="mb-3">
@@ -230,7 +230,7 @@ export default function CounselorChat({ mode = 'inline', className = '' }) {
         <input
           className="flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none ring-brand/30 transition focus:border-brand focus:ring-2"
           type="text"
-          placeholder="Ask cohort logistics, fee, timeline, or prerequisites"
+          placeholder="Ask about courses, registration, fee, or prerequisites"
           value={message}
           onChange={(event) => setMessage(event.target.value)}
         />

@@ -2,22 +2,21 @@ import { Hono } from 'hono';
 
 const app = new Hono();
 
-// Proxy all /app/* traffic to the new LMS Pages Project
-app.use('/app*', async (c) => {
+// Forward all API traffic to the backend worker
+app.use('/api/*', async (c) => {
   const url = new URL(c.req.url);
-  const targetUrl = `https://med-greybrain-app.pages.dev${url.pathname}${url.search}`;
+  const targetUrl = `https://med-greybrain-worker.satish-9f4.workers.dev${url.pathname}${url.search}`;
   
-  // Clone the request to forward headers (except host)
   const proxyReq = new Request(targetUrl, c.req.raw);
   proxyReq.headers.delete('host');
   
   return fetch(proxyReq);
 });
 
-// Proxy all other traffic to the original Marketing Pages Project
+// Proxy everything else to the consolidated Pages project
 app.use('*', async (c) => {
   const url = new URL(c.req.url);
-  const targetUrl = `https://gbdeeplearn.pages.dev${url.pathname}${url.search}`;
+  const targetUrl = `https://med-greybrain.pages.dev${url.pathname}${url.search}`;
   
   const proxyReq = new Request(targetUrl, c.req.raw);
   proxyReq.headers.delete('host');
